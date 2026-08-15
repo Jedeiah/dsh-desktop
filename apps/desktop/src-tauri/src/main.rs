@@ -1,12 +1,19 @@
-// DSh Desktop (DeepSeek Harness Desktop) — M5 launcher
+// DSh Desktop (DeepSeek Harness Desktop) — M5 launcher (macOS / Windows)
 //
 // Spawns the bundled node + dsh closure, parses the readiness URL from dsh's
 // stdout (`dsh web: http://127.0.0.1:<port>`), and opens an embedded WebView.
 //
+// Windows specifics (vs macOS):
+//   - node binary is resources/node/node.exe, home env is USERPROFILE
+//   - open URL/folder via `cmd start` / `explorer`
+//   - LAN IP parsed from `ipconfig`; LAN dialog + clipboard via rfd + arboard
+//   - login autostart = HKCU\...\Run registry key; trash via the `trash` crate
+//   - notifications via PowerShell NotifyIcon; kill LAN proxy via taskkill
+//   - `current` version marker is a plain text file (no symlink privilege)
+//
 // Behaviour:
-//   - closing the window hides it and keeps the app in the menu-bar tray
-//   - quitting (Cmd+Q / app menu / dock Quit) kills the dsh child and exits
-//   - clicking the dock icon re-opens a hidden window (Reopen)
+//   - closing the window hides it and keeps the app in the system tray
+//   - quitting (Cmd+Q / tray Quit) kills the dsh child and exits
 //   - workspace (dsh cwd) is user-selectable via a native picker and persisted
 //   - unexpected dsh crashes auto-restart with exponential backoff
 //   - updates: bundled resources are read-only; new closures install into the
@@ -72,9 +79,11 @@ const RESTART_BASE_MS: u64 = 1000;
 const RESTART_MAX_MS: u64 = 15000;
 const WINDOW_LABEL: &str = "main";
 
-/// 用户主目录：优先 HOME 环境变量，回退到系统 passwd（跨平台，不写死用户名）。
+/// 用户主目录：优先平台主目录环境变量（unix: HOME，Windows: USERPROFILE），
+/// 回退到系统用户目录（跨平台，不写死用户名）。
 pub fn home_dir() -> PathBuf {
-    std::env::var_os("HOME")
+    let env = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
+    std::env::var_os(env)
         .map(PathBuf::from)
         .or_else(dirs::home_dir)
         .unwrap_or_else(|| PathBuf::from("."))
@@ -90,7 +99,7 @@ fn mlock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 /// instance is running (caller should activate it and exit). The locked file
 /// is deliberately leaked so the fd (and thus the lock) lives until exit.
 fn acquire_single_instance() -> bool {
-    let dir = home_dir().join("Library/Application Support").join(APP_ID);
+    let dir = update::app_data_from_home();
     let _ = std::fs::create_dir_all(&dir);
     match std::fs::OpenOptions::new()
         .create(true)
@@ -159,11 +168,19 @@ macro_rules! logln {
     ($($arg:tt)*) => { crate::logln(&format!($($arg)*)) };
 }
 
-/// True when running from a packaged .app bundle (vs `cargo run` / raw binary).
+/// True when running from a packaged bundle (vs `cargo run` / raw binary).
+/// macOS: inside `App.app/Contents/`; Windows: not under a `target\` build dir.
 fn is_bundled() -> bool {
-    std::env::current_exe()
-        .map(|p| p.to_string_lossy().contains(".app/Contents/"))
-        .unwrap_or(false)
+    let exe = std::env::current_exe().unwrap_or_default();
+    let s = exe.to_string_lossy();
+    #[cfg(target_os = "macos")]
+    {
+        s.contains(".app/Contents/")
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        !(s.contains("\\target\\") || s.contains("/target/"))
+    }
 }
 
 /// Resolved paths the launcher needs (shared by the GUI and the CLI hooks).
@@ -199,23 +216,35 @@ fn paths_from_app(app: &AppHandle) -> Paths {
     }
 }
 
-/// Resources root for the CLI hooks (no Tauri handle): bundled
-/// `Contents/Resources/resources` relative to the executable, or dev cwd.
+/// Resources root for the CLI hooks (no Tauri handle): bundled resources
+/// relative to the executable (macOS `../Resources/resources`, Windows
+/// `resources` beside the exe), or dev cwd.
 fn paths_from_cli() -> Paths {
     let exe = std::env::current_exe().unwrap_or_default();
+    let exe_dir = exe.parent().unwrap_or(Path::new(".")).to_path_buf();
+    let cwd = std::env::current_dir().unwrap_or_default();
     let candidates = [
-        exe.parent()
-            .unwrap_or(Path::new("."))
-            .join("../Resources/resources"),
-        std::env::current_dir().unwrap_or_default().join("resources"),
+        exe_dir.join("../Resources/resources"), // macOS .app bundle layout
+        exe_dir.join("resources"),              // Windows / generic: beside the exe
+        exe_dir,                                // Windows: resources may be the exe dir itself
+        cwd.join("resources"),                  // dev: repo cwd
     ];
     let resources = candidates
         .into_iter()
         .find(|p| p.join("dsh").is_dir())
-        .unwrap_or_else(|| std::env::current_dir().unwrap_or_default().join("resources"));
+        .unwrap_or_else(|| cwd.join("resources"));
     Paths {
         resources,
         app_data: update::app_data_from_home(),
+    }
+}
+
+/// The bundled node executable (name differs per platform: `node` vs `node.exe`).
+pub fn node_bin(resources: &Path) -> PathBuf {
+    if cfg!(windows) {
+        resources.join("node/node.exe")
+    } else {
+        resources.join("node/bin/node")
     }
 }
 
@@ -286,22 +315,38 @@ fn closure_marker(dir: &Path) -> bool {
     dir.join("node_modules/@deepseek-ai/dsh/package.json").is_file()
 }
 
+/// Resolve the active closure under a `dsh/` dir using the `current` marker.
+/// The marker is a plain text file holding the version directory name; older
+/// installs that used a `current` symlink to a version dir are also accepted.
+fn resolve_current(dsh_dir: &Path) -> Option<PathBuf> {
+    let marker = dsh_dir.join("current");
+    if let Ok(ver) = std::fs::read_to_string(&marker) {
+        let ver = ver.trim();
+        if !ver.is_empty() {
+            let dir = dsh_dir.join(ver);
+            if closure_marker(&dir) {
+                return Some(dir);
+            }
+        }
+    }
+    // legacy: `current` was a symlink pointing at a version dir
+    if closure_marker(&marker) {
+        return Some(marker);
+    }
+    None
+}
+
 /// Resolve the active dsh closure: prefer the app-data `current` (managed by
 /// updates), otherwise the bundled one.
 pub fn active_closure(p: &Paths) -> Option<PathBuf> {
-    let cur = p.app_data.join("dsh/current");
-    if closure_marker(&cur) {
-        return Some(cur);
-    }
-    resolve_closure(&p.resources)
+    resolve_current(&p.app_data.join("dsh")).or_else(|| resolve_closure(&p.resources))
 }
 
-/// Scan the (read-only) bundled `dsh/` for a version dir carrying the marker.
+/// Scan the (read-only) bundled `dsh/` for the active version dir.
 fn resolve_closure(res: &Path) -> Option<PathBuf> {
     let dsh = res.join("dsh");
-    let cur = dsh.join("current");
-    if closure_marker(&cur) {
-        return Some(cur);
+    if let Some(c) = resolve_current(&dsh) {
+        return Some(c);
     }
     if let Ok(entries) = std::fs::read_dir(&dsh) {
         for e in entries.flatten() {
@@ -316,7 +361,7 @@ fn resolve_closure(res: &Path) -> Option<PathBuf> {
 
 fn spawn_dsh(app: &AppHandle) -> std::io::Result<Child> {
     let p = paths_from_app(app);
-    let node = p.resources.join("node/bin/node");
+    let node = node_bin(&p.resources);
     let closure = active_closure(&p).ok_or_else(|| {
         std::io::Error::other(format!("dsh closure not found under {}", p.resources.display()))
     })?;
@@ -337,22 +382,27 @@ fn spawn_dsh(app: &AppHandle) -> std::io::Result<Child> {
     } else {
         Stdio::inherit()
     };
-    Command::new(&node)
-        .arg(&bin)
+    let mut cmd = Command::new(&node);
+    cmd.arg(&bin)
         .arg("--profile")
         .arg("web")
         .arg("--port")
         .arg("0")
         .current_dir(&cwd)
-        .env("HOME", &home)
         // Force dsh's directory-picker into web "browse" mode (the only
         // reader of SSH_CONNECTION in the closure is the picker resolver):
-        // native OS dialogs open on the host Mac and cannot serve phone/
+        // native OS dialogs open on the host machine and cannot serve phone/
         // LAN clients, whereas the web picker works everywhere.
         .env("SSH_CONNECTION", "1")
         .stdout(Stdio::piped())
-        .stderr(stderr)
-        .spawn()
+        .stderr(stderr);
+    // 让 dsh 认到用户主目录（unix 读 HOME，Windows 读 USERPROFILE；双设更稳）
+    if cfg!(windows) {
+        cmd.env("USERPROFILE", &home).env("HOME", &home);
+    } else {
+        cmd.env("HOME", &home);
+    }
+    cmd.spawn()
 }
 
 // ---------------------------------------------------------------------------
@@ -487,11 +537,27 @@ fn probe_webview(w: &tauri::WebviewWindow, label: String, tag: String) {
     );
 }
 
+/// Open a URL in the system default browser.
+fn open_url(url: &str) {
+    #[cfg(target_os = "windows")]
+    let _ = Command::new("cmd").args(["/C", "start", "", url]).spawn();
+    #[cfg(not(target_os = "windows"))]
+    let _ = Command::new("open").arg(url).spawn();
+}
+
+/// Open a folder in the platform file manager.
+fn open_dir(dir: &Path) {
+    #[cfg(target_os = "windows")]
+    let _ = Command::new("explorer").arg(dir).spawn();
+    #[cfg(not(target_os = "windows"))]
+    let _ = Command::new("open").arg(dir).spawn();
+}
+
 fn open_in_browser(_app: &AppHandle) {
     let url = mlock(&DSH_URL)
         .clone()
         .unwrap_or_else(|| "http://127.0.0.1:3080".into());
-    let _ = Command::new("open").arg(&url).spawn();
+    open_url(&url);
 }
 
 fn kill_dsh() {
@@ -532,7 +598,7 @@ fn choose_workspace(app: &AppHandle) {
 
 fn open_workspace_in_finder(app: &AppHandle) {
     let dir = workspace_dir(app);
-    let _ = Command::new("open").arg(&dir).spawn();
+    open_dir(&dir);
 }
 
 // ---------------------------------------------------------------------------
@@ -608,24 +674,78 @@ fn lan_token(s: &mut Settings) -> String {
             return t.clone();
         }
     }
+    // 128-bit CSPRNG token（跨平台；getrandom 是本依赖树成员，不再依赖 /dev/urandom）。
     let mut buf = [0u8; 16];
-    if let Ok(mut f) = std::fs::File::open("/dev/urandom") {
-        use std::io::Read;
-        let _ = f.read_exact(&mut buf);
+    if getrandom::getrandom(&mut buf).is_err() {
+        // 极端兜底：系统熵源不可用时退化为主机时间戳（远比全 0 安全）。
+        let t = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos() as u128;
+        buf = t.to_le_bytes();
     }
     let t: String = buf.iter().map(|b| format!("{b:02x}")).collect();
     s.lan_token = Some(t.clone());
     t
 }
 
-/// Detect the Mac's primary LAN IPv4 (best effort).
+/// Detect the primary LAN IPv4 (best effort; platform-specific mechanism).
 fn lan_ip() -> Option<String> {
-    for iface in ["en0", "en1"] {
-        if let Ok(out) = Command::new("ipconfig").args(["getifaddr", iface]).output() {
-            let ip = String::from_utf8_lossy(&out.stdout).trim().to_string();
-            if !ip.is_empty() && !ip.starts_with("127.") {
-                return Some(ip);
+    #[cfg(target_os = "macos")]
+    {
+        for iface in ["en0", "en1"] {
+            if let Ok(out) = Command::new("ipconfig").args(["getifaddr", iface]).output() {
+                let ip = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                if !ip.is_empty() && !ip.starts_with("127.") {
+                    return Some(ip);
+                }
             }
+        }
+        None
+    }
+    #[cfg(target_os = "windows")]
+    {
+        // 解析 `ipconfig` 输出（中/英文系统都能用），取第一个私网 IPv4。
+        let out = Command::new("ipconfig").output().ok()?;
+        let text = String::from_utf8_lossy(&out.stdout);
+        for line in text.lines() {
+            if let Some(ip) = first_ipv4(line) {
+                let parts: Vec<u8> = ip.split('.').filter_map(|s| s.parse().ok()).collect();
+                if let [a, b, ..] = parts[..] {
+                    if a == 10 || (a == 172 && (16..=31).contains(&b)) || (a == 192 && b == 168) {
+                        return Some(ip);
+                    }
+                }
+            }
+        }
+        None
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        None
+    }
+}
+
+#[cfg(target_os = "windows")]
+/// Return the first dotted-quad IPv4 found in a line, if any.
+fn first_ipv4(line: &str) -> Option<String> {
+    let bytes = line.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i].is_ascii_digit() {
+            let start = i;
+            while i < bytes.len() && (bytes[i].is_ascii_digit() || bytes[i] == b'.') {
+                i += 1;
+            }
+            let tok = &line[start..i];
+            if tok.matches('.').count() == 3 {
+                let parts: Vec<u8> = tok.split('.').filter_map(|s| s.parse().ok()).collect();
+                if parts.len() == 4 {
+                    return Some(tok.to_string());
+                }
+            }
+        } else {
+            i += 1;
         }
     }
     None
@@ -640,10 +760,21 @@ fn kill_lan() {
 fn kill_lan_unlocked() {
     LAN_GEN.fetch_add(1, Ordering::SeqCst); // invalidate any running watcher
     LAN_ON.store(false, Ordering::SeqCst);
-    // 按 PID 发 SIGTERM：Child 本体由看护线程持有并负责 reap（wait）。
+    // 按 PID 结束代理：Child 本体由看护线程持有并负责 reap（wait）。
     if let Some(pid) = mlock(&LAN_CHILD).take() {
+        #[cfg(unix)]
         unsafe {
             libc::kill(pid as libc::pid_t, libc::SIGTERM);
+        }
+        #[cfg(windows)]
+        {
+            // Windows 无 SIGTERM 概念：taskkill 强制结束（含其子进程树）。
+            let _ = Command::new("taskkill")
+                .arg("/PID")
+                .arg(pid.to_string())
+                .arg("/T")
+                .arg("/F")
+                .status();
         }
     }
 }
@@ -675,7 +806,7 @@ fn start_lan(app: &AppHandle, dsh_port: &str, notify: bool) -> Result<(), String
 /// exactly on the crash-restart path it was meant to fix).
 fn start_lan_unlocked(app: &AppHandle, dsh_port: &str, notify: bool) -> Result<(), String> {
     let p = paths_from_app(app);
-    let node = p.resources.join("node/bin/node");
+    let node = node_bin(&p.resources);
     let proxy = p.resources.join("lan-proxy.js");
     if !node.is_file() || !proxy.is_file() {
         return Err(format!(
@@ -810,22 +941,41 @@ fn show_lan_info(app: &AppHandle) {
     lan_info_dialog(&token, port);
 }
 
-/// Modal dialog showing the access address + token; the token sits in an
-/// editable field (selectable/copyable) with a one-click "复制令牌" action.
+/// Modal dialog showing the access address + token.
+/// macOS: osascript editable-field dialog with a copy button.
+/// Windows: rfd message dialog + clipboard copy (no editable field on Win).
 fn lan_info_dialog(token: &str, port: u16) {
     let ip = lan_ip().unwrap_or_else(|| "127.0.0.1".into());
-    let script = format!(
-        r#"display dialog "手机浏览器打开：" & return & "http://{ip}:{port}" & return & return & "访问令牌（可选中复制，或点复制按钮）：" default answer "{token}" buttons {{"关闭", "复制令牌"}} default button "复制令牌" with title "局域网访问" with icon note"#
-    );
-    if let Ok(out) = Command::new("osascript").args(["-e", &script]).output() {
-        let s = String::from_utf8_lossy(&out.stdout);
-        if s.contains("复制令牌") {
+    #[cfg(target_os = "macos")]
+    {
+        let script = format!(
+            r#"display dialog "手机浏览器打开：" & return & "http://{ip}:{port}" & return & return & "访问令牌（可选中复制，或点复制按钮）：" default answer "{token}" buttons {{"关闭", "复制令牌"}} default button "复制令牌" with title "局域网访问" with icon note"#
+        );
+        if let Ok(out) = Command::new("osascript").args(["-e", &script]).output() {
+            let s = String::from_utf8_lossy(&out.stdout);
+            if s.contains("复制令牌") {
+                copy_to_clipboard(token);
+            }
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let msg = format!(
+            "手机浏览器打开：\nhttp://{ip}:{port}\n\n访问令牌（点“Yes/是”复制）：\n{token}"
+        );
+        let yes = rfd::MessageDialog::new()
+            .set_title("局域网访问")
+            .set_description(&msg)
+            .set_buttons(rfd::MessageButtons::YesNo)
+            .show();
+        if yes == rfd::MessageDialogResult::Yes {
             copy_to_clipboard(token);
         }
     }
 }
 
-/// Copy text to the system clipboard via pbcopy.
+/// Copy text to the system clipboard via pbcopy (macOS).
+#[cfg(target_os = "macos")]
 fn copy_to_clipboard(text: &str) {
     let mut child = match Command::new("pbcopy").stdin(Stdio::piped()).spawn() {
         Ok(c) => c,
@@ -839,6 +989,21 @@ fn copy_to_clipboard(text: &str) {
     let _ = child.wait();
     update::notify("已复制", "访问令牌已复制到剪贴板");
 }
+
+/// Copy text to the system clipboard (Windows: arboard)。
+#[cfg(target_os = "windows")]
+fn copy_to_clipboard(text: &str) {
+    if let Ok(mut cb) = arboard::Clipboard::new() {
+        if cb.set_text(text.to_string()).is_ok() {
+            update::notify("已复制", "访问令牌已复制到剪贴板");
+            return;
+        }
+    }
+}
+
+/// Fallback for other platforms (no-op).
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+fn copy_to_clipboard(_text: &str) {}
 
 /// On dsh readiness (and when LAN is enabled), (re)point the proxy at the
 /// current dsh port — dsh may have restarted on a new random port.
@@ -854,6 +1019,7 @@ fn ensure_lan_on_ready(app: &AppHandle, dsh_port: &str) {
 // Login autostart (opt-in) & uninstaller (M4)
 // ---------------------------------------------------------------------------
 
+#[cfg(target_os = "macos")]
 /// LaunchAgent plist path for login autostart.
 fn login_plist() -> PathBuf {
     home_dir()
@@ -861,10 +1027,7 @@ fn login_plist() -> PathBuf {
         .join(format!("{APP_ID}.plist"))
 }
 
-fn login_item_enabled() -> bool {
-    login_plist().is_file()
-}
-
+#[cfg(target_os = "macos")]
 fn xml_escape(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('<', "&lt;")
@@ -872,7 +1035,35 @@ fn xml_escape(s: &str) -> String {
         .replace('"', "&quot;")
 }
 
-/// Write or remove the LaunchAgent plist (the actual mechanism); no GUI deps.
+#[cfg(target_os = "macos")]
+fn login_item_enabled() -> bool {
+    login_plist().is_file()
+}
+
+#[cfg(target_os = "windows")]
+fn login_item_enabled() -> bool {
+    // HKCU Run 键存在即视为已开启登录自启。
+    Command::new("reg")
+        .args([
+            "query",
+            "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run",
+            "/v",
+            "DeepSeek Harness",
+        ])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+fn login_item_enabled() -> bool {
+    false
+}
+
+/// Write or remove the login-autostart entry (the actual mechanism); no GUI deps.
+#[cfg(target_os = "macos")]
 fn set_login_item_core(enable: bool) -> Result<(), String> {
     let plist = login_plist();
     let uid = std::env::var("UID").unwrap_or_else(|_| "501".into());
@@ -912,6 +1103,46 @@ fn set_login_item_core(enable: bool) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(target_os = "windows")]
+fn set_login_item_core(enable: bool) -> Result<(), String> {
+    const RUN_KEY: &str = "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run";
+    const RUN_NAME: &str = "DeepSeek Harness";
+    if enable {
+        let exe = std::env::current_exe().map_err(|e| format!("定位程序失败: {e}"))?;
+        let cmdline = format!("\"{}\"", exe.display());
+        let st = Command::new("reg")
+            .arg("add")
+            .arg(RUN_KEY)
+            .arg("/v")
+            .arg(RUN_NAME)
+            .arg("/t")
+            .arg("REG_SZ")
+            .arg("/d")
+            .arg(&cmdline)
+            .arg("/f")
+            .status()
+            .map_err(|e| format!("写入登录自启注册表失败: {e}"))?;
+        if !st.success() {
+            return Err("写入登录自启注册表失败 (reg add)".into());
+        }
+    } else {
+        // 删除 Run 键（键不存在时 reg delete 报错，忽略即可）
+        let _ = Command::new("reg")
+            .arg("delete")
+            .arg(RUN_KEY)
+            .arg("/v")
+            .arg(RUN_NAME)
+            .arg("/f")
+            .status();
+    }
+    Ok(())
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+fn set_login_item_core(_enable: bool) -> Result<(), String> {
+    Ok(())
+}
+
 fn set_login_item(enable: bool) -> Result<(), String> {
     set_login_item_core(enable)?;
     LOGIN_ON.store(enable, Ordering::SeqCst);
@@ -927,12 +1158,21 @@ fn uninstall_teardown(p: &Paths, wipe_dsh: bool) -> Result<(), String> {
     kill_dsh();
     let _ = set_login_item_core(false);
     let home = home_dir();
-    // app 数据 + WebView 缓存/WebKit 状态（卸载器必须连缓存一起清干净）
-    for dir in [
-        p.app_data.clone(),
-        home.join("Library/Caches").join(APP_ID),
-        home.join("Library/WebKit").join(APP_ID),
-    ] {
+    // app 数据 + WebView 缓存/状态（卸载器必须连缓存一起清干净）
+    let mut dirs = vec![p.app_data.clone()];
+    #[cfg(target_os = "macos")]
+    {
+        dirs.push(home.join("Library/Caches").join(APP_ID));
+        dirs.push(home.join("Library/WebKit").join(APP_ID));
+    }
+    #[cfg(target_os = "windows")]
+    {
+        // WebView2 的用户数据/缓存落在 %LOCALAPPDATA%\<id>
+        if let Some(local) = std::env::var_os("LOCALAPPDATA") {
+            dirs.push(PathBuf::from(local).join(APP_ID));
+        }
+    }
+    for dir in dirs {
         if dir.exists() {
             std::fs::remove_dir_all(&dir).map_err(|e| format!("删除 {} 失败: {e}", dir.display()))?;
         }
@@ -946,6 +1186,7 @@ fn uninstall_teardown(p: &Paths, wipe_dsh: bool) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(target_os = "macos")]
 /// Remove this app from the Dock's "recent applications" list and refresh the
 /// Dock. Uses defaults export/import (through cfprefsd) + python3 plistlib so
 /// ONLY this app's entry is dropped; other recents and settings are untouched.
@@ -974,9 +1215,13 @@ with open(p,'wb') as f: plistlib.dump(d, f, fmt=plistlib.FMT_BINARY)
     let _ = std::fs::remove_file(&tmp);
 }
 
-/// Ask the user how to uninstall (native macOS dialog with Chinese buttons).
-/// Returns: Some(true) = uninstall + wipe ~/.dsh; Some(false) = uninstall, keep
-/// ~/.dsh; None = cancelled.
+#[cfg(not(target_os = "macos"))]
+fn clear_dock_recents() {}
+
+/// Ask the user how to uninstall. Returns:
+/// Some(true) = uninstall + wipe ~/.dsh; Some(false) = uninstall, keep ~/.dsh;
+/// None = cancelled.
+#[cfg(target_os = "macos")]
 fn ask_uninstall() -> Option<bool> {
     let script = r#"
 try
@@ -1002,7 +1247,24 @@ end try
     }
 }
 
-/// Uninstall: teardown, trash the .app, then exit.
+/// Ask the user how to uninstall (Windows: rfd 三键弹窗)。
+#[cfg(not(target_os = "macos"))]
+fn ask_uninstall() -> Option<bool> {
+    let r = rfd::MessageDialog::new()
+        .set_title("卸载 DeepSeek Harness？")
+        .set_description(
+            "卸载将：结束 dsh 子进程、删除应用数据与登录自启项、把程序移入回收站（可恢复）。\n\n~/.dsh（你的会话与凭据）默认保留，也可一并删除，且不可恢复。\n\nYes/是 = 卸载并删除 ~/.dsh；No/否 = 卸载，保留 ~/.dsh；Cancel/取消 = 什么都不做",
+        )
+        .set_buttons(rfd::MessageButtons::YesNoCancel)
+        .show();
+    match r {
+        rfd::MessageDialogResult::Yes => Some(true),
+        rfd::MessageDialogResult::No => Some(false),
+        _ => None,
+    }
+}
+
+/// Uninstall: teardown, trash the app, then exit.
 fn uninstall(app: &AppHandle) {
     let Some(wipe) = ask_uninstall() else {
         return; // cancelled
@@ -1013,16 +1275,30 @@ fn uninstall(app: &AppHandle) {
         return;
     }
 
-    trash_self();
-    std::thread::sleep(Duration::from_millis(900)); // let the Finder script start
-    // Remove the trashed app from the Dock's "recent applications" so the
-    // dead icon does not linger (and refresh the Dock).
-    clear_dock_recents();
+    #[cfg(target_os = "macos")]
+    {
+        trash_self();
+        std::thread::sleep(Duration::from_millis(900)); // let the Finder script start
+        // Remove the trashed app from the Dock's "recent applications" so the
+        // dead icon does not linger (and refresh the Dock).
+        clear_dock_recents();
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        // Windows：尝试把安装目录移入回收站。运行中的 exe 可能被占用而失败，
+        // 此时引导用户走系统“设置 → 应用”卸载。
+        if !trash_self() {
+            update::notify(
+                "请通过系统卸载",
+                "应用数据已清理。请到“设置 → 应用 → 已安装的应用”中卸载 DeepSeek Harness。",
+            );
+        }
+    }
     app.exit(0);
 }
 
-/// Move the running .app bundle to the Trash (via Finder), if we are bundled.
-/// Returns true when the bundle was found and trashed.
+/// Move the running app to the trash / recycle bin. Returns true on success.
+#[cfg(target_os = "macos")]
 fn trash_self() -> bool {
     let exe = std::env::current_exe().unwrap_or_default();
     // exe = <App>.app/Contents/MacOS/<bin>  ->  app root = <App>.app
@@ -1038,6 +1314,21 @@ fn trash_self() -> bool {
     let path = app_root.to_string_lossy().replace('"', "\\\"");
     let script = format!("tell application \"Finder\" to delete POSIX file \"{path}\"");
     Command::new("osascript").args(["-e", &script]).spawn().is_ok()
+}
+
+/// Move the running app's install directory to the Recycle Bin (Windows).
+/// The running exe itself is locked by the OS, so this may fail — callers
+/// should fall back to the system uninstaller.
+#[cfg(target_os = "windows")]
+fn trash_self() -> bool {
+    let exe = std::env::current_exe().unwrap_or_default();
+    let install_dir = exe.parent().unwrap_or(Path::new(".")).to_path_buf();
+    trash::delete(&install_dir).is_ok()
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+fn trash_self() -> bool {
+    false
 }
 
 // ---------------------------------------------------------------------------
@@ -1114,9 +1405,12 @@ fn main() {
     }
     if !acquire_single_instance() {
         // 已有实例在运行：把窗口带出来即可，自己不启动（防双托盘/双 dsh）
+        #[cfg(target_os = "macos")]
         let _ = Command::new("osascript")
             .args(["-e", r#"tell application "DeepSeek Harness" to activate"#])
             .spawn();
+        #[cfg(not(target_os = "macos"))]
+        logln!("another instance is running; exiting");
         return;
     }
 
@@ -1198,7 +1492,7 @@ fn main() {
                     "check_update" => check_for_updates(app),
                     "open_logs" => {
                         let p = paths_from_app(app);
-                        let _ = Command::new("open").arg(p.app_data.join("logs")).spawn();
+                        open_dir(&p.app_data.join("logs"));
                     }
                     "lan_access" => {
                         let next = !LAN_ON.load(Ordering::SeqCst);

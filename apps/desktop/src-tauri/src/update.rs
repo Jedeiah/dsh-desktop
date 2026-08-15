@@ -102,10 +102,18 @@ fn app_dsh_dir(p: &Paths) -> PathBuf {
     p.app_data.join("dsh")
 }
 
+/// Read the version dir name recorded in the `current` version-marker file.
+fn read_current_marker(dsh_dir: &Path) -> Option<String> {
+    std::fs::read_to_string(dsh_dir.join("current"))
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
 /// Install `@deepseek-ai/dsh@ver` into `target` using the bundled node + npm,
 /// then verify it boots. Returns an error string on any failure.
 fn install_and_verify(p: &Paths, target: &Path, ver: &str, registry: &str) -> Result<(), String> {
-    let node = p.resources.join("node/bin/node");
+    let node = crate::node_bin(&p.resources);
     let npm = p.resources.join("npm/bin/npm-cli.js");
     if !node.is_file() || !npm.is_file() {
         return Err(format!(
@@ -166,7 +174,7 @@ fn install_and_verify(p: &Paths, target: &Path, ver: &str, registry: &str) -> Re
 /// Apply an update to `new_ver` atomically:
 /// 1. install into `v<new>-tmp` (boot-verified)
 /// 2. promote to `v<new>`
-/// 3. switch the `current` symlink (previous version dir is kept)
+/// 3. switch the `current` version marker (previous version dir is kept)
 ///
 /// On any failure before the switch, the running install is untouched.
 pub fn apply_update(p: &Paths, new_ver: &str, registry: &str) -> Result<(), String> {
@@ -194,16 +202,17 @@ pub fn apply_update(p: &Paths, new_ver: &str, registry: &str) -> Result<(), Stri
     }
     std::fs::rename(&tmp, &final_dir).map_err(|e| format!("发布新版本目录失败: {e}"))?;
 
-    // atomically switch `current` -> v<new>
-    let cur_link = dsh_dir.join("current");
+    // atomically switch `current` to v<new> via a version-marker file.
+    // A plain text file + atomic rename works on Windows (no symlink privilege
+    // needed) and on unix alike, so we drop the old `current` symlink scheme.
+    let cur_marker = dsh_dir.join("current");
     // remember the previous version so the GC below can keep one rollback
-    let prev_ver = std::fs::read_link(&cur_link)
-        .ok()
-        .and_then(|l| l.file_name().map(|s| s.to_string_lossy().to_string()));
-    let _ = std::fs::remove_file(&cur_link);
-    #[cfg(unix)]
-    std::os::unix::fs::symlink(format!("v{new_ver}"), &cur_link)
-        .map_err(|e| format!("切换 current 软链失败: {e}"))?;
+    let prev_ver = read_current_marker(&dsh_dir);
+    let tmp_marker = dsh_dir.join("current.tmp");
+    std::fs::write(&tmp_marker, format!("v{new_ver}\n"))
+        .map_err(|e| format!("写 current 标记失败: {e}"))?;
+    std::fs::rename(&tmp_marker, &cur_marker)
+        .map_err(|e| format!("切换 current 标记失败: {e}"))?;
 
     // GC: keep the new version + the previous one (rollback), drop older ones
     // (each full closure is ~340MB; without this, every update leaks a version).
@@ -243,19 +252,49 @@ pub fn check_update(p: &Paths, registry: Option<&str>) -> Result<Option<(String,
     })
 }
 
-/// Post a macOS notification via osascript (no extra dependency).
+/// Post a desktop notification (best-effort, per-platform mechanism).
 pub fn notify(title: &str, body: &str) {
-    let script = format!(
-        "display notification \"{}\" with title \"{}\"",
-        body.replace('"', "'"),
-        title.replace('"', "'")
-    );
-    let _ = Command::new("osascript").args(["-e", &script]).spawn();
+    #[cfg(target_os = "macos")]
+    {
+        let script = format!(
+            "display notification \"{}\" with title \"{}\"",
+            body.replace('"', "'"),
+            title.replace('"', "'")
+        );
+        let _ = Command::new("osascript").args(["-e", &script]).spawn();
+    }
+    #[cfg(target_os = "windows")]
+    {
+        // PowerShell 无窗口气球提示（NotifyIcon），尽力而为、失败静默。
+        let ps = format!(
+            "Add-Type -AssemblyName System.Windows.Forms; \
+             $n = New-Object System.Windows.Forms.NotifyIcon; \
+             $n.Icon = [System.Drawing.SystemIcons]::Information; \
+             $n.Visible = $true; \
+             $n.ShowBalloonTip(5000, '{title}', '{body}', [System.Windows.Forms.ToolTipIcon]::Info); \
+             Start-Sleep -Milliseconds 6000; \
+             $n.Dispose()",
+            title = title.replace('\'', "''"),
+            body = body.replace('\'', "''")
+        );
+        let _ = Command::new("powershell.exe")
+            .arg("-NoProfile")
+            .arg("-NonInteractive")
+            .arg("-WindowStyle")
+            .arg("Hidden")
+            .arg("-Command")
+            .arg(&ps)
+            .spawn();
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    let _ = (title, body);
 }
 
 /// Resolve the app data dir (shared by GUI and CLI paths).
+/// macOS: `~/Library/Application Support/<id>`; Windows: `%APPDATA%/<id>`
+/// (matches Tauri's own `app_data_dir()` so GUI and CLI stay consistent).
 pub fn app_data_from_home() -> PathBuf {
-    crate::home_dir()
-        .join("Library/Application Support")
-        .join(crate::APP_ID)
+    dirs::data_dir()
+        .map(|d| d.join(crate::APP_ID))
+        .unwrap_or_else(|| crate::home_dir().join(".dsh-desktop"))
 }

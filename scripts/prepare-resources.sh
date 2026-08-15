@@ -47,7 +47,10 @@ mv "$STAGE/node_modules" "$DST/node_modules"
 rmdir "$STAGE"
 echo "{\"name\":\"dsh-closure\",\"version\":\"$VER\"}" >"$DST/package.json"
 echo "$VER" >"$DST/VERSION"
-ln -sfn "$VER" "$RES/dsh/current"
+# `current` 是版本标记文件（内容=版本号），跨平台（Windows 无软链权限也通用）。
+# 旧版用软链时 Rust 侧会回退扫描，无需迁移。
+echo "$VER" >"$RES/dsh/current"
+rm -f "$RES/dsh/current.tmp"
 echo "    closure: $(du -sh "$DST" | cut -f1) at $DST"
 
 # --- 2b. LAN proxy (M6: 局域网访问转发器) --------------------------------
