@@ -696,6 +696,7 @@ name = "dsh-desktop"
 version = "0.1.0"
 dependencies = [
  "dirs",
+ "libc",
  "rfd",
  "serde",
  "serde_json",

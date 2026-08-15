@@ -48,13 +48,19 @@ static CRASHES: AtomicU32 = AtomicU32::new(0);
 static LOGIN_ON: AtomicBool = AtomicBool::new(false);
 /// The tray's "Launch at Login" check item (kept to flip its state).
 static LOGIN_ITEM: Mutex<Option<CheckMenuItem<tauri::Wry>>> = Mutex::new(None);
-/// The running LAN proxy child (bundled node + lan-proxy.js), if enabled.
-static LAN_CHILD: Mutex<Option<Child>> = Mutex::new(None);
+/// The running LAN proxy PID (bundled node + lan-proxy.js), if enabled.
+/// The Child itself is owned by the watcher thread (reaps on exit); kills are
+/// PID-based so a superseded watcher can never orphan a live proxy.
+static LAN_CHILD: Mutex<Option<u32>> = Mutex::new(None);
 /// Serializes LAN proxy start/kill so the menu handler and the dsh-readiness
 /// thread cannot race (two concurrent starts would orphan the first proxy).
 static LAN_MUTEX: Mutex<()> = Mutex::new(());
 /// Mirrors whether LAN access is currently on.
 static LAN_ON: AtomicBool = AtomicBool::new(false);
+/// Generation counter for LAN proxy spawns: bumped on every kill/start so a
+/// watcher of a superseded child can tell it no longer owns the seat and must
+/// not restart (prevents double proxies during kill→start transitions).
+static LAN_GEN: AtomicU32 = AtomicU32::new(0);
 /// The tray's "局域网访问" check item.
 static LAN_ITEM: Mutex<Option<CheckMenuItem<tauri::Wry>>> = Mutex::new(None);
 /// Launcher log file (packaged mode). Empty in dev (stderr goes to terminal).
@@ -632,17 +638,42 @@ fn kill_lan() {
 }
 
 fn kill_lan_unlocked() {
-    if let Some(mut c) = mlock(&LAN_CHILD).take() {
-        let _ = c.kill();
-        let _ = c.wait();
+    LAN_GEN.fetch_add(1, Ordering::SeqCst); // invalidate any running watcher
+    LAN_ON.store(false, Ordering::SeqCst);
+    // 按 PID 发 SIGTERM：Child 本体由看护线程持有并负责 reap（wait）。
+    if let Some(pid) = mlock(&LAN_CHILD).take() {
+        unsafe {
+            libc::kill(pid as libc::pid_t, libc::SIGTERM);
+        }
     }
+}
+
+/// Drain a child pipe into the launcher log (so proxy stdout/stderr is visible).
+fn spawn_pipe_logger<R: std::io::Read + Send + 'static>(reader: R, tag: &'static str) {
+    std::thread::spawn(move || {
+        let reader = BufReader::new(reader);
+        for line in reader.lines() {
+            if let Ok(l) = line {
+                logln!("{tag} {l}");
+            }
+        }
+    });
 }
 
 /// (Re)start the LAN proxy against the given dsh port.
 /// `notify` controls whether an enable notification is posted (only on the
 /// user-facing enable action, not on automatic re-points after dsh restarts).
+/// Locking wrapper: takes `LAN_MUTEX` and delegates to the unlocked core.
 fn start_lan(app: &AppHandle, dsh_port: &str, notify: bool) -> Result<(), String> {
     let _g = mlock(&LAN_MUTEX); // serialize with kill_lan / other starts
+    start_lan_unlocked(app, dsh_port, notify)
+}
+
+/// Core of `start_lan`; requires `LAN_MUTEX` to be held by the caller.
+/// Split so the crash-watcher can hold the mutex across check+restart without
+/// re-locking (std Mutex is not reentrant — re-locking there used to deadlock
+/// exactly on the crash-restart path it was meant to fix).
+fn start_lan_unlocked(app: &AppHandle, dsh_port: &str, notify: bool) -> Result<(), String> {
     let p = paths_from_app(app);
     let node = p.resources.join("node/bin/node");
     let proxy = p.resources.join("lan-proxy.js");
@@ -659,16 +690,59 @@ fn start_lan(app: &AppHandle, dsh_port: &str, notify: bool) -> Result<(), String
     save_settings(app, &s); // persist the generated token/port
 
     kill_lan_unlocked(); // mutex already held
-    let child = Command::new(&node)
+    let gen = LAN_GEN.fetch_add(1, Ordering::SeqCst) + 1;
+    let mut child = Command::new(&node)
         .arg(&proxy)
         .arg(dsh_port)
         .arg(&token)
         .arg(&port)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| format!("启动局域网转发器失败: {e}"))?;
-    *mlock(&LAN_CHILD) = Some(child);
+    // 代理自身的输出进 launcher 日志：崩溃、报错都能看到，不再凭空消失。
+    if let Some(h) = child.stdout.take() {
+        spawn_pipe_logger(h, "[lan-proxy]");
+    }
+    if let Some(h) = child.stderr.take() {
+        spawn_pipe_logger(h, "[lan-proxy:err]");
+    }
+    // 看护线程：代理意外退出且局域网仍应开启时自动重启（之前代理一崩，
+    // 手机端就全线 load failed，且无人重启，只能等 App 重启）。
+    let pid = child.id();
+    let app2 = app.clone();
+    let port_now = mlock(&DSH_URL)
+        .as_ref()
+        .and_then(|u| u.rsplit(':').next().map(|s| s.to_string()))
+        .unwrap_or_else(|| dsh_port.to_string());
+    std::thread::spawn(move || {
+        let status = child.wait(); // 持有 Child：负责 reap，且保证进程退出后才会走到重启判断
+        match status {
+            Ok(st) => logln!("lan proxy exited (code {:?}); watching for restart", st.code()),
+            Err(e) => logln!("lan proxy wait failed: {e}"),
+        }
+        // 全程持锁做"校验 + 重启"，与托盘开关/其他 start/kill 严格串行；
+        // 重启走 start_lan_unlocked（不再二次上锁，避免自死锁）。
+        let _g = mlock(&LAN_MUTEX);
+        if LAN_ON.load(Ordering::SeqCst) && LAN_GEN.load(Ordering::SeqCst) == gen && load_settings(&app2).lan_enabled {
+            let port = mlock(&DSH_URL)
+                .as_ref()
+                .and_then(|u| u.rsplit(':').next().map(|s| s.to_string()))
+                .unwrap_or(port_now);
+            logln!("lan proxy died; restarting against dsh port {port}");
+            if let Err(e) = start_lan_unlocked(&app2, &port, false) {
+                logln!("lan proxy restart failed: {e}");
+            }
+        } else {
+            // 不再重启：仅当 LAN_CHILD 仍指向我们看护的这个 pid 才清理，
+            // 防止误清（比如 dsh 重启后新代理已入位，gen 已变）。
+            let mut slot = mlock(&LAN_CHILD);
+            if *slot == Some(pid) {
+                *slot = None;
+            }
+        }
+    });
+    *mlock(&LAN_CHILD) = Some(pid);
     LAN_ON.store(true, Ordering::SeqCst);
     sync_lan_check();
     if notify {

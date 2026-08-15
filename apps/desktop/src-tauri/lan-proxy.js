@@ -64,7 +64,21 @@ function hasValidCookie(req) {
   return false;
 }
 
+// ---------------------------------------------------------------------------
+// 连接鲁棒性：任何一端异常断开（浏览器取消请求、关标签页、Wi-Fi 抖动、WS
+// 中断）都会让 socket 触发 'error'。node 里不监听 'error' 的 socket 一旦报错
+// 会直接抛 unhandled 'error' 事件把整个进程打崩 —— 这正是之前"手机用一会儿
+// 就全 load failed"的根因（代理挂了，但界面是缓存的 SPA，路由还在，只有数据
+// 请求全部失败）。因此给每一类 socket 都挂上 error 兜底，错误只关掉对应连接。
+// ---------------------------------------------------------------------------
+function silence(socket) {
+  if (socket && typeof socket.on === 'function') socket.on('error', () => {});
+  return socket;
+}
+
 const server = http.createServer((req, res) => {
+  silence(req);
+  silence(res);
   const path = (req.url || '/').split('?')[0];
 
   if (path === LOGIN_PATH) {
@@ -100,8 +114,22 @@ const server = http.createServer((req, res) => {
   forward(req, res);
 });
 
+// 未升级的客户端连接兜底（含握手前就断开的连接）。
+server.on('connection', (socket) => silence(socket));
+// 畸形请求（坏请求行/坏头）默认回 400，而不是让进程崩溃。
+server.on('clientError', (err, socket) => {
+  silence(socket);
+  if (socket.writable) {
+    socket.end('HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n');
+  } else {
+    socket.destroy();
+  }
+});
+
 // WebSocket 透传（dsh 的 agent 流走 WS，需同样鉴权）
 server.on('upgrade', (req, socket, head) => {
+  silence(req);
+  silence(socket);
   if (!hasValidCookie(req)) {
     socket.destroy();
     return;
@@ -111,6 +139,7 @@ server.on('upgrade', (req, socket, head) => {
     headers: cleanHeaders(req.headers),
   });
   preq.on('upgrade', (pres, psocket, phead) => {
+    silence(psocket); // 目标侧握手后异常断开：只关连接，不崩进程
     socket.write(`HTTP/1.1 101 ${pres.statusMessage || 'Switching Protocols'}\r\n`);
     for (const [k, v] of Object.entries(pres.headers)) socket.write(`${k}: ${v}\r\n`);
     socket.write('\r\n');
@@ -153,6 +182,9 @@ function forward(req, res) {
     const ct = pres.headers['content-type'] || '';
     const enc = pres.headers['content-encoding']; // gzip 时不能注入（会破坏压缩流）
     const isHtml = ct.includes('text/html') && (req.method === 'GET' || req.method === 'HEAD');
+    pres.on('error', () => { // 上游（dsh）在响应中途断开
+      if (!res.headersSent) { res.writeHead(502); res.end(); } else { res.destroy(); }
+    });
     if (isHtml && !enc) {
       // 缓冲主文档并注入 polyfill（content-length 会变化，需删除）
       const chunks = [];
@@ -175,6 +207,8 @@ function forward(req, res) {
     pres.pipe(res);
   });
   req.pipe(preq);
+  req.on('error', () => {}); // 客户端在上传中途断开
+  res.on('error', () => {}); // 客户端在响应中途断开（最常见：关标签页/刷新）
   preq.on('error', () => { if (!res.headersSent) { res.writeHead(502); res.end(); } else res.destroy(); });
 }
 
