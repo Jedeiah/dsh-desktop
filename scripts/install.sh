@@ -48,6 +48,9 @@ if pgrep -x dsh-desktop >/dev/null 2>&1; then
 fi
 
 TMP_DIR="$(mktemp -d)"
+MOUNT_PT=""
+# 任何退出路径（成功或失败）都清理：卸载挂载 + 删除临时目录（含下载的 DMG）
+trap 'hdiutil detach "$MOUNT_PT" >/dev/null 2>&1; rm -rf "$TMP_DIR"' EXIT
 TMP_DMG="${TMP_DIR}/DSh-${TAG}.dmg"
 echo "==> 下载 DMG..."
 curl -fL --progress-bar -o "$TMP_DMG" "$DMG_URL"
@@ -56,7 +59,6 @@ echo "==> 挂载..."
 MOUNT_PT="$(hdiutil attach "$TMP_DMG" -nobrowse -readonly | awk -F'\t' '{print $NF}' | grep '^/Volumes/' | head -1 | xargs)"
 if [ -z "$MOUNT_PT" ]; then
   echo "!! 挂载失败" >&2
-  rm -rf "$TMP_DIR"
   exit 1
 fi
 
@@ -66,8 +68,7 @@ if [ -d "$APP" ]; then
 fi
 ditto "$MOUNT_PT/${APP_NAME}.app" "$APP"
 hdiutil detach "$MOUNT_PT" >/dev/null 2>&1 || true
-
-rm -rf "$TMP_DIR"
+MOUNT_PT=""
 
 # 保险：清掉可能的隔离标记（本脚本用 curl 下载本不会带，防御性处理）
 xattr -dr com.apple.quarantine "$APP" 2>/dev/null || true
