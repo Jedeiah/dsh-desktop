@@ -40,13 +40,13 @@ jobs:
         run: |
           cd apps/desktop/src-tauri
           python3 - "${{ steps.ver.outputs.app_version }}" <<'PY'
-import json, sys
-p = "tauri.conf.json"
-d = json.load(open(p))
-d["version"] = sys.argv[1]
-json.dump(d, open(p, "w"), indent=2, ensure_ascii=False)
-print("version ->", sys.argv[1])
-PY
+          import json, sys
+          p = "tauri.conf.json"
+          d = json.load(open(p))
+          d["version"] = sys.argv[1]
+          json.dump(d, open(p, "w"), indent=2, ensure_ascii=False)
+          print("version ->", sys.argv[1])
+          PY
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
