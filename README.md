@@ -43,8 +43,16 @@
 
 ### 3.1 安装
 
+**一键安装 / 升级（推荐，自动追最新版）：**
+```bash
+curl -sSL https://raw.githubusercontent.com/Jedeiah/dsh-desktop/main/scripts/install.sh | bash
+```
+> 通过 GitHub API 自动解析最新正式版；curl 下载不带隔离标记，装完直接可用、无"损坏"提示；已运行会自动退出并覆盖安装。
+
+**手动安装：**
 1. 双击 **DeepSeek Harness_<版本>_aarch64.dmg**，把 **DeepSeek Harness.app** 拖进 **应用程序**。
 2. 首次打开：**右键 → 打开**（未签名，需确认一次），之后正常双击即可。
+3. 若提示"已损坏，无法打开"（Chrome 下载的未签名 App 常见）：`xattr -dr com.apple.quarantine "/Applications/DeepSeek Harness.app"`
 
 ### 3.2 首次使用
 

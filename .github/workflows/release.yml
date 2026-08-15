@@ -84,6 +84,17 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.ver.outputs.tag }}
+          body: |
+            ## 安装 / 升级（自动追最新版）
+
+            ```bash
+            curl -sSL https://raw.githubusercontent.com/Jedeiah/dsh-desktop/main/scripts/install.sh | bash
+            ```
+
+            或手动安装：下载下方的 DMG → 拖入「应用程序」→ 首次右键 → 打开。
+            若提示「已损坏」：`xattr -dr com.apple.quarantine "/Applications/DeepSeek Harness.app"`
+
+            ## 本次更新
           files: |
             apps/desktop/src-tauri/target/release/bundle/dmg/*.dmg
             apps/desktop/src-tauri/target/release/bundle/macos/DeepSeek-Harness-macOS-arm64.zip
