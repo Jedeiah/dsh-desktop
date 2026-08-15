@@ -1,11 +1,18 @@
 name: Release
 
-# 打 tag（如 v0.1.0）或手动触发 → 在 macOS arm64 上构建并发布 DMG
-# 注意：tag 版本号需与 apps/desktop/src-tauri/tauri.conf.json 的 version 一致
+# 发版两种方式：
+#   A) 推送 v* 标签（如 v0.1.1）→ tag 即版本，自动构建发布
+#   B) 网页手动触发 → 填版本号（如 0.1.1），自动打 v0.1.1 并发布
+# App 版本会统一为输入的版本号（写入 tauri.conf.json，DMG 名随之）
 on:
   push:
     tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      version:
+        description: "发布版本号（如 0.1.1，将作为 v0.1.1 发布）"
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -14,9 +21,32 @@ jobs:
   build:
     runs-on: macos-14 # arm64（产物为 aarch64 DMG）
     env:
-      DSH_VERSION: 0.1.0-rc.6 # 内置 dsh 闭包版本（与当前打包一致，可改）
+      DSH_VERSION: 0.1.0-rc.6 # 内置 dsh 闭包版本（上游 dsh 更新时改这里）
     steps:
       - uses: actions/checkout@v4
+
+      - name: Resolve version & tag
+        id: ver
+        run: |
+          if [ -n "${{ inputs.version }}" ]; then
+            APP_VERSION="${{ inputs.version }}"
+          else
+            APP_VERSION="${GITHUB_REF_NAME#v}"
+          fi
+          echo "app_version=$APP_VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=v${APP_VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Sync tauri.conf.json version to ${{ steps.ver.outputs.app_version }}
+        run: |
+          cd apps/desktop/src-tauri
+          python3 - "${{ steps.ver.outputs.app_version }}" <<'PY'
+import json, sys
+p = "tauri.conf.json"
+d = json.load(open(p))
+d["version"] = sys.argv[1]
+json.dump(d, open(p, "w"), indent=2, ensure_ascii=False)
+print("version ->", sys.argv[1])
+PY
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -50,9 +80,10 @@ jobs:
           ditto -c -k --keepParent "DeepSeek Harness.app" \
             "DeepSeek-Harness-macOS-arm64.zip"
 
-      - name: Upload to GitHub Release
+      - name: Upload to GitHub Release (${{ steps.ver.outputs.tag }})
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ steps.ver.outputs.tag }}
           files: |
             apps/desktop/src-tauri/target/release/bundle/dmg/*.dmg
             apps/desktop/src-tauri/target/release/bundle/macos/DeepSeek-Harness-macOS-arm64.zip
