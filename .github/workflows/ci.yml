@@ -1,0 +1,19 @@
+name: CI
+
+# 每次 push / PR 做一次构建检查，确保代码可编译（不打包，快）
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+      - name: Cargo build (dev)
+        run: |
+          cd apps/desktop/src-tauri
+          cargo build

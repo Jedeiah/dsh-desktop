@@ -1,0 +1,59 @@
+name: Release
+
+# 打 tag（如 v0.1.0）或手动触发 → 在 macOS arm64 上构建并发布 DMG
+# 注意：tag 版本号需与 apps/desktop/src-tauri/tauri.conf.json 的 version 一致
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-14 # arm64（产物为 aarch64 DMG）
+    env:
+      DSH_VERSION: 0.1.0-rc.6 # 内置 dsh 闭包版本（与当前打包一致，可改）
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Prepare bundled resources (node + dsh closure + icons)
+        run: |
+          NODE_SRC="$(command -v node)"
+          npm install --prefix "$RUNNER_TEMP/closure" "@deepseek-ai/dsh@${DSH_VERSION}" \
+            --ignore-scripts --no-audit --no-fund
+          CLOSURE_SRC="$RUNNER_TEMP/closure/node_modules" \
+          NODE_SRC="$NODE_SRC" \
+          DSH_VERSION="$DSH_VERSION" \
+          ./scripts/prepare-resources.sh
+
+      - name: Install tauri-cli
+        run: cargo install tauri-cli --locked
+
+      - name: Build .app + DMG
+        run: |
+          cd apps/desktop/src-tauri
+          cargo tauri build
+
+      - name: Zip the .app (方便直接下载解压使用)
+        run: |
+          cd apps/desktop/src-tauri/target/release/bundle/macos
+          ditto -c -k --keepParent "DeepSeek Harness.app" \
+            "DeepSeek-Harness-macOS-arm64.zip"
+
+      - name: Upload to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            apps/desktop/src-tauri/target/release/bundle/dmg/*.dmg
+            apps/desktop/src-tauri/target/release/bundle/macos/DeepSeek-Harness-macOS-arm64.zip
+          generate_release_notes: true
