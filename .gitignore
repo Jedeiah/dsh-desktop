@@ -6,7 +6,11 @@ target/
 apps/desktop/src-tauri/gen/
 
 # 打包时生成/拷贝的内置运行时与闭包（可再生成，体积大不入库）
-apps/desktop/src-tauri/resources/
+# 但保留 resources/dsh/.gitkeep 占位，让 tauri-build 的 resources glob 在空检出时也能匹配
+apps/desktop/src-tauri/resources/*
+!apps/desktop/src-tauri/resources/dsh/
+apps/desktop/src-tauri/resources/dsh/*
+!apps/desktop/src-tauri/resources/dsh/.gitkeep
 
 # 构建脚本输出
 build/
