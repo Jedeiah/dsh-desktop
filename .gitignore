@@ -1,0 +1,16 @@
+# macOS
+.DS_Store
+
+# Rust / Tauri 构建产物
+target/
+apps/desktop/src-tauri/gen/
+
+# 打包时生成/拷贝的内置运行时与闭包（可再生成，体积大不入库）
+apps/desktop/src-tauri/resources/
+
+# 构建脚本输出
+build/
+
+# 编辑器/系统临时
+*.swp
+*.tmp

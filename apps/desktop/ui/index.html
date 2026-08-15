@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <title>DeepSeek Harness</title>
+    <style>
+      body {
+        margin: 0;
+        height: 100vh;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-family: -apple-system, system-ui, sans-serif;
+        background: #0d1117;
+        color: #e6edf3;
+      }
+      .card {
+        text-align: center;
+        line-height: 1.8;
+      }
+      .dot {
+        display: inline-block;
+        width: 12px;
+        height: 12px;
+        border-radius: 50%;
+        background: #2f81f7;
+        animation: pulse 1.2s infinite;
+        margin-right: 8px;
+        vertical-align: middle;
+      }
+      @keyframes pulse {
+        0%, 100% { opacity: 0.3; }
+        50% { opacity: 1; }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <div><span class="dot"></span>正在启动 DeepSeek Harness…</div>
+      <div style="font-size: 12px; color: #8b949e;">启动 dsh web 后自动进入工作台</div>
+    </div>
+  </body>
+</html>
