@@ -18,6 +18,13 @@
         text-align: center;
         line-height: 1.8;
       }
+      .icon {
+        width: 96px;
+        height: 96px;
+        border-radius: 22px; /* 圆角，与图标一致 */
+        margin-bottom: 16px;
+        box-shadow: 0 4px 24px rgba(0, 0, 0, 0.5);
+      }
       .dot {
         display: inline-block;
         width: 12px;
@@ -36,6 +43,7 @@
   </head>
   <body>
     <div class="card">
+      <div><img class="icon" src="icon.png" alt="DeepSeek Harness" /></div>
       <div><span class="dot"></span>正在启动 DeepSeek Harness…</div>
       <div style="font-size: 12px; color: #8b949e;">启动 dsh web 后自动进入工作台</div>
     </div>

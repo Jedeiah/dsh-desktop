@@ -447,10 +447,8 @@ fn show_window(app: &AppHandle, url: &str) {
         Err(_) => return,
     };
     if let Some(w) = app.get_webview_window(WINDOW_LABEL) {
-        // only navigate when the URL actually changed (dsh restarted on a new
-        // port); same-URL clicks must just show/focus, not reload the page
-        // (a reload every tray click caused visible flicker and transient
-        // "Failed to load plugins" races).
+        // only navigate when the URL actually changed (启动页 → dsh 工作台，
+        // 或 dsh 重启换端口)；同 URL 点击只显示/聚焦，避免整页重载闪烁。
         let need_navigate = match w.url() {
             Ok(cur) => cur.as_str() != parsed.as_str(),
             Err(_) => true,
@@ -462,26 +460,11 @@ fn show_window(app: &AppHandle, url: &str) {
         let _ = w.set_focus();
         return;
     }
+    // 兜底：窗口不存在（极罕见）时重建（探针在 setup 的窗口 builder 里已挂）
     let _ = WebviewWindowBuilder::new(app, WINDOW_LABEL, WebviewUrl::External(parsed))
         .title("DeepSeek Harness")
         .inner_size(1280.0, 820.0)
         .min_inner_size(800.0, 560.0)
-        .on_page_load(|webview, payload| {
-            // Diagnose blank-window reports: probe the DOM right after load
-            // and again a few seconds later (late render / JS error).
-            let label = webview.label().to_string();
-            let url = payload.url().to_string();
-            logln!("[webview] page loaded: {url}");
-            probe_webview(&webview, label.clone(), "load".to_string());
-            let wv = webview.clone();
-            std::thread::spawn(move || {
-                std::thread::sleep(Duration::from_millis(4000));
-                let _ = wv.eval_with_callback(
-                    r#"JSON.stringify({ready:document.readyState,title:document.title,bodyLen:document.body?document.body.innerText.length:-1,bodyHead:document.body?document.body.innerText.slice(0,160):''})"#,
-                    move |res| logln!("[webview:{label}] probe(t+4s): {res}"),
-                );
-            });
-        })
         .build();
 }
 
@@ -1176,6 +1159,34 @@ fn main() {
 
             let handle = app.handle().clone();
             init_log(&paths_from_app(app.handle()));
+            // 启动先显示占位启动页（ui/index.html，"正在启动…"），
+            // dsh 就绪后 show_window 会导航到工作台地址，避免白屏。
+            let _ = WebviewWindowBuilder::new(
+                app,
+                WINDOW_LABEL,
+                WebviewUrl::App("index.html".into()),
+            )
+            .title("DeepSeek Harness")
+            .inner_size(1280.0, 820.0)
+            .min_inner_size(800.0, 560.0)
+            .on_page_load(|webview, payload| {
+                // 所有页面加载记一行日志；DOM 探针只针对 dsh 工作台页面
+                let url = payload.url().to_string();
+                logln!("[webview] page loaded: {url}");
+                if url.starts_with("http://127.0.0.1") {
+                    let label = webview.label().to_string();
+                    probe_webview(&webview, label.clone(), "load".to_string());
+                    let wv = webview.clone();
+                    std::thread::spawn(move || {
+                        std::thread::sleep(Duration::from_millis(4000));
+                        let _ = wv.eval_with_callback(
+                            r#"JSON.stringify({ready:document.readyState,title:document.title,bodyLen:document.body?document.body.innerText.length:-1,bodyHead:document.body?document.body.innerText.slice(0,160):''})"#,
+                            move |res| logln!("[webview:{label}] probe(t+4s): {res}"),
+                        );
+                    });
+                }
+            })
+            .build();
             std::thread::spawn(move || boot(handle));
             periodic_check(app.handle().clone());
             Ok(())
