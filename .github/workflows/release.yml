@@ -23,7 +23,7 @@ jobs:
     env:
       DSH_VERSION: 0.1.0-rc.6 # 内置 dsh 闭包版本（上游 dsh 更新时改这里）
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Resolve version & tag
         id: ver
