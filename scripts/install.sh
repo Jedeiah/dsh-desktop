@@ -25,19 +25,22 @@ case "$(uname -m)" in
 esac
 
 echo "==> 查询最新版本（${REPO}）..."
-RELEASE_JSON="$(curl -fsSL --max-time 30 "https://api.github.com/repos/${REPO}/releases/latest" || {
-  echo "!! 查询最新版本失败（网络或 GitHub API 限流），可稍后重试" >&2
-  exit 1
-})"
+# 走 github.com 的 /releases/latest 跳转拿最新 tag（不依赖 api.github.com，
+# 后者在国内网络可能慢/被墙导致挂起）；全部 curl 带连接超时，绝不无限等。
+TAG_URL="$(curl -sL --connect-timeout 10 --max-time 25 -o /dev/null -w '%{url_effective}' \
+  "https://github.com/${REPO}/releases/latest" 2>/dev/null || true)"
+TAG="${TAG_URL##*/tag/}"
 
-TAG="$(printf '%s' "$RELEASE_JSON" | grep -o '"tag_name": *"[^"]*"' | head -1 | cut -d'"' -f4)"
-# 先提取所有资产 URL，再按 "${arch}.dmg" 过滤（文件名形如 ..._aarch64.dmg）
-DMG_URL="$(printf '%s' "$RELEASE_JSON" | grep -o '"browser_download_url":"[^"]*"' | grep -F "${ARCH_SUFFIX}.dmg" | head -1 | cut -d'"' -f4)"
-
-if [ -z "$TAG" ] || [ -z "$DMG_URL" ]; then
-  echo "!! 未找到最新版本或 ${ARCH_SUFFIX} DMG 资产（可能尚无发布，或该版本没有此架构产物）" >&2
+if [ -z "$TAG" ] || [ "$TAG" = "$TAG_URL" ]; then
+  echo "!! 未找到最新版本（可能尚无发布）" >&2
   exit 1
 fi
+
+# 资产名：release 工作流产物为 DeepSeek Harness_<ver>_<arch>.dmg，
+# GitHub 上传时把空格替换为点号 → 用固定命名拼下载地址（绕开 API）。
+VERSION="${TAG#v}"
+DMG_URL="https://github.com/${REPO}/releases/download/${TAG}/DeepSeek.Harness_${VERSION}_${ARCH_SUFFIX}.dmg"
+
 echo "==> 最新版本: ${TAG}  （架构: ${ARCH_SUFFIX}）"
 
 # 退出已运行的实例：先温和 SIGTERM，轮询等待退出；再精确清掉 App 自己的子进程
