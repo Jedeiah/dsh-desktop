@@ -14,3 +14,6 @@ build/
 # 编辑器/系统临时
 *.swp
 *.tmp
+
+# 保留占位文件（让 tauri-build 的 resources glob 在空检出时也能匹配）
+!apps/desktop/src-tauri/resources/dsh/.gitkeep
