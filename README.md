@@ -1,5 +1,9 @@
 # DeepSeek Harness 桌面端（DSh Desktop）
 
+<p align="center">
+  <img src="apps/desktop/src-tauri/icons/icon-rounded-256.png" alt="DeepSeek Harness 图标" width="128">
+</p>
+
 一个 **macOS 桌面 App**：双击即用，把官方 DeepSeek Harness（`dsh web`）装进一个 Mac App 里，带托盘、自动更新、干净卸载，还能让同一局域网里的手机/平板通过浏览器连进来用。
 
 ---
