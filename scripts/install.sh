@@ -7,44 +7,52 @@
 # 特性：
 #   - 通过 GitHub API 动态解析最新正式版，不写死版本号，以后发版无需改本脚本
 #   - 用 curl 下载（不带 com.apple.quarantine 隔离标记）→ 装完直接可用，无"损坏"提示
-#   - 已运行则先退出，覆盖安装，最后自动打开
+#   - 已运行则先退出（只杀本 App 自己的进程，不动终端里你手动跑的 dsh），覆盖安装后自动打开
+#   - 任何退出路径都自动清理：卸载挂载 + 删除下载的 DMG/临时目录（trap）
 set -euo pipefail
 
 REPO="Jedeiah/dsh-desktop"
 APP_NAME="DeepSeek Harness"
 APP="/Applications/${APP_NAME}.app"
-ARCH_SUFFIX="$(case "$(uname -m)" in arm64) echo aarch64 ;; x86_64) echo x86_64 ;; *) echo unknown ;; esac)"
+# App 自己子进程的特征串（区别于用户终端里手动跑的 dsh）
+DSH_CHILD_PATTERN="resources/dsh/current/node_modules/@deepseek-ai/dsh/lib/bin.js"
+LAN_CHILD_PATTERN="resources/lan-proxy.js"
 
-if [ "$ARCH_SUFFIX" = "unknown" ]; then
-  echo "!! 不支持的架构: $(uname -m)" >&2
-  exit 1
-fi
+case "$(uname -m)" in
+  arm64)  ARCH_SUFFIX="aarch64" ;;
+  x86_64) ARCH_SUFFIX="x86_64" ;;
+  *) echo "!! 不支持的架构: $(uname -m)" >&2; exit 1 ;;
+esac
 
 echo "==> 查询最新版本（${REPO}）..."
-RELEASE_JSON="$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest")"
-TAG="$(printf '%s' "$RELEASE_JSON" | python3 -c 'import json,sys;print(json.load(sys.stdin)["tag_name"])')"
-DMG_URL="$(printf '%s' "$RELEASE_JSON" | python3 -c '
-import json, sys
-d = json.load(sys.stdin)
-arch = sys.argv[1]
-for a in d["assets"]:
-    if a["name"].endswith(f".{arch}.dmg"):
-        print(a["browser_download_url"])
-        break
-' "$ARCH_SUFFIX")"
+RELEASE_JSON="$(curl -fsSL --max-time 30 "https://api.github.com/repos/${REPO}/releases/latest" || {
+  echo "!! 查询最新版本失败（网络或 GitHub API 限流），可稍后重试" >&2
+  exit 1
+})"
 
-if [ -z "${TAG:-}" ] || [ -z "${DMG_URL:-}" ]; then
-  echo "!! 未找到最新版本或 ${ARCH_SUFFIX} DMG 资产（可能有发布但无该架构产物）" >&2
+TAG="$(printf '%s' "$RELEASE_JSON" | grep -o '"tag_name": *"[^"]*"' | head -1 | cut -d'"' -f4)"
+# 先提取所有资产 URL，再按 "${arch}.dmg" 过滤（文件名形如 ..._aarch64.dmg）
+DMG_URL="$(printf '%s' "$RELEASE_JSON" | grep -o '"browser_download_url":"[^"]*"' | grep -F "${ARCH_SUFFIX}.dmg" | head -1 | cut -d'"' -f4)"
+
+if [ -z "$TAG" ] || [ -z "$DMG_URL" ]; then
+  echo "!! 未找到最新版本或 ${ARCH_SUFFIX} DMG 资产（可能尚无发布，或该版本没有此架构产物）" >&2
   exit 1
 fi
 echo "==> 最新版本: ${TAG}  （架构: ${ARCH_SUFFIX}）"
 
-# 退出已运行的实例（含其 dsh 子进程），避免文件占用/双实例
+# 退出已运行的实例：先温和 SIGTERM，轮询等待退出；再精确清掉 App 自己的子进程
+# （不匹配终端里用户手动跑的 dsh，避免误杀）
 if pgrep -x dsh-desktop >/dev/null 2>&1; then
   echo "==> 退出正在运行的 App..."
   pkill -x dsh-desktop 2>/dev/null || true
-  sleep 2
-  pkill -f "dsh/lib/bin.js" 2>/dev/null || true
+  for _ in $(seq 1 15); do
+    pgrep -x dsh-desktop >/dev/null 2>&1 || break
+    sleep 1
+  done
+  pkill -x dsh-desktop 2>/dev/null || true # 15s 未退再补一刀（SIGTERM）
+  pkill -f "$DSH_CHILD_PATTERN" 2>/dev/null || true
+  pkill -f "$LAN_CHILD_PATTERN" 2>/dev/null || true
+  sleep 1
 fi
 
 TMP_DIR="$(mktemp -d)"
@@ -52,13 +60,16 @@ MOUNT_PT=""
 # 任何退出路径（成功或失败）都清理：卸载挂载 + 删除临时目录（含下载的 DMG）
 trap 'hdiutil detach "$MOUNT_PT" >/dev/null 2>&1; rm -rf "$TMP_DIR"' EXIT
 TMP_DMG="${TMP_DIR}/DSh-${TAG}.dmg"
+
 echo "==> 下载 DMG..."
-curl -fL --progress-bar -o "$TMP_DMG" "$DMG_URL"
+curl -fL --max-time 600 --progress-bar -o "$TMP_DMG" "$DMG_URL"
 
 echo "==> 挂载..."
-MOUNT_PT="$(hdiutil attach "$TMP_DMG" -nobrowse -readonly | awk -F'\t' '{print $NF}' | grep '^/Volumes/' | head -1 | xargs)"
+MOUNT_PT="$(hdiutil attach "$TMP_DMG" -nobrowse -readonly \
+  | awk -F'\t' '{print $NF}' | grep '^/Volumes/' | head -1 \
+  | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
 if [ -z "$MOUNT_PT" ]; then
-  echo "!! 挂载失败" >&2
+  echo "!! 挂载失败（DMG 可能损坏或不是磁盘镜像）" >&2
   exit 1
 fi
 
