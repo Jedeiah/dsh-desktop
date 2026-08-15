@@ -1,8 +1,19 @@
-name: TestParse
+name: TestParse2
 on:
+  push:
+    tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      version:
+        description: "test"
+        required: true
+        type: string
+permissions:
+  contents: write
 jobs:
   t:
     runs-on: macos-14
+    env:
+      DSH_VERSION: 0.1.0-rc.6
     steps:
       - run: echo hi
