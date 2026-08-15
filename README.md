@@ -202,3 +202,9 @@ dsh-desktop --self-trash-test              # 把当前 .app 移入废纸篓（�
 - **WebView CSP**：最小策略（`default-src 'self'` + 允许连 127.0.0.1）；dsh 页面为外部 localhost，CSP 只约束内置资产页。
 - **局域网门禁**：令牌是唯一门禁；dsh 仍只绑本机；只在可信网络开启。
 - **已知限制**：App 未签名（个人使用），首次打开需右键→打开；如需分发可后续补签名/公证。
+
+---
+
+## 5. License
+
+[MIT](LICENSE)，与上游 [deepseek-harness](https://github.com/deepseek-ai/deepseek-harness) 一致。
