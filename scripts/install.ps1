@@ -27,8 +27,12 @@ try {
         throw "无法访问 GitHub（可能是网络问题）：$_"
     }
     $Tag = $null
+    # 兼容 Windows PowerShell 5.1（HttpWebResponse.ResponseUri）与 PowerShell 7
+    # （HttpResponseMessage.RequestMessage.RequestUri）。
     if ($Resp.BaseResponse.ResponseUri) {
         $Tag = [System.Uri]::UnescapeDataString($Resp.BaseResponse.ResponseUri.AbsolutePath -split "/" | Select-Object -Last 1)
+    } elseif ($Resp.BaseResponse.RequestMessage.RequestUri) {
+        $Tag = [System.Uri]::UnescapeDataString($Resp.BaseResponse.RequestMessage.RequestUri.AbsolutePath -split "/" | Select-Object -Last 1)
     }
     if (-not $Tag -or -not $Tag.StartsWith("v")) {
         throw "未找到最新版本（可能尚无发布）"

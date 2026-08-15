@@ -265,15 +265,18 @@ pub fn notify(title: &str, body: &str) {
     }
     #[cfg(target_os = "windows")]
     {
-        // PowerShell 无窗口气球提示（NotifyIcon），尽力而为、失败静默。
+        // PowerShell 无窗口气球提示（NotifyIcon），尽力而为：整体包在
+        // try/catch 里，任一环节失败（如 System.Drawing 未加载）都静默。
         let ps = format!(
-            "Add-Type -AssemblyName System.Windows.Forms; \
+            "try {{ \
+             Add-Type -AssemblyName System.Windows.Forms; Add-Type -AssemblyName System.Drawing; \
              $n = New-Object System.Windows.Forms.NotifyIcon; \
              $n.Icon = [System.Drawing.SystemIcons]::Information; \
              $n.Visible = $true; \
              $n.ShowBalloonTip(5000, '{title}', '{body}', [System.Windows.Forms.ToolTipIcon]::Info); \
              Start-Sleep -Milliseconds 6000; \
-             $n.Dispose()",
+             $n.Dispose() \
+             }} catch {{}}",
             title = title.replace('\'', "''"),
             body = body.replace('\'', "''")
         );
