@@ -28,7 +28,7 @@
 
 mod update;
 
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -270,6 +270,123 @@ pub fn node_bin(resources: &Path) -> PathBuf {
     }
 }
 
+#[cfg(target_os = "macos")]
+/// 用户 shell 环境缓存（macOS）。GUI 启动的 App 继承 launchd 最小环境（PATH
+/// 只有系统目录，不读 .zshrc/.zprofile）；dsh 的执行器 spawn 的是非交互 shell
+/// （不读 rc 文件、PATH 全靠继承）→ 终端里可用的 fnm/node/Homebrew/bun 在
+/// app 里不可见。解法：spawn dsh 前取一次"登录交互 shell"的环境（`<shell>
+/// -l -i -c env`，与 VS Code 同法），合并进 dsh 子进程，使 app 内执行器与
+/// 终端 dsh web 行为一致。只捕获一次并缓存；任何失败静默降级（继承原环境）。
+static USER_ENV: Mutex<Option<Vec<(String, String)>>> = Mutex::new(None);
+
+/// 取用户默认 shell 路径（GUI 环境通常无 SHELL 变量：先看 $SHELL，再查
+/// passwd（dscl UserShell），最后回退 /bin/zsh）。
+#[cfg(target_os = "macos")]
+fn user_shell_path() -> String {
+    if let Some(sh) = std::env::var_os("SHELL") {
+        let sh = sh.to_string_lossy().to_string();
+        if !sh.is_empty() && Path::new(&sh).exists() {
+            return sh;
+        }
+    }
+    if let Some(user) = std::env::var_os("USER") {
+        let user = user.to_string_lossy().to_string();
+        if let Ok(out) = Command::new("dscl")
+            .arg(".")
+            .arg("-read")
+            .arg(format!("/Users/{user}"))
+            .arg("UserShell")
+            .output()
+        {
+            let s = String::from_utf8_lossy(&out.stdout);
+            if let Some(shell) = s
+                .lines()
+                .find_map(|l| l.trim().strip_prefix("UserShell:").map(|s| s.trim().to_string()))
+            {
+                if !shell.is_empty() && Path::new(&shell).exists() {
+                    return shell;
+                }
+            }
+        }
+    }
+    "/bin/zsh".into()
+}
+
+/// 捕获用户登录交互 shell 的环境（5s 超时：rc 文件可能卡住，超时即降级）。
+/// 返回过滤后的 KEY=VALUE 列表；失败返回 None（调用方静默继承原环境）。
+#[cfg(target_os = "macos")]
+fn capture_user_env() -> Option<Vec<(String, String)>> {
+    let shell = user_shell_path();
+    logln!("capturing user shell env via {shell} (-l -i -c env)");
+    let mut child = Command::new(&shell)
+        .args(["-l", "-i", "-c", "env"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    let out = loop {
+        match child.try_wait() {
+            Ok(Some(_)) => {
+                let mut s = String::new();
+                child.stdout.take()?.read_to_string(&mut s).ok()?;
+                break s;
+            }
+            Ok(None) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            _ => {
+                // 超时：杀掉子 shell，静默降级
+                let _ = child.kill();
+                let _ = child.wait();
+                logln!("user shell env capture timed out; degraded to inherited env");
+                return None;
+            }
+        }
+    };
+    // 解析 KEY=VALUE；过滤掉 exec 会重设的变量与其它无意义项
+    let denylist = [
+        "PWD", "OLDPWD", "SHLVL", "_", "SSH_CONNECTION", "TERM_SESSION_ID",
+        "__CFBundleIdentifier",
+    ];
+    let mut envs = Vec::new();
+    for line in out.lines() {
+        if let Some((k, v)) = line.split_once('=') {
+            if !k.is_empty()
+                && k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+                && !denylist.contains(&k)
+            {
+                envs.push((k.to_string(), v.to_string()));
+            }
+        }
+    }
+    if envs.is_empty() {
+        logln!("user shell env capture produced nothing; degraded to inherited env");
+        return None;
+    }
+    logln!(
+        "user shell env captured: {} vars",
+        envs.len()
+    );
+    Some(envs)
+}
+
+/// 把捕获的用户环境应用到子进程（惰性：只捕获一次并缓存；之后每次 spawn
+/// 直接复用）。调用方后续显式设置的变量（HOME/SSH_CONNECTION 等）会覆盖。
+#[cfg(target_os = "macos")]
+fn apply_user_env(cmd: &mut Command) {
+    let mut cached = mlock(&USER_ENV);
+    if cached.is_none() {
+        *cached = capture_user_env();
+    }
+    if let Some(envs) = cached.as_ref() {
+        for (k, v) in envs {
+            cmd.env(k, v);
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize, Default, Clone)]
 struct Settings {
     /// dsh 进程默认工作目录（兜底 cwd）。旧键名 `workspace` 兼容读取。
@@ -409,6 +526,10 @@ fn spawn_dsh(app: &AppHandle) -> std::io::Result<Child> {
     {
         cmd = no_console(cmd); // node.exe 是控制台程序，避免启动 dsh 时闪控制台窗
     }
+    // 用户环境合并（macOS）：让 dsh 执行器与终端 dsh web 环境一致
+    // （PATH 里的 fnm/Homebrew/bun 等；下方显式 env 会覆盖同名项）。
+    #[cfg(target_os = "macos")]
+    apply_user_env(&mut cmd);
     cmd.arg(&bin)
         .arg("--profile")
         .arg("web")

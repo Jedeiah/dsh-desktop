@@ -202,6 +202,8 @@ dsh-desktop/
 
 **进程模型**：App 单个进程（Rust/Tauri），作为壳拉起一个 dsh web 子进程（内置 node 运行 `dsh --profile web --port 0`），由 Rust 托管（stdout 解析就绪、退出回收、崩溃重启、退出时连带结束）。局域网模式另起一个转发器子进程（内置 node 运行 `lan-proxy.js`）。
 
+**环境一致性（macOS）**：App 由 Finder/launchd 启动，继承的是系统最小环境（PATH 只有系统目录）。启动 dsh 前会自动捕获一次用户登录交互 shell 的环境（PATH/LANG 等，含 fnm / Homebrew / bun 注入的路径），合并进 dsh 子进程——app 工作台里执行命令的环境与电脑终端一致。捕获超时或失败时静默沿用原环境，不影响启动。
+
 **内置资源（只读基线）**：
 
 macOS（`DSh.app/Contents/Resources/resources/`）、Windows（`<exe 旁>/resources/`）：
