@@ -22,7 +22,7 @@
 |---|---|
 | 跨平台原生 App | macOS：菜单栏托盘 / Dock；Windows：系统托盘 / 任务栏，符合各平台使用习惯 |
 | 双击即用 | 内置 Node v24 + dsh 完整闭包（含该平台原生预编译），**不依赖系统 bun / npm / node** |
-| 局域网可连 | 可选开启令牌鉴权转发器，同一 WiFi 下手机/平板浏览器输令牌即可操作工作台 |
+| 局域网可连 | 可选开启转发器：登录页扫码即连（一次性配对码 + 设备凭据），手机/平板直接操作工作台 |
 | 自动更新 | 跟随上游 `@deepseek-ai/dsh`，原子切换 + 失败安全 |
 | 干净卸载 | 连带内置 dsh、应用数据、缓存、自启项、残留图标一并清理 |
 
@@ -36,7 +36,7 @@
 - **零偏差**：壳不注入任何东西，跑的就是官方 dsh，`~/.dsh` 无缝复用，随时可回到终端使用同一份数据。
 - **跟随上游**：dsh 发新版，App 里一键更新，内置 npm 装新闭包 → 自检 → 原子切换 → 自动重启，失败不动当前版本。
 - **标准 Mac 体验**：关窗口隐藏进托盘、Cmd+Q 连带结束 dsh 无孤儿、崩溃自动重启（退避 5 次后给日志）。
-- **手机也能用**：家里 WiFi 下，手机浏览器输个令牌就能操作同一个工作台（对话/会话/文件，执行仍在 Mac 上）。
+- **手机也能用**：家里 WiFi 下，手机相机扫登录页二维码即可连上同一个工作台（对话/会话/文件，执行仍在 Mac 上）；无法扫码时也可输令牌。
 - **干净利落**：单实例（不会开双托盘）、卸载一步到位（含 WebView 缓存与 Dock 最近使用）。
 
 ---
@@ -80,32 +80,49 @@ powershell -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.c
 | 打开外链 | 工作台内点击外链（https 等）自动在系统浏览器打开 | 同左 |
 | 退出 | `Cmd+Q` 或托盘 *退出* | 托盘 *退出*（连带结束 dsh，无残留） |
 | 崩溃自愈 | dsh 意外退出自动重启（1s→2s→…→15s 退避）；连续 5 次后停止并提示查看日志 | 同左 |
+| 重启工作台 | 托盘 *重启工作台*（结束 dsh 进程并重新拉起，内存归零、会话从磁盘恢复） | 同左 |
+| 插件管理 | 托盘 *插件管理…*（安装/卸载 dsh 插件，实时进度） | 同左 |
 
 ### 3.4 局域网访问（手机/平板）
 
 1. 电脑连上家里 WiFi，托盘勾选 **局域网访问**（默认关闭）。
-2. 弹窗显示 **地址**（`http://<电脑局域网IP>:3190`）与 **访问令牌**（可一键复制）。
-3. 手机/平板连同一 WiFi，浏览器打开地址，输入令牌，即可进入工作台（30 天免登录）。
+2. 电脑浏览器打开 `http://127.0.0.1:3190`（或点托盘 *显示局域网访问信息* 里的地址），登录页显示**二维码**与访问令牌。
+3. 手机/平板连同一 WiFi，**相机扫码**（iOS 相机需点横幅在 Safari 打开）即自动登录进入工作台；无法扫码时也可手动输入访问令牌。
 4. 随时用托盘 *显示局域网访问信息* 查看地址与令牌；取消勾选即关闭。
+
+**登录与安全模型**：
+- 二维码内含**一次性配对码**（代理每次启动随机生成）：扫码即签发该设备的独立凭据（30 天免登录）；**代理重启（重开"局域网访问"）后旧配对码与全部已签发凭据一并失效**，需重新扫码（App 升级后同样需重新扫码一次）。
+- 手动输入的主令牌（128-bit 随机）只在登录动作时校验，不落 cookie；设备凭据与主令牌相互独立，同一局域网内多设备可同时在线。
+- 二维码与链接均含凭据信息，**不要外传**；二维码地址取探测到的首个局域网 IP，多网卡环境下若扫码无效请改用 *显示局域网访问信息* 中的地址。
 
 **局域网访问增强**（随局域网开启自动生效，失败自动降级、不影响主功能）：
 - **mDNS 稳定域名**（macOS / Windows）：可用 `http://DeepSeek-Harness.local:<端口>/` 访问，IP 变了也不用改地址。macOS 走系统 `dns-sd`，Windows 走内置通告器。注意 `.local` 仅 iOS/macOS/同子网可解析，Android 浏览器请继续用 IP 地址。
 - **IP 变化通知**（macOS / Windows）：局域网开启期间每 30 秒检测一次本机 IP，变化（休眠重连 / 换 Wi-Fi / DHCP 重分配）时弹系统通知并给出新地址。
 - **阻止休眠**（macOS / Windows）：局域网开启期间自动阻止系统休眠，保证手机随时可连（与“局域网访问”开关联动，关闭局域网即释放）。macOS 走 `caffeinate`，Windows 走系统电源 API。
 
-> ⚠️ 令牌是唯一门禁（128-bit 随机）。知道令牌 ≈ 能操作你电脑上的 dsh。**只在可信网络开启，令牌不要外传。**
+> ⚠️ 局域网访问以设备凭据为门禁（扫码/令牌签发，128-bit 随机）。能扫码或拿到令牌的人 ≈ 能操作你电脑上的 dsh。**只在可信网络开启，令牌不要外传。**
 
-### 3.5 更新
+### 3.5 插件管理
+
+dsh 支持通过 profile 安装第三方插件（UI 皮肤、功能插件等）。托盘 **插件管理…** 打开管理窗口：
+
+1. 输入包名（如 `@linxin666/dsh-web-ui-all`），点 **安装** 或 **卸载**。
+2. 输出区**实时滚动**显示 pnpm 进度（下载、依赖解析、构建脚本等）；完成后显示退出码与结果。
+3. 安装/卸载写入 `~/.dsh/profiles/web`（与终端 dsh 完全共用）；**完成后用托盘 *重启工作台* 生效**。
+
+**内置 pnpm，零环境依赖**：App 打包 pnpm 运行库 + 启动器（约 20MB），安装/卸载不需要你装 Node/pnpm。自动处理 pnpm 11 门禁（构建脚本授权 `allowBuilds`、新包发布年龄 `minimumReleaseAge: 0`），遇到被忽略的构建脚本会解析包名自动补授权重试。卸载后自动清扫残留空目录。仅限从插件管理窗口调用，工作台页面无法触发。
+
+### 3.6 更新
 
 - 托盘 *检查更新…* 手动检查；App 每 24h 自动静默检查。
 - 有新版 → 确认 → 自动安装并重启 dsh，窗口自动刷新为新版工作台。
 - Windows 上更新同样通过内置 npm 安装新闭包，失败不动当前版本。
 
-### 3.6 登录自启
+### 3.7 登录自启
 
 托盘 *登录时启动*（勾选，默认关闭）→ 下次登录时自动启动 App。macOS 写 LaunchAgent，Windows 写注册表 `HKCU\...\Run` 键；只影响本 App，不碰其他应用的启动设置。
 
-### 3.7 卸载
+### 3.8 卸载
 
 托盘 *卸载 DeepSeek Harness…* → 三键弹窗：
 
@@ -117,7 +134,7 @@ powershell -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.c
 
 卸载会：结束 dsh 与转发器 → 删除登录自启项、应用数据、WebView 缓存 → 把 App 移入废纸篓 / 回收站（可恢复）→ 退出。Windows 上若运行中的程序被占用无法移入回收站，会引导你到「设置 → 应用」里卸载。
 
-### 3.8 日志与故障排查
+### 3.9 日志与故障排查
 
 - 托盘 *打开日志* 直接打开日志目录：`launcher.log`（启动器）+ `dsh.log`（dsh 运行输出）。
 - 日志目录平台差异：macOS 为 `~/Library/Application Support/com.dsh-desktop.app/logs`，Windows 为 `%APPDATA%\com.dsh-desktop.app\logs`。
@@ -140,7 +157,7 @@ powershell -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.c
 # 前置：Rust 工具链 + tauri-cli（仅打包需要）
 cargo install tauri-cli --version "^2"
 
-# 准备内置资源（node + dsh 闭包 + 图标）
+# 准备内置资源（node + dsh 闭包 + pnpm + 二维码库 + 图标）
 scripts/prepare-resources.sh
 #   DSH_VERSION=<ver>  NODE_SRC=<node二进制>  CLOSURE_SRC=<闭包目录>  ICON_SRC=<png源图>
 #   默认闭包源 = 项目内 resources/dsh/current（自给自足）
@@ -185,16 +202,20 @@ dsh-desktop/
 │   ├── install.sh               # macOS 一键安装
 │   └── install.ps1              # Windows 一键安装
 └── apps/desktop/
-    ├── ui/index.html            # 前端占位（实际窗口指向内置 dsh localhost）
+    ├── ui/                      # 内置资产页（tauri://localhost）
+    │   ├── index.html           # 启动页（玻璃拟态：光斑 + 胶囊 + 流光进度）
+    │   ├── plugins.html         # 插件管理窗口（玻璃拟态）
+    │   └── plugins.js           # 插件管理逻辑（实时输出流监听）
     └── src-tauri/
         ├── Cargo.toml           # tauri2(tray-icon,image-png) + serde + rfd + ureq + dirs + getrandom（unix: libc；windows: arboard/trash/windows）
-        ├── tauri.conf.json      # identifier / bundle.resources / CSP / nsis / dmg
+        ├── tauri.conf.json      # identifier / bundle.resources / CSP / withGlobalTauri / nsis / dmg
         ├── icons/               # icon.png(RGBA 1024) + icon.icns(macOS) + icon.ico(Windows)
-        ├── resources/           # 内置 node + npm + lan-proxy + mdns-advertise + dsh 闭包（只读基线，gitignore）
-        ├── lan-proxy.js         # 局域网转发器（令牌鉴权 + HTTP/WebSocket 透传）
+        ├── resources/           # 内置 node + npm + lan-proxy + mdns-advertise + qrcode + pnpm + dsh 闭包（只读基线，gitignore）
+        ├── lan-proxy.js         # 局域网转发器（扫码配对 + 设备凭据 + HTTP/WebSocket 透传）
         ├── mdns-advertise.js    # mDNS 通告器（Windows 用，纯 Node 零依赖）
+        ├── qrcode.js            # 二维码生成库（登录页扫码用，MIT 单文件）
         └── src/
-            ├── main.rs          # 启动器：路径/闭包解析、spawn/boot、托盘、更新、卸载、日志、LAN 控制
+            ├── main.rs          # 启动器：路径/闭包解析、spawn/boot、托盘、插件管理、更新、卸载、日志、LAN 控制
             └── update.rs        # 更新子系统：registry、semver、内置 npm 安装、原子切换、版本清理
 ```
 
@@ -214,8 +235,10 @@ resources/
 │   ├── bin/node       # macOS：内置 Node arm64
 │   └── node.exe       # Windows：内置 Node x64
 ├── npm/               # 内置 npm（更新用）
-├── lan-proxy.js       # 局域网转发器
+├── lan-proxy.js       # 局域网转发器（扫码配对 + 设备凭据）
 ├── mdns-advertise.js  # mDNS 通告器（Windows 用）
+├── qrcode.js          # 二维码生成库（登录页扫码用）
+├── pnpm-bin/          # 内置 pnpm（JS 发行版 + pnpm/pnpm.cmd 启动器，插件管理用）
 └── dsh/
     ├── current        # 版本标记文件（内容 = 当前版本目录名）
     └── v<版本>/        # 该版本完整闭包（node_modules 全量 + VERSION 标记）
@@ -223,7 +246,9 @@ resources/
 
 **更新机制**：内置 `resources/` 只读作基线；每次更新把新闭包经内置 npm 装入 app 数据目录 `dsh/v<新>-tmp` → 自检（版本号 + web profile 组合双重校验）→ 发布为 `v<新>` → 原子切换 `current` 版本标记文件 → 重启 dsh。保留上一版本用于回滚，更旧版本自动清理。失败安全：切换前任何失败都不动当前版本。`current` 为普通文本标记文件，Windows 无软链权限也能正常工作。
 
-**局域网访问**：dsh 出于安全只绑 `127.0.0.1`。转发器监听局域网，带令牌登录页（cookie 30 天），把 HTTP/WebSocket 转发给本机 dsh，从 dsh 视角一切连接均来自本机（无需 `--trusted-host`，安全模型不变）。转发时剥离 `origin`/`sec-fetch-site`/`referer` 以通过 dsh 的 /api 信任篱笆，并向主文档注入 `crypto.randomUUID` polyfill（明文 HTTP 下该安全上下文 API 不可用）；启动 dsh 时设 `SSH_CONNECTION=1` 启用网页版目录浏览器。
+**局域网访问**：dsh 出于安全只绑 `127.0.0.1`。转发器监听局域网，登录页含**二维码（一次性配对码）与令牌输入**，登录签发**随机设备凭据**（内存会话表，30 天，代理重启即全部失效），把 HTTP/WebSocket 转发给本机 dsh，从 dsh 视角一切连接均来自本机（无需 `--trusted-host`，安全模型不变）。转发时剥离 `origin`/`sec-fetch-site`/`referer` 以通过 dsh 的 /api 信任篱笆，并向主文档注入 `crypto.randomUUID` polyfill（明文 HTTP 下该安全上下文 API 不可用）；启动 dsh 时设 `SSH_CONNECTION=1` 启用网页版目录浏览器。
+
+**插件管理**：托盘「插件管理…」打开内置管理窗口（`ui/plugins.html`），经 `plugin_op` command 执行 `dsh plugin --profile web add|remove <包名>`：内置 pnpm（`resources/pnpm-bin`，PATH 前置）运行安装，stdout/stderr 逐行 `emit` 实时回显；安装前自动写入 profile 的 `pnpm-workspace.yaml` 门禁配置（`allowBuilds` + `minimumReleaseAge: 0`），`ERR_PNPM_IGNORED_BUILDS` 时解析包名自动补授权重试；卸载后清扫残留空目录。命令仅接受插件管理窗口调用（window label 校验），插件操作全局串行锁保护。
 
 **app 数据目录**（卸载时整个删除；macOS 为 `~/Library/Application Support/…`，Windows 为 `%APPDATA%\…`）：
 
@@ -261,7 +286,7 @@ dsh-desktop --self-trash-test              # 把自身移入废纸篓/回收站�
 - **数据本地**：凭据/会话在 `~/.dsh`（Windows 为 `%USERPROFILE%\.dsh`），App 不额外落盘敏感数据；日志本地，不上传。
 - **更新可信**：npm 自动校验包 `dist.integrity`（sha512）；切换前自检，失败不动当前版本。
 - **WebView CSP**：最小策略（`default-src 'self'` + 允许连 127.0.0.1）；dsh 页面为外部 localhost，CSP 只约束内置资产页。
-- **局域网门禁**：令牌是唯一门禁（跨平台 CSPRNG 生成）；dsh 仍只绑本机；只在可信网络开启。
+- **局域网门禁**：扫码/令牌登录签发随机设备凭据（跨平台 CSPRNG 生成，内存会话表）；dsh 仍只绑本机；代理重启即撤销全部设备；只在可信网络开启。
 - **已知限制**：App 未签名（个人使用）——macOS 首次打开需右键→打开；Windows SmartScreen 可能提示"未知发布者"，点"仍要运行"即可。如需分发可后续补签名/公证。
 
 ---

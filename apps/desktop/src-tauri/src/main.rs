@@ -41,6 +41,7 @@ use tauri::tray::{MouseButton, TrayIconBuilder, TrayIconEvent};
 use tauri::{
     AppHandle, Manager, RunEvent, WebviewUrl, WebviewWindowBuilder, WindowEvent,
 };
+use tauri::Emitter;
 
 /// The running dsh child, kept so it is reaped and so we can kill it on exit.
 static CHILD: Mutex<Option<Child>> = Mutex::new(None);
@@ -1011,6 +1012,31 @@ fn tail_text(s: &str, max: usize) -> String {
     }
 }
 
+/// 递归删除空目录（自叶子向上；非空目录 remove_dir 失败被忽略）。
+/// pnpm remove 会留下 0B 的空目录骨架（如 @scope 残留），卸载后清扫。
+fn remove_empty_tree(dir: &std::path::Path) {
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for e in entries.flatten() {
+            if e.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                remove_empty_tree(&e.path());
+            }
+        }
+    }
+    let _ = std::fs::remove_dir(dir); // 非空（或占用）时静默忽略
+}
+
+/// 清扫 node_modules 下的空目录（不动 node_modules 本身）。
+fn clean_empty_dirs_under(root: &std::path::Path) {
+    if let Ok(entries) = std::fs::read_dir(root) {
+        for e in entries.flatten() {
+            let p = e.path();
+            if e.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                remove_empty_tree(&p);
+            }
+        }
+    }
+}
+
 /// 执行一次 `dsh plugin --profile web <op> <pkg>`，返回（合并输出, 是否成功）。
 fn run_dsh_plugin(
     app: &AppHandle,
@@ -1066,17 +1092,71 @@ fn run_dsh_plugin(
     } else {
         cmd.env("HOME", &home);
     }
-    let out = cmd
-        .output()
+    // 逐行读取 stdout/stderr：实时 emit 到前端（plugin-output 事件）并收集全文。
+    // pnpm 可能运行数分钟，一次性 output() 会让前端长时间只有静态"正在…"。
+    let mut child = cmd
+        .spawn()
         .map_err(|e| format!("执行 dsh plugin 失败：{e}"))?;
-    let success = out.status.success();
-    let mut text = String::from_utf8_lossy(&out.stdout).into_owned();
-    text.push_str(&String::from_utf8_lossy(&out.stderr));
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "无法读取 dsh plugin stdout".to_string())?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| "无法读取 dsh plugin stderr".to_string())?;
+    let emit_app = app.clone();
+    let out_thread = std::thread::spawn(move || {
+        let reader = BufReader::new(stdout);
+        let mut buf = String::new();
+        for line in reader.lines() {
+            let Ok(l) = line else { break };
+            let l = l.trim_end_matches('\r').to_string();
+            buf.push_str(&l);
+            buf.push('\n');
+            // 收敛到插件管理窗口（避免广播到全部窗口；窗口已销毁则仅收集）
+            if let Some(w) = emit_app.get_webview_window(PLUGIN_LABEL) {
+                let _ = w.emit("dsh:plugin-output", &l);
+            }
+        }
+        buf
+    });
+    let emit_app2 = app.clone();
+    let err_thread = std::thread::spawn(move || {
+        let reader = BufReader::new(stderr);
+        let mut buf = String::new();
+        for line in reader.lines() {
+            let Ok(l) = line else { break };
+            let l = l.trim_end_matches('\r').to_string();
+            buf.push_str(&l);
+            buf.push('\n');
+            if let Some(w) = emit_app2.get_webview_window(PLUGIN_LABEL) {
+                let _ = w.emit("dsh:plugin-output", &l);
+            }
+        }
+        buf
+    });
+    let status = match child.wait() {
+        Ok(st) => st,
+        Err(e) => {
+            // wait 失败（罕见）：先回收读线程再返回，避免瞬时线程泄漏
+            let _ = out_thread.join();
+            let _ = err_thread.join();
+            return Err(format!("等待 dsh plugin 退出失败：{e}"));
+        }
+    };
+    let success = status.success();
+    let mut text = out_thread.join().unwrap_or_default();
+    text.push_str(&err_thread.join().unwrap_or_default());
+    // pnpm remove 会留下 0B 空目录骨架：卸载（无论成败）后清扫一次
+    if op == "remove" {
+        clean_empty_dirs_under(&profile.join("node_modules"));
+    }
     logln!(
         "[plugin] dsh plugin {op} {pkg} -> exit {}",
-        out.status
+        status
     );
-    Ok((format!("退出码 {}\n\n{}", out.status, tail_text(&text, 60000)), success))
+    Ok((format!("退出码 {}\n\n{}", status, tail_text(&text, 60000)), success))
 }
 
 /// 前端插件管理窗口的 command：安装(add)/卸载(remove) 插件。
@@ -2505,6 +2585,23 @@ mod tests {
         let cn = "中".repeat(500);
         let t2 = tail_text(&cn, 100);
         assert!(t2.ends_with("中".repeat(100).as_str()));
+    }
+
+    #[test]
+    fn clean_empty_dirs_removes_only_empty() {
+        use std::path::PathBuf;
+        let root = std::env::temp_dir().join(format!("dsh-clean-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let scoped = root.join("node_modules/@linxin666/dsh-web-ui-all");
+        std::fs::create_dir_all(&scoped).unwrap();
+        let keep = root.join("node_modules/dsh-base");
+        std::fs::create_dir_all(&keep).unwrap();
+        std::fs::write(keep.join("index.js"), "x").unwrap();
+        clean_empty_dirs_under(&root.join("node_modules"));
+        assert!(!scoped.exists(), "空目录应被删除");
+        assert!(keep.exists(), "非空目录应保留");
+        assert!(root.join("node_modules").exists(), "node_modules 本身不应被删");
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

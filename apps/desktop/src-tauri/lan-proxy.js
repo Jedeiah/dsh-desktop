@@ -12,6 +12,9 @@
 //   - 带有效 cookie 的 HTTP/WS -> 转发给 127.0.0.1:<dshPort>
 const http = require('http');
 const crypto = require('crypto');
+const os = require('os');
+const fs = require('fs');
+const path = require('path');
 
 const DSH_PORT = process.argv[2];
 const TOKEN = process.argv[3];
@@ -20,6 +23,65 @@ const TARGET = `http://127.0.0.1:${DSH_PORT}`;
 const COOKIE_NAME = 'dsh_lan_token';
 const TTL_SECONDS = 30 * 24 * 3600; // 30 天
 const LOGIN_PATH = '/__lan_login';
+// 一次性配对码：进程启动时随机生成，重启（重开局域网访问）即失效。
+// 扫码链接带此码自动登录；旧二维码在代理重启后自动作废。
+const PAIR = crypto.randomBytes(32).toString('hex');
+// 设备会话表：登录（扫码/手动）签发随机设备凭据，cookie 值不再等于主令牌。
+// 表在内存中，代理重启即清空 → 所有已签发 cookie 立刻失效（"停止=撤销全部"）。
+// 上限 MAX_DEVICES，超出时淘汰最早签发的设备（FIFO）。
+const MAX_DEVICES = 64;
+const DEVICES = new Map(); // deviceToken -> expiresAt(ms)
+
+function issueDeviceToken() {
+  if (DEVICES.size >= MAX_DEVICES) {
+    // 先清理已过期条目，避免误踢仍有效的新设备
+    const now = Date.now();
+    for (const [k, exp] of DEVICES) {
+      if (now > exp) DEVICES.delete(k);
+    }
+    if (DEVICES.size >= MAX_DEVICES) {
+      const oldest = DEVICES.keys().next().value;
+      if (oldest !== undefined) DEVICES.delete(oldest);
+    }
+  }
+  const t = crypto.randomBytes(32).toString('hex');
+  DEVICES.set(t, Date.now() + TTL_SECONDS * 1000);
+  return t;
+}
+
+function validateDeviceToken(v) {
+  const exp = DEVICES.get(v);
+  if (exp === undefined) return false;
+  if (Date.now() > exp) {
+    DEVICES.delete(v); // 惰性清理过期条目
+    return false;
+  }
+  return true;
+}
+
+function deviceCookieHeader() {
+  const t = issueDeviceToken();
+  return `${COOKIE_NAME}=${t}; Path=/; Max-Age=${TTL_SECONDS}; HttpOnly; SameSite=Strict`;
+}
+
+// 本机非内部 IPv4 地址列表（多网卡时二维码取第一个；与托盘"局域网访问信息"
+// 展示的地址可能因网卡枚举顺序不同而不一致，README 已注明）
+function lanAddresses() {
+  const out = [];
+  const nets = os.networkInterfaces();
+  for (const name of Object.keys(nets)) {
+    for (const ni of nets[name] || []) {
+      if (ni.family === 'IPv4' && !ni.internal) out.push(ni.address);
+    }
+  }
+  return out;
+}
+
+function qrUrl() {
+  const ips = lanAddresses();
+  const ip = ips[0] || '127.0.0.1';
+  return `http://${ip}:${LISTEN}/?pair=${PAIR}`;
+}
 
 function safeEqual(a, b) {
   const ba = Buffer.from(String(a));
@@ -149,6 +211,40 @@ function loginPage(err) {
         margin-bottom: 20px;
       }
 
+      /* 扫码区：二维码玻璃框 + 说明 */
+      .qr { margin-bottom: 14px; }
+      .qr-box {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 10px;
+        padding: 14px;
+        border-radius: 14px;
+        background: rgba(255, 255, 255, 0.05);
+        border: 1px solid rgba(255, 255, 255, 0.12);
+      }
+      .qr-box img { display: block; border-radius: 6px; }
+      .qr-hint {
+        font-size: 11px;
+        color: rgba(240, 242, 247, 0.45);
+        text-align: center;
+        line-height: 1.5;
+      }
+      .divider {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        color: rgba(240, 242, 247, 0.35);
+        font-size: 11px;
+        margin-bottom: 14px;
+      }
+      .divider::before, .divider::after {
+        content: '';
+        flex: 1;
+        height: 1px;
+        background: rgba(255, 255, 255, 0.1);
+      }
+
       /* 玻璃输入框（聚焦紫色光环，配套启动页的紫色系） */
       input {
         width: 100%;
@@ -239,11 +335,31 @@ function loginPage(err) {
 
     <form class="card" method="post" action="${LOGIN_PATH}">
       <h1>DeepSeek Harness</h1>
-      <div class="sub">请输入访问令牌继续</div>
+      <div class="sub">扫码或输入访问令牌连接</div>
+      <div class="qr">
+        <div class="qr-box">
+          <div id="qr" data-url="${qrUrl()}"></div>
+          <div class="qr-hint">手机扫码即可连接（令牌配对码，重启后失效）</div>
+        </div>
+      </div>
+      <div class="divider"><span>或输入访问令牌</span></div>
       <input name="token" type="password" placeholder="访问令牌" autofocus required />
       <button type="submit">进入</button>
       ${err ? `<div class="err" role="alert">${err}</div>` : ''}
     </form>
+    <script src="/qrcode.js"></script>
+    <script>
+      (function () {
+        var el = document.getElementById('qr');
+        var url = el && el.getAttribute('data-url');
+        if (url && window.qrcode) {
+          var qr = qrcode(0, 'M');
+          qr.addData(url);
+          qr.make();
+          el.innerHTML = qr.createImgTag(5, 8);
+        }
+      })();
+    </script>
   </body>
 </html>`;
 }
@@ -255,7 +371,7 @@ function hasValidCookie(req) {
     if (i < 0) continue;
     const k = part.slice(0, i).trim();
     const v = part.slice(i + 1).trim();
-    if (k === COOKIE_NAME && safeEqual(v, TOKEN)) return true;
+    if (k === COOKIE_NAME && validateDeviceToken(v)) return true;
   }
   return false;
 }
@@ -275,9 +391,27 @@ function silence(socket) {
 const server = http.createServer((req, res) => {
   silence(req);
   silence(res);
-  const path = (req.url || '/').split('?')[0];
+  const pathname = (req.url || '/').split('?')[0];
 
-  if (path === LOGIN_PATH) {
+  // 二维码生成库（登录页 <script> 引用）：无敏感内容，鉴权前放行
+  if (req.method === 'GET' && pathname === '/qrcode.js') {
+    const qrFile = path.join(__dirname, 'qrcode.js');
+    fs.readFile(qrFile, (e, buf) => {
+      if (e) {
+        res.writeHead(404);
+        res.end();
+        return;
+      }
+      res.writeHead(200, {
+        'Content-Type': 'application/javascript; charset=utf-8',
+        'Cache-Control': 'no-cache',
+      });
+      res.end(buf);
+    });
+    return;
+  }
+
+  if (pathname === LOGIN_PATH) {
     if (req.method === 'POST') {
       let body = '';
       req.on('data', (d) => (body += d));
@@ -285,7 +419,7 @@ const server = http.createServer((req, res) => {
         const tok = new URLSearchParams(body).get('token') || '';
         if (safeEqual(tok, TOKEN)) {
           res.writeHead(302, {
-            'Set-Cookie': `${COOKIE_NAME}=${TOKEN}; Path=/; Max-Age=${TTL_SECONDS}; HttpOnly; SameSite=Strict`,
+            'Set-Cookie': deviceCookieHeader(),
             Location: '/',
           });
           res.end();
@@ -302,6 +436,20 @@ const server = http.createServer((req, res) => {
   }
 
   if (!hasValidCookie(req)) {
+    // 扫码/链接自动登录：?token=<主令牌> 或 ?pair=<配对码> → 签发 cookie → 回 /
+    if (req.method === 'GET') {
+      const q = new URL(req.url, 'http://x').searchParams;
+      const tok = q.get('token') || '';
+      const pk = q.get('pair') || '';
+      if ((tok && safeEqual(tok, TOKEN)) || (pk && safeEqual(pk, PAIR))) {
+        res.writeHead(302, {
+          'Set-Cookie': deviceCookieHeader(),
+          Location: '/',
+        });
+        res.end();
+        return;
+      }
+    }
     res.writeHead(302, { Location: LOGIN_PATH });
     res.end();
     return;
@@ -453,6 +601,44 @@ function forward(req, res) {
   req.on('error', () => {}); // 客户端在上传中途断开
   res.on('error', () => {}); // 客户端在响应中途断开（最常见：关标签页/刷新）
   preq.on('error', () => { if (!res.headersSent) { res.writeHead(502); res.end(); } else res.destroy(); });
+}
+
+// 无网络自测（打包前兜底）：验证设备凭据（签发/校验/过期/上限）与配对码语义。
+function selfTest() {
+  const asserts = [];
+  const ok = (name, cond) => asserts.push({ name, pass: !!cond });
+  // 签发 → 校验通过
+  const t1 = issueDeviceToken();
+  ok('签发后校验通过', validateDeviceToken(t1));
+  // 未签发的值 → 拒绝
+  ok('未签发值被拒', !validateDeviceToken('deadbeef'));
+  // 过期 → 拒绝且被清理
+  const t2 = issueDeviceToken();
+  DEVICES.set(t2, Date.now() - 1000);
+  ok('过期值被拒', !validateDeviceToken(t2));
+  ok('过期条目被清理', !DEVICES.has(t2));
+  // 上限淘汰（FIFO：最旧先出）
+  DEVICES.clear();
+  const first = issueDeviceToken();
+  for (let i = 1; i < MAX_DEVICES; i++) issueDeviceToken();
+  ok('上限内全部有效', validateDeviceToken(first));
+  issueDeviceToken(); // 超限 → 淘汰最旧
+  ok('超限后最旧被淘汰', !validateDeviceToken(first));
+  ok('新签发的仍有效', validateDeviceToken([...DEVICES.keys()].pop()));
+  // 配对码存在且每次启动不同（进程级）
+  ok('配对码为 64 位 hex', /^[0-9a-f]{64}$/.test(PAIR));
+  const failed = asserts.filter((a) => !a.pass);
+  for (const a of asserts) console.log(`  ${a.pass ? '✓' : '✗'} ${a.name}`);
+  if (failed.length > 0) {
+    console.error(`[lan-proxy] self-test FAILED (${failed.length}/${asserts.length})`);
+    process.exit(1);
+  }
+  console.log(`[lan-proxy] self-test OK (${asserts.length} assertions)`);
+  process.exit(0);
+}
+
+if (process.argv.includes('--self-test')) {
+  selfTest();
 }
 
 server.listen(LISTEN, '0.0.0.0', () => {

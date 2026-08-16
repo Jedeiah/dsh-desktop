@@ -58,6 +58,8 @@ cp "$SRC_TAURI/lan-proxy.js" "$RES/lan-proxy.js"
 echo "    lan-proxy.js: $(wc -c < "$RES/lan-proxy.js" | tr -d ' ')B"
 # --- 2b2. mDNS 通告器（壳层增强②，Windows 用） ---------------------------
 cp "$SRC_TAURI/mdns-advertise.js" "$RES/mdns-advertise.js"
+# --- 2b2b. 二维码生成库（登录页扫码用，MIT 单文件）---------------------------
+cp "$SRC_TAURI/qrcode.js" "$RES/qrcode.js"
 echo "    mdns-advertise.js: $(wc -c < "$RES/mdns-advertise.js" | tr -d ' ')B"
 # 无网络自测：验证 mDNS 报文逻辑（打包前兜底，失败即中止）
 if ! "$RES/node/bin/node" "$RES/mdns-advertise.js" --self-test >/dev/null 2>&1; then
