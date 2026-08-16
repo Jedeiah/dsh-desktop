@@ -170,9 +170,27 @@ function cleanHeaders(headers) {
 // ---------------------------------------------------------------------------
 // 安全上下文 polyfill：手机用明文 http://<LAN-IP> 访问，页面属非安全上下文，
 // crypto.randomUUID 不可用（dsh 前端用它初始化会话，缺失→会话/项目渲染为空）。
-// 注入到主文档 <head> 前即可；只处理 text/html 主文档，插件 bundle 走直通。
+// 注入到主文档 <head> 前即可；只处理 text/html 主文档。
 // ---------------------------------------------------------------------------
 const RANDOM_UUID_POLYFILL = `<script>if(!crypto.randomUUID){crypto.randomUUID=function(){var b=crypto.getRandomValues(new Uint8Array(16));b[6]=(b[6]&0x0f)|0x40;b[8]=(b[8]&0x3f)|0x80;var h=Array.prototype.map.call(b,function(x){return ('0'+x.toString(16)).slice(-2)});return h.slice(0,4).join('')+'-'+h.slice(4,6).join('')+'-'+h.slice(6,8).join('')+'-'+h.slice(8,10).join('')+'-'+h.slice(10).join('')}};</script>`;
+
+// ---------------------------------------------------------------------------
+// 远程设置持久化补丁：dsh 前端把"设置是否可写"与页面 hostname 是否 loopback
+// 绑定（connection.isLoopback ? "host" : "memory"）。经本代理访问时 hostname
+// 是 LAN IP（如 192.168.1.2），判定为非 loopback → 设置作用域降级为 memory：
+// settings.mutate 根本不会发出（主题、内测声明确认等改动只存活于当前页面内存，
+// 刷新即丢）。这里把 dsh-client-connection bundle 里的 isLoopbackHostname
+// 恒真化，让远程页面也走 host 持久化：写操作经代理转发（代理转发时 Host 已改
+// 回 loopback，服务端篱笆放行）落盘到本机 ~/.dsh/settings.yaml，手机与桌面端
+// 设置双向同步。访问本身仍受令牌鉴权约束——等价于"能通过令牌访问的人"视为
+// 本机用户。bundle 内容按 ?rev= 缓存；上游 bundle 变化导致模式不匹配时直通
+// 原内容（保持 memory 旧行为），并输出警告便于排查。
+// ---------------------------------------------------------------------------
+const CONNECTION_BUNDLE_RE = /\/plugins\/@deepseek-ai\/dsh-client-connection\/client\.js(?:\?|$)/;
+const LOOPBACK_PATCH_RE = /function isLoopbackHostname\(hostname\)\s*\{[\s\S]*?\n\s*\}/;
+const LOOPBACK_PATCH_TO = 'function isLoopbackHostname(hostname) { return true; }';
+const PATCH_CACHE = new Map(); // req.url -> { original, body }
+const PATCH_CACHE_MAX = 16;
 
 function forward(req, res) {
   const preq = http.request(TARGET + req.url, {
@@ -180,11 +198,37 @@ function forward(req, res) {
     headers: cleanHeaders(req.headers),
   }, (pres) => {
     const ct = pres.headers['content-type'] || '';
-    const enc = pres.headers['content-encoding']; // gzip 时不能注入（会破坏压缩流）
-    const isHtml = ct.includes('text/html') && (req.method === 'GET' || req.method === 'HEAD');
+    const enc = pres.headers['content-encoding']; // gzip 时不能改写（会破坏压缩流）
+    const isHtml = ct.includes('text/html') && req.method === 'GET'; // HEAD 无 body，直通即可
+    const isConnectionBundle =
+      ct.includes('javascript') && CONNECTION_BUNDLE_RE.test(req.url) && req.method === 'GET';
     pres.on('error', () => { // 上游（dsh）在响应中途断开
       if (!res.headersSent) { res.writeHead(502); res.end(); } else { res.destroy(); }
     });
+    if (isConnectionBundle && !enc) {
+      // 缓冲 connection bundle 并打 isLoopbackHostname 补丁（content-length 会变化，需删除）
+      const chunks = [];
+      pres.on('data', (d) => chunks.push(d));
+      pres.on('end', () => {
+        const original = Buffer.concat(chunks).toString('utf8');
+        let cached = PATCH_CACHE.get(req.url);
+        if (!cached || cached.original !== original) {
+          const patched = original.replace(LOOPBACK_PATCH_RE, LOOPBACK_PATCH_TO);
+          const ok = patched !== original;
+          cached = { original, body: ok ? patched : original };
+          if (PATCH_CACHE.size >= PATCH_CACHE_MAX) PATCH_CACHE.delete(PATCH_CACHE.keys().next().value);
+          PATCH_CACHE.set(req.url, cached);
+          if (!ok) {
+            console.warn('[lan-proxy] isLoopbackHostname 补丁未命中（上游 bundle 已变化？），直通原内容');
+          }
+        }
+        const headers = { ...pres.headers };
+        delete headers['content-length'];
+        res.writeHead(pres.statusCode, headers);
+        res.end(cached.body);
+      });
+      return;
+    }
     if (isHtml && !enc) {
       // 缓冲主文档并注入 polyfill（content-length 会变化，需删除）
       const chunks = [];
@@ -215,3 +259,20 @@ function forward(req, res) {
 server.listen(LISTEN, '0.0.0.0', () => {
   console.log(`[lan-proxy] listening :${LISTEN} -> ${TARGET}`);
 });
+
+// 启动自检：确认补丁模式与当前上游 connection bundle 匹配，避免"静默失效"。
+(function selfCheck() {
+  const probe = http.get(`${TARGET}/plugins/@deepseek-ai/dsh-client-connection/client.js`, (r) => {
+    const chunks = [];
+    r.on('data', (d) => chunks.push(d));
+    r.on('end', () => {
+      const js = Buffer.concat(chunks).toString('utf8');
+      console.log(LOOPBACK_PATCH_RE.test(js)
+        ? '[lan-proxy] isLoopbackHostname 补丁模式匹配 ✓ 远程设置将走 host 持久化'
+        : '[lan-proxy] ⚠ isLoopbackHostname 补丁模式未匹配（上游 bundle 已变化？），远程设置保持 memory 模式');
+    });
+  });
+  probe.on('error', () => {
+    console.warn('[lan-proxy] 补丁自检失败（上游未响应？），跳过自检');
+  }); // 自检失败不阻塞服务
+})();
