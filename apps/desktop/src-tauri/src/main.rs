@@ -862,7 +862,7 @@ fn open_workspace_in_finder(app: &AppHandle) {
 // pnpm（dsh 闭包写死 spawnSync("pnpm") 从 PATH 找，见 plugin-9h8shc4d.js）。
 // 本实现：
 //   - 用内置 node 调内置 dsh bin.js，PATH 前置 resources/pnpm-bin（打包的
-//     @pnpm/exe 独立二进制，见 prepare-resources.sh/ps1），用户无需装 pnpm；
+//     pnpm JS 发行版 + shim，见 prepare-resources.sh/ps1），用户无需装 pnpm；
 //   - 安装前确保 profile 的 pnpm-workspace.yaml 含 allowBuilds（pnpm 11 构建
 //     脚本门禁）与 minimumReleaseAge: 0（新包发布年龄门禁），并在输出出现
 //     ERR_PNPM_IGNORED_BUILDS 时自动补写缺失包名重试；
@@ -881,6 +881,16 @@ fn valid_pkg_name(s: &str) -> bool {
         && s.bytes().all(|b| {
             b.is_ascii_alphanumeric() || matches!(b, b'@' | b'.' | b'_' | b'-' | b'/' | b'~')
         })
+}
+
+/// 内置 pnpm 可执行文件名（prepare-resources 打包：macOS/Linux 产出 `pnpm`
+/// shim，Windows 产出 `pnpm.cmd`——与 Rust 侧存在性检查必须保持一致）。
+fn bundled_pnpm_file_name() -> &'static str {
+    if cfg!(windows) {
+        "pnpm.cmd"
+    } else {
+        "pnpm"
+    }
 }
 
 /// 在命令 PATH 最前面插入 dir（读取 cmd 已设置的环境，兼容 apply_user_env 的覆盖）。
@@ -1015,12 +1025,9 @@ fn run_dsh_plugin(
     let bin = closure.join("node_modules/@deepseek-ai/dsh/lib/bin.js");
     let home = home_dir();
     let profile = home.join(".dsh/profiles/web");
-    // 内置 pnpm（@pnpm/exe，由 prepare-resources 打包）；缺失时给明确错误
-    let pnpm_bin = if cfg!(windows) {
-        p.resources.join("pnpm-bin/pnpm.exe")
-    } else {
-        p.resources.join("pnpm-bin/pnpm")
-    };
+    // 内置 pnpm（JS 发行版 + shim，由 prepare-resources 打包：macOS 产出
+    // pnpm shim，Windows 产出 pnpm.cmd）；缺失时给明确错误
+    let pnpm_bin = p.resources.join("pnpm-bin").join(bundled_pnpm_file_name());
     if !pnpm_bin.exists() {
         return Err(format!(
             "内置 pnpm 缺失：{}\n请重新安装 App（或自行安装 pnpm 后重试）",
@@ -1040,7 +1047,7 @@ fn run_dsh_plugin(
     // 用户环境合并（macOS）：PATH 里可能有用户自己的 pnpm；随后 prepend 内置 pnpm-bin
     #[cfg(target_os = "macos")]
     apply_user_env(&mut cmd);
-    // 内置 pnpm（@pnpm/exe）优先于系统 pnpm，行为可预期
+    // 内置 pnpm 优先于系统 pnpm，行为可预期
     prepend_path(&mut cmd, &p.resources.join("pnpm-bin"));
     // 尊重用户设置的 npm registry 覆盖
     if let Some(reg) = load_settings(app).registry {
@@ -1081,7 +1088,7 @@ fn run_dsh_plugin(
 /// （withGlobalTauri），本校验把 plugin_op 的授权面收回到专用窗口，防止远程
 /// 内容诱导安装任意 npm 包并执行其构建脚本。
 #[tauri::command]
-fn plugin_op(
+async fn plugin_op(
     app: AppHandle,
     window: tauri::WebviewWindow,
     op: String,
@@ -1096,28 +1103,34 @@ fn plugin_op(
     if !valid_pkg_name(&pkg) {
         return Err("包名不合法（仅允许字母、数字与 @ . _ - / ~，且不能以 - 开头）".to_string());
     }
-    let (mut output, mut success) = run_dsh_plugin(&app, &op, &pkg, &[])?;
-    for _ in 0..2 {
+    // pnpm 可能运行数分钟：移到阻塞线程池执行，避免占用 Tauri 主线程
+    // （否则安装期间 App UI / 托盘冻结）。PLUGIN_LOCK 在阻塞线程内获取释放。
+    tauri::async_runtime::spawn_blocking(move || {
+        let (mut output, mut success) = run_dsh_plugin(&app, &op, &pkg, &[])?;
+        for _ in 0..2 {
+            if success {
+                break;
+            }
+            let hits_ignored = output.contains("ERR_PNPM_IGNORED_BUILDS")
+                || output.to_lowercase().contains("ignored build scripts");
+            if !hits_ignored {
+                break;
+            }
+            let extra = extract_pkg_names(&output);
+            if extra.is_empty() {
+                break;
+            }
+            logln!("[plugin] auto-approving build scripts: {extra:?}");
+            (output, success) = run_dsh_plugin(&app, &op, &pkg, &extra)?;
+        }
         if success {
-            break;
+            Ok(output)
+        } else {
+            Err(output)
         }
-        let hits_ignored = output.contains("ERR_PNPM_IGNORED_BUILDS")
-            || output.to_lowercase().contains("ignored build scripts");
-        if !hits_ignored {
-            break;
-        }
-        let extra = extract_pkg_names(&output);
-        if extra.is_empty() {
-            break;
-        }
-        logln!("[plugin] auto-approving build scripts: {extra:?}");
-        (output, success) = run_dsh_plugin(&app, &op, &pkg, &extra)?;
-    }
-    if success {
-        Ok(output)
-    } else {
-        Err(output)
-    }
+    })
+    .await
+    .map_err(|e| format!("插件操作线程异常：{e}"))?
 }
 
 /// 打开（或聚焦）插件管理窗口。
@@ -2492,5 +2505,53 @@ mod tests {
         let cn = "中".repeat(500);
         let t2 = tail_text(&cn, 100);
         assert!(t2.ends_with("中".repeat(100).as_str()));
+    }
+
+    #[test]
+    fn pkg_name_length_boundary() {
+        // 214 是上限（npm 包名最大长度），215 必须拒绝（已在非法列表）
+        let max_ok = "x".repeat(214);
+        assert!(valid_pkg_name(&max_ok));
+    }
+
+    #[test]
+    fn bundled_pnpm_name_matches_platform() {
+        // 与 prepare-resources.sh/ps1 的产物名保持一致：
+        // macOS/Linux 生成 `pnpm` shim，Windows 生成 `pnpm.cmd`。
+        let name = bundled_pnpm_file_name();
+        #[cfg(windows)]
+        assert_eq!(name, "pnpm.cmd");
+        #[cfg(not(windows))]
+        assert_eq!(name, "pnpm");
+    }
+
+    #[test]
+    fn prepend_path_prefixes_and_keeps_existing() {
+        use std::process::Command;
+        let sep = if cfg!(windows) { ";" } else { ":" };
+        // 已有 PATH 时：前置 + 保留原值
+        let mut cmd = Command::new("true");
+        cmd.env("PATH", "/usr/bin:/bin");
+        prepend_path(&mut cmd, std::path::Path::new("/opt/pnpm-bin"));
+        let mut paths: Vec<String> = cmd
+            .get_envs()
+            .filter(|(k, _)| k.to_str() == Some("PATH"))
+            .map(|(_, v)| v.map(|x| x.to_string_lossy().into_owned()).unwrap_or_default())
+            .collect();
+        assert_eq!(paths.len(), 1);
+        let p = paths.pop().unwrap();
+        assert!(p.starts_with(&format!("/opt/pnpm-bin{sep}")), "前置失败: {p}");
+        assert!(p.contains("/usr/bin"), "原 PATH 丢失: {p}");
+        // 空 PATH 时：前置 + 兜底分隔符（不 panic）
+        let mut cmd2 = Command::new("true");
+        cmd2.env("PATH", "");
+        prepend_path(&mut cmd2, std::path::Path::new("/opt/pnpm-bin"));
+        let p2: String = cmd2
+            .get_envs()
+            .filter(|(k, _)| k.to_str() == Some("PATH"))
+            .map(|(_, v)| v.map(|x| x.to_string_lossy().into_owned()).unwrap_or_default())
+            .next()
+            .unwrap();
+        assert!(p2.starts_with(&format!("/opt/pnpm-bin{sep}")), "空 PATH 前置失败: {p2}");
     }
 }
