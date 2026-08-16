@@ -70,6 +70,19 @@ static LAN_ON: AtomicBool = AtomicBool::new(false);
 static LAN_GEN: AtomicU32 = AtomicU32::new(0);
 /// The tray's "局域网访问" check item.
 static LAN_ITEM: Mutex<Option<CheckMenuItem<tauri::Wry>>> = Mutex::new(None);
+/// 托盘"局域网期间阻止休眠"勾选菜单项（壳层增强①，macOS）。
+static SLEEP_GUARD_ITEM: Mutex<Option<CheckMenuItem<tauri::Wry>>> = Mutex::new(None);
+/// 壳层增强①：caffeinate 子进程（macOS 阻止休眠；Child 本体在此，kill+wait 回收）。
+#[cfg(target_os = "macos")]
+static SLEEP_GUARD: Mutex<Option<Child>> = Mutex::new(None);
+/// 壳层增强②：dns-sd mDNS 通告子进程（macOS）。
+#[cfg(target_os = "macos")]
+static MDNS_CHILD: Mutex<Option<Child>> = Mutex::new(None);
+/// 壳层增强③：上次记录的局域网 IP（轮询比较 / 日志用）。
+static LAN_IP_LAST: Mutex<Option<String>> = Mutex::new(None);
+/// 壳层增强③：IP 轮询线程代际计数器。bump 即令旧线程在下一轮醒来时自行退出；
+/// 不用 JoinHandle+join（join 会被最长 30s 的 sleep 阻塞，违反"不阻塞 LAN 主流程"）。
+static LAN_IP_WATCH_GEN: AtomicU32 = AtomicU32::new(0);
 /// Launcher log file (packaged mode). Empty in dev (stderr goes to terminal).
 static LOG_FILE: Mutex<Option<std::fs::File>> = Mutex::new(None);
 
@@ -264,6 +277,9 @@ struct Settings {
     /// 局域网访问令牌（首次开启时生成）
     #[serde(default)]
     lan_token: Option<String>,
+    /// 局域网期间阻止系统休眠（壳层增强①，macOS；默认关）
+    #[serde(default)]
+    lan_prevent_sleep: bool,
 }
 
 fn settings_path_from_data(app_data: &Path) -> PathBuf {
@@ -777,6 +793,14 @@ fn kill_lan_unlocked() {
                 .status();
         }
     }
+    // ---- LAN 壳层增强：随 LAN 停止（全部幂等）----
+    #[cfg(target_os = "macos")]
+    {
+        kill_caffeinate(); // ① 停止阻止休眠（进程退出即释放电源断言）
+        kill_mdns();       // ② 停止 mDNS 通告（进程退出即撤销注册）
+    }
+    LAN_IP_WATCH_GEN.fetch_add(1, Ordering::SeqCst); // ③ 停止 IP 轮询（旧线程下一轮退出）
+    *mlock(&LAN_IP_LAST) = None; // ③ 清上次记录，下次开启重新基线
 }
 
 /// Drain a child pipe into the launcher log (so proxy stdout/stderr is visible).
@@ -876,6 +900,22 @@ fn start_lan_unlocked(app: &AppHandle, dsh_port: &str, notify: bool) -> Result<(
     *mlock(&LAN_CHILD) = Some(pid);
     LAN_ON.store(true, Ordering::SeqCst);
     sync_lan_check();
+    // ---- LAN 壳层增强：随 LAN 启动（失败仅日志，不影响 LAN 主流程）----
+    #[cfg(target_os = "macos")]
+    {
+        // ① 阻止休眠（按用户开关；默认关）
+        if s.lan_prevent_sleep {
+            if let Err(e) = start_caffeinate() {
+                logln!("caffeinate start failed (degraded): {e}");
+            }
+        }
+        // ② mDNS 稳定域名通告（无开关，随 LAN 自动开启）
+        if let Err(e) = start_mdns(&s.lan_port.unwrap_or(LAN_DEFAULT_PORT).to_string()) {
+            logln!("dns-sd start failed (degraded): {e}");
+        }
+    }
+    // ③ IP 变化轮询（双平台，无开关）
+    start_ip_watch(s.lan_port.unwrap_or(LAN_DEFAULT_PORT));
     if notify {
         lan_info_dialog(&token, s.lan_port.unwrap_or(LAN_DEFAULT_PORT));
     }
@@ -949,7 +989,7 @@ fn lan_info_dialog(token: &str, port: u16) {
     #[cfg(target_os = "macos")]
     {
         let script = format!(
-            r#"display dialog "手机浏览器打开：" & return & "http://{ip}:{port}" & return & return & "访问令牌（可选中复制，或点复制按钮）：" default answer "{token}" buttons {{"关闭", "复制令牌"}} default button "复制令牌" with title "局域网访问" with icon note"#
+            r#"display dialog "手机浏览器打开：" & return & "http://{ip}:{port}" & return & "http://DeepSeek-Harness.local:{port}（IP 变了也不用改）" & return & "提示：.local 仅 iOS/macOS/同子网可用，Android 请用上方 IP 地址" & return & return & "访问令牌（可选中复制，或点复制按钮）：" default answer "{token}" buttons {{"关闭", "复制令牌"}} default button "复制令牌" with title "局域网访问" with icon note"#
         );
         if let Ok(out) = Command::new("osascript").args(["-e", &script]).output() {
             let s = String::from_utf8_lossy(&out.stdout);
@@ -1013,6 +1053,109 @@ fn ensure_lan_on_ready(app: &AppHandle, dsh_port: &str) {
             logln!("lan proxy restart failed: {e}");
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// LAN 壳层增强（任务书 LAN_SHELL_ENHANCEMENTS.md）
+//  ① 局域网期间阻止休眠（macOS：caffeinate；Windows TODO）
+//  ② mDNS 稳定域名通告（macOS：dns-sd；Windows TODO）
+//  ③ 局域网 IP 变化检测与通知（双平台轮询）
+//
+// 设计要点：
+//  - 全部挂在 start_lan_unlocked / kill_lan_unlocked 生命周期内，自动获得
+//    "代理崩溃看护重启时跟随、App 退出清理、与托盘开关同步"。
+//  - 所有 spawn 失败一律 logln! 降级，绝不 panic、绝不阻塞/失败 LAN 主流程。
+//  - 只调系统自带二进制（/usr/bin/caffeinate、/usr/bin/dns-sd、ipconfig），
+//    不引入任何新依赖。
+// ---------------------------------------------------------------------------
+
+/// 增强①：spawn `/usr/bin/caffeinate -dimsu`（-i 阻止 idle 系统休眠为核心，
+/// -d 显示器、-m 磁盘、-s 系统、-u 用户活跃，全上最稳），保证手机随时可连。
+/// 幂等：先清旧实例。失败返回 io::Error，调用方 logln 降级。
+#[cfg(target_os = "macos")]
+fn start_caffeinate() -> std::io::Result<()> {
+    kill_caffeinate();
+    let child = Command::new("/usr/bin/caffeinate")
+        .args(["-dimsu"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()?;
+    *mlock(&SLEEP_GUARD) = Some(child);
+    logln!("caffeinate started (prevent sleep while LAN on)");
+    Ok(())
+}
+
+/// 增强①：幂等停止 caffeinate（SIGTERM 后 wait 回收，无残留/无僵尸）。
+/// TODO(windows): SetThreadExecutionState(ES_CONTINUOUS|ES_SYSTEM_REQUIRED)
+/// 需引入 windows crate 后实现；本期 Windows 不实现。
+#[cfg(target_os = "macos")]
+fn kill_caffeinate() {
+    if let Some(mut c) = mlock(&SLEEP_GUARD).take() {
+        unsafe {
+            libc::kill(c.id() as libc::pid_t, libc::SIGTERM);
+        }
+        let _ = c.wait();
+        logln!("caffeinate stopped");
+    }
+}
+
+/// 增强②：spawn `/usr/bin/dns-sd -R "DeepSeek Harness" _http._tcp local <port>`，
+/// 常驻通告稳定域名 `http://DeepSeek-Harness.local:<port>/`（IP 变了也不用改地址）。
+/// 已知限制（写进弹窗副文案，非 bug）：.local 仅 iOS/macOS/同子网可解析，
+/// Android 浏览器不支持 .local；路由器开 AP 隔离或禁 mDNS 时自动降级为 IP 访问。
+/// 失败仅日志降级，不影响 LAN。
+#[cfg(target_os = "macos")]
+fn start_mdns(port: &str) -> std::io::Result<()> {
+    kill_mdns();
+    let child = Command::new("/usr/bin/dns-sd")
+        .args(["-R", "DeepSeek Harness", "_http._tcp", "local", port])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()?;
+    *mlock(&MDNS_CHILD) = Some(child);
+    logln!("dns-sd advertisement started (DeepSeek-Harness.local:{port})");
+    Ok(())
+}
+
+/// 增强②：幂等停止 dns-sd 通告（进程退出即撤销注册）。
+#[cfg(target_os = "macos")]
+fn kill_mdns() {
+    if let Some(mut c) = mlock(&MDNS_CHILD).take() {
+        unsafe {
+            libc::kill(c.id() as libc::pid_t, libc::SIGTERM);
+        }
+        let _ = c.wait();
+        logln!("dns-sd advertisement stopped");
+    }
+}
+
+/// 增强③：启动局域网 IP 轮询线程（双平台；30s 一次 `lan_ip()`，变化 →
+/// 日志 + 系统通知）。线程无需 AppHandle（notify 是自由函数）。
+/// 停止机制：代际计数器。kill 侧只 bump `LAN_IP_WATCH_GEN`，旧线程下一轮
+/// 醒来校验代际不匹配即退出——不 join（避免 kill_lan 被最长 30s 的 sleep
+/// 阻塞），也不会与重启后的新线程双跑。
+/// TODO(macos 优化): 改用 SCDynamicStore / NWPathMonitor 事件驱动，零轮询。
+fn start_ip_watch(port: u16) {
+    let gen = LAN_IP_WATCH_GEN.fetch_add(1, Ordering::SeqCst) + 1;
+    std::thread::spawn(move || {
+        // 初始记录（不通知；上次 LAN 周期若遗留旧值，先覆盖为当前值）
+        let mut last = lan_ip();
+        *mlock(&LAN_IP_LAST) = last.clone();
+        loop {
+            std::thread::sleep(Duration::from_secs(30));
+            if LAN_IP_WATCH_GEN.load(Ordering::SeqCst) != gen {
+                break; // 被 stop / 被新周期取代
+            }
+            if let Some(now) = lan_ip() {
+                if last.as_ref() != Some(&now) {
+                    logln!("lan ip changed: {:?} -> {}", last, now);
+                    update::notify("局域网地址已变化", &format!("新地址 http://{now}:{port}"));
+                    last = Some(now);
+                    *mlock(&LAN_IP_LAST) = last.clone();
+                }
+            }
+        }
+    });
 }
 
 // ---------------------------------------------------------------------------
@@ -1445,32 +1588,46 @@ fn main() {
             LAN_ON.store(load_settings(app.handle()).lan_enabled, Ordering::SeqCst);
             *mlock(&LAN_ITEM) = Some(lan.clone());
             let lan_info = MenuItem::with_id(app, "lan_info", "显示局域网访问信息", true, None::<&str>)?;
+            #[cfg(target_os = "macos")]
+            let sleep_item = CheckMenuItem::with_id(
+                app,
+                "lan_prevent_sleep",
+                "局域网期间阻止休眠",
+                true,
+                load_settings(app.handle()).lan_prevent_sleep,
+                None::<&str>,
+            )?;
+            #[cfg(target_os = "macos")]
+            {
+                *mlock(&SLEEP_GUARD_ITEM) = Some(sleep_item.clone());
+            }
             let uninstall_item = MenuItem::with_id(app, "uninstall", "卸载 DeepSeek Harness…", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
-            // 市场惯例分组：窗口/视图 → 功能 → 自启/局域网 → 卸载/退出
             let sep1 = tauri::menu::PredefinedMenuItem::separator(app)?;
             let sep2 = tauri::menu::PredefinedMenuItem::separator(app)?;
             let sep3 = tauri::menu::PredefinedMenuItem::separator(app)?;
-            let menu = Menu::with_items(
-                app,
-                &[
-                    &show,
-                    &open,
-                    &sep1,
-                    &ws,
-                    &open_ws,
-                    &check,
-                    &logs,
-                    &restart,
-                    &sep2,
-                    &login,
-                    &lan,
-                    &lan_info,
-                    &sep3,
-                    &uninstall_item,
-                    &quit,
-                ],
-            )?;
+            // 市场惯例分组：窗口/视图 → 功能 → 自启/局域网 → 卸载/退出。
+            // 用 Vec<&dyn IsMenuItem> 组装以便 cfg 门控 macOS 专属菜单项。
+            let mut menu_items: Vec<&dyn tauri::menu::IsMenuItem<tauri::Wry>> = vec![
+                &show,
+                &open,
+                &sep1,
+                &ws,
+                &open_ws,
+                &check,
+                &logs,
+                &restart,
+                &sep2,
+                &login,
+                &lan,
+                &lan_info,
+            ];
+            #[cfg(target_os = "macos")]
+            menu_items.push(&sleep_item);
+            menu_items.push(&sep3);
+            menu_items.push(&uninstall_item);
+            menu_items.push(&quit);
+            let menu = Menu::with_items(app, &menu_items)?;
             let _tray = TrayIconBuilder::with_id("tray")
                 .icon(app.default_window_icon().unwrap().clone())
                 .menu(&menu)
@@ -1499,6 +1656,29 @@ fn main() {
                         set_lan_access(app, next);
                     }
                     "lan_info" => show_lan_info(app),
+                    "lan_prevent_sleep" => {
+                        // 壳层增强①开关（macOS）：仅持久化 + 菜单勾选态；
+                        // LAN 已开启时立即启停 caffeinate，未开启则下次开启 LAN 时
+                        // start_lan_unlocked 会按 settings 自动生效。
+                        let mut s = load_settings(app);
+                        let next = !s.lan_prevent_sleep;
+                        s.lan_prevent_sleep = next;
+                        save_settings(app, &s);
+                        logln!("lan_prevent_sleep -> {next}");
+                        if let Some(item) = mlock(&SLEEP_GUARD_ITEM).as_ref() {
+                            let _ = item.set_checked(next);
+                        }
+                        if LAN_ON.load(Ordering::SeqCst) {
+                            #[cfg(target_os = "macos")]
+                            if next {
+                                if let Err(e) = start_caffeinate() {
+                                    logln!("caffeinate start failed (degraded): {e}");
+                                }
+                            } else {
+                                kill_caffeinate();
+                            }
+                        }
+                    }
                     "restart" => restart_dsh(app),
                     "launch_login" => {
                         let next = !LOGIN_ON.load(Ordering::SeqCst);
