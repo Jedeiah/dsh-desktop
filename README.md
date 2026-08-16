@@ -88,9 +88,9 @@ powershell -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.c
 4. 随时用托盘 *显示局域网访问信息* 查看地址与令牌；取消勾选即关闭。
 
 **壳层增强**（随局域网开启自动生效，失败自动降级、不影响主功能）：
-- **mDNS 稳定域名**（macOS）：可用 `http://DeepSeek-Harness.local:<端口>/` 访问，IP 变了也不用改地址。注意 `.local` 仅 iOS/macOS/同子网可解析，Android 浏览器请继续用 IP 地址。
+- **mDNS 稳定域名**（macOS / Windows）：可用 `http://DeepSeek-Harness.local:<端口>/` 访问，IP 变了也不用改地址。macOS 走系统 `dns-sd`，Windows 走内置通告器。注意 `.local` 仅 iOS/macOS/同子网可解析，Android 浏览器请继续用 IP 地址。
 - **IP 变化通知**（macOS / Windows）：局域网开启期间每 30 秒检测一次本机 IP，变化（休眠重连 / 换 Wi-Fi / DHCP 重分配）时弹系统通知并给出新地址。
-- **阻止休眠**（macOS，可选）：托盘勾选 *局域网期间阻止休眠*（默认关）后，局域网开启期间阻止系统自动休眠，保证手机随时可连。
+- **阻止休眠**（macOS / Windows）：局域网开启期间自动阻止系统休眠，保证手机随时可连（与“局域网访问”开关联动，关闭局域网即释放）。macOS 走 `caffeinate`，Windows 走系统电源 API。
 
 > ⚠️ 令牌是唯一门禁（128-bit 随机）。知道令牌 ≈ 能操作你电脑上的 dsh。**只在可信网络开启，令牌不要外传。**
 

@@ -123,7 +123,12 @@ fn install_and_verify(p: &Paths, target: &Path, ver: &str, registry: &str) -> Re
         ));
     }
 
-    let status = Command::new(&node)
+    let mut cmd = Command::new(&node);
+    #[cfg(target_os = "windows")]
+    {
+        cmd = crate::no_console(cmd); // node.exe 是控制台程序，避免更新时闪控制台窗
+    }
+    let status = cmd
         .arg(&npm)
         .arg("install")
         .arg("--prefix")
@@ -146,7 +151,12 @@ fn install_and_verify(p: &Paths, target: &Path, ver: &str, registry: &str) -> Re
 
     let bin = target.join("node_modules/@deepseek-ai/dsh/lib/bin.js");
     // boot-verify 1: version
-    let out = Command::new(&node)
+    let mut ver_cmd = Command::new(&node);
+    #[cfg(target_os = "windows")]
+    {
+        ver_cmd = crate::no_console(ver_cmd); // 避免更新校验时闪控制台窗
+    }
+    let out = ver_cmd
         .arg(&bin)
         .arg("--version")
         .output()
@@ -156,7 +166,12 @@ fn install_and_verify(p: &Paths, target: &Path, ver: &str, registry: &str) -> Re
         return Err(format!("新闭包版本校验失败: 期望 {ver}, 实际 {got}"));
     }
     // boot-verify 2: the web profile must compose
-    let composed = Command::new(&node)
+    let mut comp_cmd = Command::new(&node);
+    #[cfg(target_os = "windows")]
+    {
+        comp_cmd = crate::no_console(comp_cmd);
+    }
+    let composed = comp_cmd
         .arg(&bin)
         .arg("--profile")
         .arg("web")
@@ -280,7 +295,7 @@ pub fn notify(title: &str, body: &str) {
             title = title.replace('\'', "''"),
             body = body.replace('\'', "''")
         );
-        let _ = Command::new("powershell.exe")
+        let _ = crate::no_console(Command::new("powershell.exe"))
             .arg("-NoProfile")
             .arg("-NonInteractive")
             .arg("-WindowStyle")

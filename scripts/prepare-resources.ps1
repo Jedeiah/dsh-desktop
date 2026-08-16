@@ -58,6 +58,14 @@ Remove-Item -ErrorAction SilentlyContinue (Join-Path $RES "dsh\current.tmp")
 
 # --- 2b. LAN proxy ----------------------------------------------------------
 Copy-Item -Force (Join-Path $SRC_TAURI "lan-proxy.js") (Join-Path $RES "lan-proxy.js")
+# --- 2b2. mDNS 通告器（壳层增强②，Windows 用）-----------------------------
+Copy-Item -Force (Join-Path $SRC_TAURI "mdns-advertise.js") (Join-Path $RES "mdns-advertise.js")
+# 无网络自测：验证 mDNS 报文逻辑（打包前兜底，失败即中止）
+$mdnsCheck = & (Join-Path $NodeDir "node.exe") (Join-Path $RES "mdns-advertise.js") --self-test 2>&1
+if ($LASTEXITCODE -ne 0) {
+    throw "mdns-advertise self-test failed: $mdnsCheck"
+}
+Write-Host "    mdns-advertise.js self-test OK"
 
 # --- 2c. closure self-check (must boot under the bundled node) --------------
 $node = Join-Path $NodeDir "node.exe"

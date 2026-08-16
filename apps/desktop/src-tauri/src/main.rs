@@ -70,19 +70,28 @@ static LAN_ON: AtomicBool = AtomicBool::new(false);
 static LAN_GEN: AtomicU32 = AtomicU32::new(0);
 /// The tray's "局域网访问" check item.
 static LAN_ITEM: Mutex<Option<CheckMenuItem<tauri::Wry>>> = Mutex::new(None);
-/// 托盘"局域网期间阻止休眠"勾选菜单项（壳层增强①，macOS）。
-static SLEEP_GUARD_ITEM: Mutex<Option<CheckMenuItem<tauri::Wry>>> = Mutex::new(None);
 /// 壳层增强①：caffeinate 子进程（macOS 阻止休眠；Child 本体在此，kill+wait 回收）。
+/// Windows 侧无子进程（SetThreadExecutionState 直接调 API，随进程自动释放）。
 #[cfg(target_os = "macos")]
 static SLEEP_GUARD: Mutex<Option<Child>> = Mutex::new(None);
-/// 壳层增强②：dns-sd mDNS 通告子进程（macOS）。
-#[cfg(target_os = "macos")]
-static MDNS_CHILD: Mutex<Option<Child>> = Mutex::new(None);
+/// 壳层增强②：mDNS 通告子进程 PID（macOS: dns-sd；Windows: node mdns-advertise.js）。
+/// Child 本体由看护线程持有并负责 reap（wait），与 LAN 代理同模式。
+static MDNS_CHILD: Mutex<Option<u32>> = Mutex::new(None);
+/// 壳层增强②：mDNS 通告代际计数器（bump 即令看护线程放弃重启，防 kill/start 竞态）。
+static MDNS_GEN: AtomicU32 = AtomicU32::new(0);
+/// 壳层增强②：mDNS 通告是否已成功启用（决定弹窗是否显示 .local 地址；子进程
+/// 异常退出时看护线程会复位）。
+static MDNS_ON: AtomicBool = AtomicBool::new(false);
 /// 壳层增强③：上次记录的局域网 IP（轮询比较 / 日志用）。
 static LAN_IP_LAST: Mutex<Option<String>> = Mutex::new(None);
 /// 壳层增强③：IP 轮询线程代际计数器。bump 即令旧线程在下一轮醒来时自行退出；
 /// 不用 JoinHandle+join（join 会被最长 30s 的 sleep 阻塞，违反"不阻塞 LAN 主流程"）。
 static LAN_IP_WATCH_GEN: AtomicU32 = AtomicU32::new(0);
+/// 壳层增强①（Windows）：电源守卫线程代际。SetThreadExecutionState 是**线程
+/// 作用域**状态（设置线程退出即清除；别的线程也清不掉），故用专用常驻线程
+/// 设置/清除；bump 即令守卫线程在 500ms 内于自身线程内清除并退出。
+#[cfg(target_os = "windows")]
+static POWER_GUARD_GEN: AtomicU32 = AtomicU32::new(0);
 /// Launcher log file (packaged mode). Empty in dev (stderr goes to terminal).
 static LOG_FILE: Mutex<Option<std::fs::File>> = Mutex::new(None);
 
@@ -277,9 +286,6 @@ struct Settings {
     /// 局域网访问令牌（首次开启时生成）
     #[serde(default)]
     lan_token: Option<String>,
-    /// 局域网期间阻止系统休眠（壳层增强①，macOS；默认关）
-    #[serde(default)]
-    lan_prevent_sleep: bool,
 }
 
 fn settings_path_from_data(app_data: &Path) -> PathBuf {
@@ -399,6 +405,10 @@ fn spawn_dsh(app: &AppHandle) -> std::io::Result<Child> {
         Stdio::inherit()
     };
     let mut cmd = Command::new(&node);
+    #[cfg(target_os = "windows")]
+    {
+        cmd = no_console(cmd); // node.exe 是控制台程序，避免启动 dsh 时闪控制台窗
+    }
     cmd.arg(&bin)
         .arg("--profile")
         .arg("web")
@@ -537,6 +547,8 @@ fn show_window(app: &AppHandle, url: &str) {
         .title("DeepSeek Harness")
         .inner_size(1280.0, 820.0)
         .min_inner_size(800.0, 560.0)
+        .on_navigation(webview_navigation_policy)
+        .on_new_window(webview_new_window_policy)
         .build();
 }
 
@@ -554,19 +566,85 @@ fn probe_webview(w: &tauri::WebviewWindow, label: String, tag: String) {
 }
 
 /// Open a URL in the system default browser.
+/// Windows 用 rundll32 url.dll,FileProtocolHandler：不经 cmd.exe 解析，
+/// URL 里的 `&`/`%` 等字符不会被当命令分隔符/变量展开截断（cmd start 会）。
 fn open_url(url: &str) {
     #[cfg(target_os = "windows")]
-    let _ = Command::new("cmd").args(["/C", "start", "", url]).spawn();
+    let _ = no_console(Command::new("rundll32"))
+        .args(["url.dll,FileProtocolHandler", url])
+        .spawn();
     #[cfg(not(target_os = "windows"))]
     let _ = Command::new("open").arg(url).spawn();
+}
+
+/// Windows：给控制台子进程加 CREATE_NO_WINDOW，避免从 GUI 进程
+/// (windows_subsystem) spawn 控制台程序时弹出/闪烁控制台窗口。
+#[cfg(target_os = "windows")]
+pub(crate) fn no_console(mut cmd: Command) -> Command {
+    use std::os::windows::process::CommandExt;
+    cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    cmd
 }
 
 /// Open a folder in the platform file manager.
 fn open_dir(dir: &Path) {
     #[cfg(target_os = "windows")]
-    let _ = Command::new("explorer").arg(dir).spawn();
+    let _ = no_console(Command::new("explorer")).arg(dir).spawn();
     #[cfg(not(target_os = "windows"))]
     let _ = Command::new("open").arg(dir).spawn();
+}
+
+/// 是否为允许在 WebView 内导航的地址：App 内置页（tauri://localhost /
+/// http(s)://tauri.localhost）与 dsh 工作台源（http://127.0.0.1:*）。
+/// 精确比对 host（不用 starts_with，避免 `http://127.0.0.1evil.com` 这类
+/// 恶意主机名被误放行）。
+fn is_internal_webview_url(url: &tauri::Url) -> bool {
+    if url.scheme() == "tauri" {
+        return true; // 内置页（tauri://localhost/...）
+    }
+    if url.scheme() == "http" || url.scheme() == "https" {
+        return matches!(url.host_str(), Some("tauri.localhost") | Some("127.0.0.1"));
+    }
+    false
+}
+
+/// WebView 导航策略（on_navigation）：内部地址放行；外部 http(s) 及其它
+/// 协议（mailto:/tel:/ftp:/file: 等）交给系统浏览器并拦截。修复：AI 回答里的
+/// 外链（https://…）此前点击无反应——Tauri 对 target=_blank 新窗口请求默认
+/// 一律 Deny。
+/// 注意（已知限制）：wry 的导航回调不区分主框架/子框架，外部 http(s) 的
+/// iframe/表单提交也会被拦截并转交浏览器——这是有意的安全边界（外部内容不进
+/// 工作台）；data:/blob:/about:/javascript: 放行以免破坏内嵌内容（如 srcdoc
+/// 预览）。
+fn webview_navigation_policy(url: &tauri::Url) -> bool {
+    if is_internal_webview_url(url) {
+        return true;
+    }
+    let scheme = url.scheme();
+    if matches!(scheme, "data" | "blob" | "about" | "javascript") {
+        return true;
+    }
+    let s = url.as_str();
+    logln!("[webview] external navigation -> browser: {s}");
+    open_url(s);
+    false
+}
+
+/// 新窗口请求（target=_blank / window.open）：
+/// - 内部地址（dsh 工作台/内置页）：Allow——Tauri 开新 webview 窗口，与主窗口
+///   共享同一 session/cookie，可正常鉴权（若 dsh 用新窗口开内部页面）。
+/// - 外部地址：交给系统浏览器打开并 Deny（不开新窗口）。
+fn webview_new_window_policy(
+    url: tauri::Url,
+    _features: tauri::webview::NewWindowFeatures,
+) -> tauri::webview::NewWindowResponse<tauri::Wry> {
+    if is_internal_webview_url(&url) {
+        return tauri::webview::NewWindowResponse::Allow;
+    }
+    let s = url.as_str();
+    logln!("[webview] new-window request -> browser: {s}");
+    open_url(s);
+    tauri::webview::NewWindowResponse::Deny
 }
 
 fn open_in_browser(_app: &AppHandle) {
@@ -722,7 +800,7 @@ fn lan_ip() -> Option<String> {
     #[cfg(target_os = "windows")]
     {
         // 解析 `ipconfig` 输出（中/英文系统都能用），取第一个私网 IPv4。
-        let out = Command::new("ipconfig").output().ok()?;
+        let out = no_console(Command::new("ipconfig")).output().ok()?;
         let text = String::from_utf8_lossy(&out.stdout);
         for line in text.lines() {
             if let Some(ip) = first_ipv4(line) {
@@ -785,7 +863,7 @@ fn kill_lan_unlocked() {
         #[cfg(windows)]
         {
             // Windows 无 SIGTERM 概念：taskkill 强制结束（含其子进程树）。
-            let _ = Command::new("taskkill")
+            let _ = no_console(Command::new("taskkill"))
                 .arg("/PID")
                 .arg(pid.to_string())
                 .arg("/T")
@@ -794,11 +872,8 @@ fn kill_lan_unlocked() {
         }
     }
     // ---- LAN 壳层增强：随 LAN 停止（全部幂等）----
-    #[cfg(target_os = "macos")]
-    {
-        kill_caffeinate(); // ① 停止阻止休眠（进程退出即释放电源断言）
-        kill_mdns();       // ② 停止 mDNS 通告（进程退出即撤销注册）
-    }
+    stop_sleep_guard(); // ① 释放阻止休眠（进程级 API / caffeinate 退出即释放断言）
+    kill_mdns();        // ② 停止 mDNS 通告（进程退出即撤销注册）
     LAN_IP_WATCH_GEN.fetch_add(1, Ordering::SeqCst); // ③ 停止 IP 轮询（旧线程下一轮退出）
     *mlock(&LAN_IP_LAST) = None; // ③ 清上次记录，下次开启重新基线
 }
@@ -846,7 +921,12 @@ fn start_lan_unlocked(app: &AppHandle, dsh_port: &str, notify: bool) -> Result<(
 
     kill_lan_unlocked(); // mutex already held
     let gen = LAN_GEN.fetch_add(1, Ordering::SeqCst) + 1;
-    let mut child = Command::new(&node)
+    let mut cmd = Command::new(&node);
+    #[cfg(target_os = "windows")]
+    {
+        cmd = no_console(cmd); // node.exe 是控制台程序，避免闪控制台窗
+    }
+    let mut child = cmd
         .arg(&proxy)
         .arg(dsh_port)
         .arg(&token)
@@ -901,21 +981,9 @@ fn start_lan_unlocked(app: &AppHandle, dsh_port: &str, notify: bool) -> Result<(
     LAN_ON.store(true, Ordering::SeqCst);
     sync_lan_check();
     // ---- LAN 壳层增强：随 LAN 启动（失败仅日志，不影响 LAN 主流程）----
-    #[cfg(target_os = "macos")]
-    {
-        // ① 阻止休眠（按用户开关；默认关）
-        if s.lan_prevent_sleep {
-            if let Err(e) = start_caffeinate() {
-                logln!("caffeinate start failed (degraded): {e}");
-            }
-        }
-        // ② mDNS 稳定域名通告（无开关，随 LAN 自动开启）
-        if let Err(e) = start_mdns(&s.lan_port.unwrap_or(LAN_DEFAULT_PORT).to_string()) {
-            logln!("dns-sd start failed (degraded): {e}");
-        }
-    }
-    // ③ IP 变化轮询（双平台，无开关）
-    start_ip_watch(s.lan_port.unwrap_or(LAN_DEFAULT_PORT));
+    start_sleep_guard(); // ① 阻止休眠（与"局域网访问"开关联动，双平台）
+    start_mdns(app, s.lan_port.unwrap_or(LAN_DEFAULT_PORT)); // ② mDNS 通告（双平台）
+    start_ip_watch(s.lan_port.unwrap_or(LAN_DEFAULT_PORT)); // ③ IP 变化轮询（双平台）
     if notify {
         lan_info_dialog(&token, s.lan_port.unwrap_or(LAN_DEFAULT_PORT));
     }
@@ -988,9 +1056,15 @@ fn lan_info_dialog(token: &str, port: u16) {
     let ip = lan_ip().unwrap_or_else(|| "127.0.0.1".into());
     #[cfg(target_os = "macos")]
     {
-        let script = format!(
-            r#"display dialog "手机浏览器打开：" & return & "http://{ip}:{port}" & return & "http://DeepSeek-Harness.local:{port}（IP 变了也不用改）" & return & "提示：.local 仅 iOS/macOS/同子网可用，Android 请用上方 IP 地址" & return & return & "访问令牌（可选中复制，或点复制按钮）：" default answer "{token}" buttons {{"关闭", "复制令牌"}} default button "复制令牌" with title "局域网访问" with icon note"#
-        );
+        let mut script = format!(r#"display dialog "手机浏览器打开：" & return & "http://{ip}:{port}""#);
+        if MDNS_ON.load(Ordering::SeqCst) {
+            script.push_str(&format!(
+                r#" & return & "http://DeepSeek-Harness.local:{port}（IP 变了也不用改）" & return & "提示：.local 仅 iOS/macOS/同子网可用，Android 请用上方 IP 地址""#
+            ));
+        }
+        script.push_str(&format!(
+            r#" & return & return & "访问令牌（可选中复制，或点复制按钮）：" default answer "{token}" buttons {{"关闭", "复制令牌"}} default button "复制令牌" with title "局域网访问" with icon note"#
+        ));
         if let Ok(out) = Command::new("osascript").args(["-e", &script]).output() {
             let s = String::from_utf8_lossy(&out.stdout);
             if s.contains("复制令牌") {
@@ -1000,9 +1074,11 @@ fn lan_info_dialog(token: &str, port: u16) {
     }
     #[cfg(not(target_os = "macos"))]
     {
-        let msg = format!(
-            "手机浏览器打开：\nhttp://{ip}:{port}\n\n访问令牌（点“Yes/是”复制）：\n{token}"
-        );
+        let mut msg = format!("手机浏览器打开：\nhttp://{ip}:{port}");
+        if MDNS_ON.load(Ordering::SeqCst) {
+            msg.push_str(&format!("\nhttp://DeepSeek-Harness.local:{port}（IP 变了也不用改）"));
+        }
+        msg.push_str(&format!("\n\n访问令牌（点“Yes/是”复制）：\n{token}"));
         let yes = rfd::MessageDialog::new()
             .set_title("局域网访问")
             .set_description(&msg)
@@ -1056,38 +1132,61 @@ fn ensure_lan_on_ready(app: &AppHandle, dsh_port: &str) {
 }
 
 // ---------------------------------------------------------------------------
-// LAN 壳层增强（任务书 LAN_SHELL_ENHANCEMENTS.md）
-//  ① 局域网期间阻止休眠（macOS：caffeinate；Windows TODO）
-//  ② mDNS 稳定域名通告（macOS：dns-sd；Windows TODO）
+// LAN 壳层增强（任务书 LAN_SHELL_ENHANCEMENTS.md，按用户决定调整）
+//  ① 局域网期间阻止休眠（与"局域网访问"开关联动：LAN 开 = 阻止休眠。
+//     macOS: /usr/bin/caffeinate；Windows: SetThreadExecutionState）
+//  ② mDNS 稳定域名通告（macOS: /usr/bin/dns-sd；Windows: 内置 node 跑
+//     mdns-advertise.js —— Windows 无系统自带 mDNS 注册命令行工具）
 //  ③ 局域网 IP 变化检测与通知（双平台轮询）
 //
 // 设计要点：
 //  - 全部挂在 start_lan_unlocked / kill_lan_unlocked 生命周期内，自动获得
 //    "代理崩溃看护重启时跟随、App 退出清理、与托盘开关同步"。
-//  - 所有 spawn 失败一律 logln! 降级，绝不 panic、绝不阻塞/失败 LAN 主流程。
-//  - 只调系统自带二进制（/usr/bin/caffeinate、/usr/bin/dns-sd、ipconfig），
-//    不引入任何新依赖。
+//  - 所有 spawn/调用失败一律 logln! 降级，绝不 panic、绝不阻塞/失败 LAN 主流程。
+//  - macOS 只调系统二进制；Windows 复用内置 node（零新下载）。
 // ---------------------------------------------------------------------------
 
-/// 增强①：spawn `/usr/bin/caffeinate -dimsu`（-i 阻止 idle 系统休眠为核心，
-/// -d 显示器、-m 磁盘、-s 系统、-u 用户活跃，全上最稳），保证手机随时可连。
+/// 增强①：LAN 开启 → 阻止系统休眠（与"局域网访问"开关联动，无独立开关）。
+/// macOS: caffeinate 子进程；Windows: SetThreadExecutionState（进程级，退出自动释放）。
+fn start_sleep_guard() {
+    #[cfg(target_os = "macos")]
+    {
+        if let Err(e) = start_caffeinate() {
+            logln!("caffeinate start failed (degraded): {e}");
+        }
+    }
+    #[cfg(target_os = "windows")]
+    start_sleep_guard_win();
+}
+
+/// 增强①：LAN 关闭 → 释放阻止休眠。
+fn stop_sleep_guard() {
+    #[cfg(target_os = "macos")]
+    kill_caffeinate();
+    #[cfg(target_os = "windows")]
+    stop_sleep_guard_win();
+}
+
+/// 增强①（macOS）：spawn `/usr/bin/caffeinate -dimsu`（-i 阻止 idle 系统休眠为
+/// 核心，-d 显示器、-m 磁盘、-s 系统、-u 用户活跃，全上最稳），保证手机随时可连。
+/// 加 `-w <自身PID>`：App 被强杀（kill -9/崩溃）时 caffeinate 随之退出，
+/// 避免孤儿进程永久持有电源断言导致 Mac 无法休眠。
 /// 幂等：先清旧实例。失败返回 io::Error，调用方 logln 降级。
 #[cfg(target_os = "macos")]
 fn start_caffeinate() -> std::io::Result<()> {
     kill_caffeinate();
+    let pid = std::process::id();
     let child = Command::new("/usr/bin/caffeinate")
-        .args(["-dimsu"])
+        .args(["-dimsu", "-w", &pid.to_string()])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()?;
     *mlock(&SLEEP_GUARD) = Some(child);
-    logln!("caffeinate started (prevent sleep while LAN on)");
+    logln!("caffeinate started (prevent sleep while LAN on, -w {pid})");
     Ok(())
 }
 
-/// 增强①：幂等停止 caffeinate（SIGTERM 后 wait 回收，无残留/无僵尸）。
-/// TODO(windows): SetThreadExecutionState(ES_CONTINUOUS|ES_SYSTEM_REQUIRED)
-/// 需引入 windows crate 后实现；本期 Windows 不实现。
+/// 增强①（macOS）：幂等停止 caffeinate（SIGTERM 后 wait 回收，无残留/无僵尸）。
 #[cfg(target_os = "macos")]
 fn kill_caffeinate() {
     if let Some(mut c) = mlock(&SLEEP_GUARD).take() {
@@ -1099,33 +1198,139 @@ fn kill_caffeinate() {
     }
 }
 
-/// 增强②：spawn `/usr/bin/dns-sd -R "DeepSeek Harness" _http._tcp local <port>`，
-/// 常驻通告稳定域名 `http://DeepSeek-Harness.local:<port>/`（IP 变了也不用改地址）。
-/// 已知限制（写进弹窗副文案，非 bug）：.local 仅 iOS/macOS/同子网可解析，
-/// Android 浏览器不支持 .local；路由器开 AP 隔离或禁 mDNS 时自动降级为 IP 访问。
-/// 失败仅日志降级，不影响 LAN。
+/// 增强①（Windows）：SetThreadExecutionState 是**线程作用域**的状态——设置线程
+/// 退出即清除，其它线程也无法清除本线程的标记。而 start_lan_unlocked 会被主线程
+/// （托盘）、boot 线程（dsh 就绪/崩溃重启）、看护线程（代理崩溃重启，调用完即
+/// 退出）三条线程调用：直接在此设置会导致"看护重启后失效、关闭时放不掉"。
+/// 因此用专用常驻守卫线程（同 wakepy 方案）：设置与清除永远发生在同一线程，
+/// 代际 bump 让守卫线程在 500ms 内自行清除后退出（不 join，不阻塞 LAN 主流程）。
+#[cfg(target_os = "windows")]
+fn start_sleep_guard_win() {
+    use windows::Win32::System::Power::{
+        SetThreadExecutionState, ES_CONTINUOUS, ES_DISPLAY_REQUIRED, ES_SYSTEM_REQUIRED,
+        EXECUTION_STATE,
+    };
+    let gen = POWER_GUARD_GEN.fetch_add(1, Ordering::SeqCst) + 1;
+    std::thread::spawn(move || {
+        unsafe {
+            SetThreadExecutionState(EXECUTION_STATE(
+                ES_CONTINUOUS.0 | ES_SYSTEM_REQUIRED.0 | ES_DISPLAY_REQUIRED.0,
+            ));
+        }
+        logln!("SetThreadExecutionState: prevent sleep while LAN on (guard thread)");
+        while POWER_GUARD_GEN.load(Ordering::SeqCst) == gen {
+            std::thread::sleep(Duration::from_millis(500));
+        }
+        // 同一线程内清除后退出（线程退出即释放，双保险）
+        unsafe {
+            SetThreadExecutionState(ES_CONTINUOUS);
+        }
+        logln!("SetThreadExecutionState: sleep prevention released (guard thread)");
+    });
+}
+
+/// 增强①（Windows）：请求释放阻止休眠（守卫线程 500ms 内自行清除并退出）。
+#[cfg(target_os = "windows")]
+fn stop_sleep_guard_win() {
+    POWER_GUARD_GEN.fetch_add(1, Ordering::SeqCst);
+}
+
+/// 增强②：启动 mDNS 通告（macOS: dns-sd；Windows: node mdns-advertise.js）。
+/// 统一存储 PID + 起看护线程（子进程异常退出时自动重启/复位 MDNS_ON）。
+/// 失败仅日志降级（.local 不可用时用户仍可用 IP 访问）。
+fn start_mdns(app: &AppHandle, port: u16) {
+    #[cfg(target_os = "macos")]
+    let child = start_mdns_macos(&port.to_string());
+    #[cfg(target_os = "windows")]
+    let child = start_mdns_windows(app, &port.to_string());
+    let mut child = match child {
+        Ok(c) => c,
+        Err(e) => {
+            MDNS_ON.store(false, Ordering::SeqCst);
+            logln!("mdns start failed (degraded): {e}");
+            return;
+        }
+    };
+    let pid = child.id();
+    let gen = MDNS_GEN.fetch_add(1, Ordering::SeqCst) + 1;
+    let app2 = app.clone();
+    std::thread::spawn(move || {
+        let status = child.wait(); // 持有 Child：负责 reap，退出后才会走到重启判断
+        match status {
+            Ok(st) => logln!("mdns advertisement exited (code {:?})", st.code()),
+            Err(e) => logln!("mdns advertisement wait failed: {e}"),
+        }
+        if LAN_ON.load(Ordering::SeqCst) && MDNS_ON.load(Ordering::SeqCst) && MDNS_GEN.load(Ordering::SeqCst) == gen {
+            logln!("mdns advertisement died; restarting");
+            start_mdns(&app2, port); // 新代际，看护随之重建
+        } else {
+            MDNS_ON.store(false, Ordering::SeqCst);
+            let mut slot = mlock(&MDNS_CHILD);
+            if *slot == Some(pid) {
+                *slot = None;
+            }
+        }
+    });
+    *mlock(&MDNS_CHILD) = Some(pid);
+    MDNS_ON.store(true, Ordering::SeqCst);
+}
+
+/// 增强②（macOS）：spawn `/usr/bin/dns-sd -R "DeepSeek Harness" _http._tcp
+/// local <port>`，常驻通告稳定域名 `http://DeepSeek-Harness.local:<port>/`
+/// （IP 变了也不用改地址）。已知限制（写进弹窗副文案，非 bug）：.local 仅
+/// iOS/macOS/同子网可解析，Android 浏览器不支持 .local；路由器开 AP 隔离或
+/// 禁 mDNS 时自动降级为 IP 访问。
 #[cfg(target_os = "macos")]
-fn start_mdns(port: &str) -> std::io::Result<()> {
-    kill_mdns();
-    let child = Command::new("/usr/bin/dns-sd")
+fn start_mdns_macos(port: &str) -> std::io::Result<Child> {
+    Command::new("/usr/bin/dns-sd")
         .args(["-R", "DeepSeek Harness", "_http._tcp", "local", port])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .spawn()?;
-    *mlock(&MDNS_CHILD) = Some(child);
-    logln!("dns-sd advertisement started (DeepSeek-Harness.local:{port})");
-    Ok(())
+        .spawn()
 }
 
-/// 增强②：幂等停止 dns-sd 通告（进程退出即撤销注册）。
-#[cfg(target_os = "macos")]
+/// 增强②（Windows）：spawn 内置 node 运行 `mdns-advertise.js <port>`（纯 JS
+/// mDNS 通告器，见 mdns-advertise.js 注释）。node.exe 是控制台程序，加
+/// CREATE_NO_WINDOW 避免闪控制台窗。
+#[cfg(target_os = "windows")]
+fn start_mdns_windows(app: &AppHandle, port: &str) -> std::io::Result<Child> {
+    let p = paths_from_app(app);
+    let node = node_bin(&p.resources);
+    let script = p.resources.join("mdns-advertise.js");
+    if !node.is_file() || !script.is_file() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!("mdns assets missing (node={}, script={})", node.display(), script.display()),
+        ));
+    }
+    no_console(Command::new(&node))
+        .arg(&script)
+        .arg(port)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+}
+
+/// 增强②：幂等停止 mDNS 通告（bump 代际使看护线程放弃重启；按 PID 结束，
+/// Child 由看护线程负责 reap）。macOS SIGTERM 时脚本发 goodbye；Windows
+/// taskkill /F 强杀无 goodbye，靠 TTL 到期清理。
 fn kill_mdns() {
-    if let Some(mut c) = mlock(&MDNS_CHILD).take() {
+    MDNS_GEN.fetch_add(1, Ordering::SeqCst);
+    MDNS_ON.store(false, Ordering::SeqCst);
+    if let Some(pid) = mlock(&MDNS_CHILD).take() {
+        #[cfg(unix)]
         unsafe {
-            libc::kill(c.id() as libc::pid_t, libc::SIGTERM);
+            libc::kill(pid as libc::pid_t, libc::SIGTERM);
         }
-        let _ = c.wait();
-        logln!("dns-sd advertisement stopped");
+        #[cfg(windows)]
+        {
+            let _ = no_console(Command::new("taskkill"))
+                .arg("/PID")
+                .arg(pid.to_string())
+                .arg("/T")
+                .arg("/F")
+                .status();
+        }
     }
 }
 
@@ -1186,7 +1391,7 @@ fn login_item_enabled() -> bool {
 #[cfg(target_os = "windows")]
 fn login_item_enabled() -> bool {
     // HKCU Run 键存在即视为已开启登录自启。
-    Command::new("reg")
+    no_console(Command::new("reg"))
         .args([
             "query",
             "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run",
@@ -1253,7 +1458,7 @@ fn set_login_item_core(enable: bool) -> Result<(), String> {
     if enable {
         let exe = std::env::current_exe().map_err(|e| format!("定位程序失败: {e}"))?;
         let cmdline = format!("\"{}\"", exe.display());
-        let st = Command::new("reg")
+        let st = no_console(Command::new("reg"))
             .arg("add")
             .arg(RUN_KEY)
             .arg("/v")
@@ -1270,7 +1475,7 @@ fn set_login_item_core(enable: bool) -> Result<(), String> {
         }
     } else {
         // 删除 Run 键（键不存在时 reg delete 报错，忽略即可）
-        let _ = Command::new("reg")
+        let _ = no_console(Command::new("reg"))
             .arg("delete")
             .arg(RUN_KEY)
             .arg("/v")
@@ -1588,46 +1793,32 @@ fn main() {
             LAN_ON.store(load_settings(app.handle()).lan_enabled, Ordering::SeqCst);
             *mlock(&LAN_ITEM) = Some(lan.clone());
             let lan_info = MenuItem::with_id(app, "lan_info", "显示局域网访问信息", true, None::<&str>)?;
-            #[cfg(target_os = "macos")]
-            let sleep_item = CheckMenuItem::with_id(
-                app,
-                "lan_prevent_sleep",
-                "局域网期间阻止休眠",
-                true,
-                load_settings(app.handle()).lan_prevent_sleep,
-                None::<&str>,
-            )?;
-            #[cfg(target_os = "macos")]
-            {
-                *mlock(&SLEEP_GUARD_ITEM) = Some(sleep_item.clone());
-            }
             let uninstall_item = MenuItem::with_id(app, "uninstall", "卸载 DeepSeek Harness…", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
             let sep1 = tauri::menu::PredefinedMenuItem::separator(app)?;
             let sep2 = tauri::menu::PredefinedMenuItem::separator(app)?;
             let sep3 = tauri::menu::PredefinedMenuItem::separator(app)?;
-            // 市场惯例分组：窗口/视图 → 功能 → 自启/局域网 → 卸载/退出。
-            // 用 Vec<&dyn IsMenuItem> 组装以便 cfg 门控 macOS 专属菜单项。
-            let mut menu_items: Vec<&dyn tauri::menu::IsMenuItem<tauri::Wry>> = vec![
-                &show,
-                &open,
-                &sep1,
-                &ws,
-                &open_ws,
-                &check,
-                &logs,
-                &restart,
-                &sep2,
-                &login,
-                &lan,
-                &lan_info,
-            ];
-            #[cfg(target_os = "macos")]
-            menu_items.push(&sleep_item);
-            menu_items.push(&sep3);
-            menu_items.push(&uninstall_item);
-            menu_items.push(&quit);
-            let menu = Menu::with_items(app, &menu_items)?;
+            // 市场惯例分组：窗口/视图 → 功能 → 自启/局域网 → 卸载/退出
+            let menu = Menu::with_items(
+                app,
+                &[
+                    &show,
+                    &open,
+                    &sep1,
+                    &ws,
+                    &open_ws,
+                    &check,
+                    &logs,
+                    &restart,
+                    &sep2,
+                    &login,
+                    &lan,
+                    &lan_info,
+                    &sep3,
+                    &uninstall_item,
+                    &quit,
+                ],
+            )?;
             let _tray = TrayIconBuilder::with_id("tray")
                 .icon(app.default_window_icon().unwrap().clone())
                 .menu(&menu)
@@ -1656,29 +1847,6 @@ fn main() {
                         set_lan_access(app, next);
                     }
                     "lan_info" => show_lan_info(app),
-                    "lan_prevent_sleep" => {
-                        // 壳层增强①开关（macOS）：仅持久化 + 菜单勾选态；
-                        // LAN 已开启时立即启停 caffeinate，未开启则下次开启 LAN 时
-                        // start_lan_unlocked 会按 settings 自动生效。
-                        let mut s = load_settings(app);
-                        let next = !s.lan_prevent_sleep;
-                        s.lan_prevent_sleep = next;
-                        save_settings(app, &s);
-                        logln!("lan_prevent_sleep -> {next}");
-                        if let Some(item) = mlock(&SLEEP_GUARD_ITEM).as_ref() {
-                            let _ = item.set_checked(next);
-                        }
-                        if LAN_ON.load(Ordering::SeqCst) {
-                            #[cfg(target_os = "macos")]
-                            if next {
-                                if let Err(e) = start_caffeinate() {
-                                    logln!("caffeinate start failed (degraded): {e}");
-                                }
-                            } else {
-                                kill_caffeinate();
-                            }
-                        }
-                    }
                     "restart" => restart_dsh(app),
                     "launch_login" => {
                         let next = !LOGIN_ON.load(Ordering::SeqCst);
@@ -1734,6 +1902,8 @@ fn main() {
                     });
                 }
             })
+            .on_navigation(webview_navigation_policy)
+            .on_new_window(webview_new_window_policy)
             .build();
             std::thread::spawn(move || boot(handle));
             periodic_check(app.handle().clone());

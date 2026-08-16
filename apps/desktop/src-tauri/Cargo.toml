@@ -26,6 +26,10 @@ libc = "0.2"
 # 仅在 Windows 目标上编译，macOS/Linux 构建不会下载。
 arboard = "3"
 trash = "5"
+# Windows 专属：SetThreadExecutionState（LAN 期间阻止休眠，增强①）。
+# windows 0.61 已由 tauri/wry 依赖树引入（Cargo.lock 核实），仅启用
+# Win32_System_Power 特性，不新增下载；macOS/Linux 构建不编译。
+windows = { version = "0.61", features = ["Win32_System_Power"] }
 
 [profile.release]
 strip = true

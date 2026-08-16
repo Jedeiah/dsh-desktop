@@ -741,6 +741,7 @@ dependencies = [
  "tauri-build",
  "trash",
  "ureq",
+ "windows 0.61.3",
 ]
 
 [[package]]

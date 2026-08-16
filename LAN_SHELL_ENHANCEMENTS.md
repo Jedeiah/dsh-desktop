@@ -148,8 +148,19 @@
 
 ## 7. 变更说明（实现后回填）
 
+> **复审修复（子代理深度审查 4×P1 + 8×P2/P3 全部确认并修复）**：Windows 阻止休眠改为专用常驻守卫线程（SetThreadExecutionState 是线程作用域状态，直接调用会"看护重启后失效/关闭放不掉"）；`open_url` Windows 改 `rundll32 url.dll,FileProtocolHandler`（`cmd start` 遇 `&` 截断）；`on_new_window` 内部地址 Allow（共享 session）、外部转浏览器；`on_navigation` 放行 data/blob/about/javascript（避免劫持 iframe 内嵌）；mdns：PTR/单播应答按 RFC 6762 §10.2 不设 cache-flush、goodbye 落网后退出、崩溃看护重启 + MDNS_ON 复位、IP 变化重绑组播接口、查询名大小写不敏感、组播应答 ID=0；caffeinate 加 `-w` 自身 PID（强杀不留孤儿断言）；update.rs 校验命令补 no_console；Cargo.toml 注释更正（windows 0.61 由 tauri/wry 引入）。
+
+> **实现偏差（按用户决定调整，覆盖原规格）**：
+> 1. ① 移除独立开关（原规格 §3.1 的 `lan_prevent_sleep` 设置 + 托盘 CheckMenuItem 均不实现）：改为**与"局域网访问"开关联动**——LAN 开 = 阻止休眠，LAN 关 = 释放。
+> 2. 三个增强 **Windows 全部实现**（原规格 §3 标注 Windows 只做③）：① Windows 用 `SetThreadExecutionState`（windows crate `Win32_System_Power`，复用依赖树已锁定的 windows 0.61，无新增下载）；② Windows 无系统自带 mDNS 注册工具，改用**内置 node 运行 `mdns-advertise.js`**（纯 JS 最小 DNS-SD/mDNS 通告器，零依赖，含 `--self-test` 无网络自测，打包脚本内置该自测）。
+> 3. 顺带修复既有问题：Windows 所有控制台子进程（node/ipconfig/taskkill/reg/powershell/cmd）加 `CREATE_NO_WINDOW`，杜绝从 GUI 进程 spawn 时的控制台闪窗。
+> 4. WebView 外链修复（用户报告）：工作台内点击 `https://` 外链无反应——Tauri 对 `target=_blank` 新窗口请求默认 Deny。已加 `on_navigation` + `on_new_window` 策略：内部地址（127.0.0.1 / App 内置页）放行，其余外链一律交给系统浏览器打开。
+
 | 文件 | 改动摘要 |
 |---|---|
-| apps/desktop/src-tauri/src/main.rs | ① `Settings` 新增 `lan_prevent_sleep: bool`（`#[serde(default)]`，默认 false）；新增静态 `SLEEP_GUARD_ITEM`/`SLEEP_GUARD`(macOS)/`MDNS_CHILD`(macOS)/`LAN_IP_LAST`/`LAN_IP_WATCH_GEN`；新增函数 `start_caffeinate`/`kill_caffeinate`（macOS，`/usr/bin/caffeinate -dimsu`）、`start_mdns`/`kill_mdns`（macOS，`/usr/bin/dns-sd -R "DeepSeek Harness" _http._tcp local <port>`）、`start_ip_watch`（双平台，30s 轮询 `lan_ip()`，代际计数器停止，变化 → `logln!` + `update::notify`）。三增强全部挂入 `start_lan_unlocked`/`kill_lan_unlocked` 生命周期（随 LAN 启停/看护重启跟随/退出清理）。托盘新增 macOS 专属 `CheckMenuItem("lan_prevent_sleep","局域网期间阻止休眠")`（菜单改用 `Vec<&dyn IsMenuItem>` 组装以 cfg 门控）+ `on_menu_event` 分支；`lan_info_dialog` macOS 弹窗新增 `.local` 地址与限制提示。所有 spawn 失败仅 `logln!` 降级。 |
-| README.md | §3.4 局域网访问新增"壳层增强"说明（mDNS 域名 / IP 变化通知 / 阻止休眠开关及平台差异）。 |
-| 其他 | 无新增依赖（仅系统自带二进制 caffeinate/dns-sd/ipconfig；getrandom/libc 为此前既有）。Windows 侧：增强③生效；① ② 以 `#[cfg(target_os = "macos")]` 隔离并留有 `TODO(windows)` 注释，未实现。`tauri.conf.json`、`lan-proxy.js`、dsh 文件均未改动。 |
+| apps/desktop/src-tauri/src/main.rs | ① `start_sleep_guard`/`stop_sleep_guard`（macOS: caffeinate 子进程；Windows: `SetThreadExecutionState(ES_CONTINUOUS\|ES_SYSTEM_REQUIRED\|ES_DISPLAY_REQUIRED)`，进程级自动释放）；② `start_mdns`（macOS: `/usr/bin/dns-sd -R`；Windows: node `mdns-advertise.js`）+ 跨平台 `kill_mdns` + `MDNS_ON` 标志（弹窗按需显示 `.local` 地址）；③ `start_ip_watch`（30s 轮询，代际计数器停止）。全部挂在 `start_lan_unlocked`/`kill_lan_unlocked`。新增 `no_console`（Windows CREATE_NO_WINDOW）应用于全部控制台子进程。`lan_info_dialog` 双分支条件显示 `.local` 地址。新增 WebView 外链策略 `webview_navigation_policy`/`webview_new_window_policy`（挂两处窗口 builder）。 |
+| apps/desktop/src-tauri/mdns-advertise.js | 新增：Windows mDNS 通告器（纯 Node，`--self-test` 无网络自测 14 项断言，显式 LAN 接口加入组播以适配 VPN/多网卡）。 |
+| apps/desktop/src-tauri/src/update.rs | `no_console` 应用于 npm 安装与 PowerShell 通知。 |
+| scripts/prepare-resources.sh / prepare-resources.ps1 | 拷贝 `mdns-advertise.js` 到 resources 并运行 `--self-test` 兜底。 |
+| README.md | §3.4 壳层增强更新（双平台、阻止休眠随 LAN 联动）。 |
+| 其他 | 新增依赖：`windows = { version = "0.61", features = ["Win32_System_Power"] }`（仅 Windows 目标；windows 0.61.3 已在依赖树，无新增下载）。`tauri.conf.json`、`lan-proxy.js`、dsh 文件均未改动。 |
