@@ -77,6 +77,7 @@ powershell -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.c
 | 显示/隐藏主窗口 | 左键点托盘图标，或点 Dock 图标 | 双击/单击托盘图标，或点任务栏图标 |
 | 关闭窗口 | 隐藏到托盘 | 隐藏到托盘（App 与 dsh 继续后台运行） |
 | 用系统浏览器打开 | 托盘 *在浏览器中打开* | 同左 |
+| 打开外链 | 工作台内点击外链（https 等）自动在系统浏览器打开 | 同左 |
 | 退出 | `Cmd+Q` 或托盘 *退出* | 托盘 *退出*（连带结束 dsh，无残留） |
 | 崩溃自愈 | dsh 意外退出自动重启（1s→2s→…→15s 退避）；连续 5 次后停止并提示查看日志 | 同左 |
 
@@ -87,7 +88,7 @@ powershell -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.c
 3. 手机/平板连同一 WiFi，浏览器打开地址，输入令牌，即可进入工作台（30 天免登录）。
 4. 随时用托盘 *显示局域网访问信息* 查看地址与令牌；取消勾选即关闭。
 
-**壳层增强**（随局域网开启自动生效，失败自动降级、不影响主功能）：
+**局域网访问增强**（随局域网开启自动生效，失败自动降级、不影响主功能）：
 - **mDNS 稳定域名**（macOS / Windows）：可用 `http://DeepSeek-Harness.local:<端口>/` 访问，IP 变了也不用改地址。macOS 走系统 `dns-sd`，Windows 走内置通告器。注意 `.local` 仅 iOS/macOS/同子网可解析，Android 浏览器请继续用 IP 地址。
 - **IP 变化通知**（macOS / Windows）：局域网开启期间每 30 秒检测一次本机 IP，变化（休眠重连 / 换 Wi-Fi / DHCP 重分配）时弹系统通知并给出新地址。
 - **阻止休眠**（macOS / Windows）：局域网开启期间自动阻止系统休眠，保证手机随时可连（与“局域网访问”开关联动，关闭局域网即释放）。macOS 走 `caffeinate`，Windows 走系统电源 API。
@@ -186,14 +187,15 @@ dsh-desktop/
 └── apps/desktop/
     ├── ui/index.html            # 前端占位（实际窗口指向内置 dsh localhost）
     └── src-tauri/
-        ├── Cargo.toml           # tauri2(tray-icon,image-png) + serde + rfd + ureq (+ windows: arboard/trash)
+        ├── Cargo.toml           # tauri2(tray-icon,image-png) + serde + rfd + ureq + dirs + getrandom（unix: libc；windows: arboard/trash/windows）
         ├── tauri.conf.json      # identifier / bundle.resources / CSP / nsis / dmg
         ├── icons/               # icon.png(RGBA 1024) + icon.icns(macOS) + icon.ico(Windows)
-        ├── resources/           # 内置 node + npm + lan-proxy + dsh 闭包（只读基线，gitignore）
+        ├── resources/           # 内置 node + npm + lan-proxy + mdns-advertise + dsh 闭包（只读基线，gitignore）
+        ├── lan-proxy.js         # 局域网转发器（令牌鉴权 + HTTP/WebSocket 透传）
+        ├── mdns-advertise.js    # mDNS 通告器（Windows 用，纯 Node 零依赖）
         └── src/
             ├── main.rs          # 启动器：路径/闭包解析、spawn/boot、托盘、更新、卸载、日志、LAN 控制
-            ├── update.rs        # 更新子系统：registry、semver、内置 npm 安装、原子切换、版本清理
-            └── lan-proxy.js     # 局域网转发器（令牌鉴权 + HTTP/WebSocket 透传）
+            └── update.rs        # 更新子系统：registry、semver、内置 npm 安装、原子切换、版本清理
 ```
 
 ### 4.3 架构
@@ -211,12 +213,13 @@ resources/
 │   └── node.exe       # Windows：内置 Node x64
 ├── npm/               # 内置 npm（更新用）
 ├── lan-proxy.js       # 局域网转发器
+├── mdns-advertise.js  # mDNS 通告器（Windows 用）
 └── dsh/
     ├── current        # 版本标记文件（内容 = 当前版本目录名）
     └── v<版本>/        # 该版本完整闭包（node_modules 全量 + VERSION 标记）
 ```
 
-**更新机制**：内置 `resources/` 只读作基线；每次更新把新闭包经内置 npm 装入 app 数据目录 `dsh/v<新>-tmp` → 自检（版本号 + web profile 组合双重校验）→ 发布为 `v<新>` → 原子切换 `current` 版本标记文件 → 重启 dsh。保留上一版本用于回滚，更旧版本自动清理。失败安全：切换前任何失败都不动当前版本。`current` 用普通文本文件而非软链，Windows 无软链权限也能工作。
+**更新机制**：内置 `resources/` 只读作基线；每次更新把新闭包经内置 npm 装入 app 数据目录 `dsh/v<新>-tmp` → 自检（版本号 + web profile 组合双重校验）→ 发布为 `v<新>` → 原子切换 `current` 版本标记文件 → 重启 dsh。保留上一版本用于回滚，更旧版本自动清理。失败安全：切换前任何失败都不动当前版本。`current` 为普通文本标记文件，Windows 无软链权限也能正常工作。
 
 **局域网访问**：dsh 出于安全只绑 `127.0.0.1`。转发器监听局域网，带令牌登录页（cookie 30 天），把 HTTP/WebSocket 转发给本机 dsh，从 dsh 视角一切连接均来自本机（无需 `--trusted-host`，安全模型不变）。转发时剥离 `origin`/`sec-fetch-site`/`referer` 以通过 dsh 的 /api 信任篱笆，并向主文档注入 `crypto.randomUUID` polyfill（明文 HTTP 下该安全上下文 API 不可用）；启动 dsh 时设 `SSH_CONNECTION=1` 启用网页版目录浏览器。
 
