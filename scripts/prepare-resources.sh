@@ -66,37 +66,40 @@ if ! "$RES/node/bin/node" "$RES/mdns-advertise.js" --self-test >/dev/null 2>&1; 
 fi
 echo "    mdns-advertise.js self-test OK"
 
-# --- 2b3. pnpm 独立二进制（插件管理；@pnpm/exe 平台二进制，零运行时网络）---
-# dsh plugin 写死 spawnSync("pnpm") 从 PATH 找；App 内置该二进制并注入 PATH，
-# 用户无需自行安装 pnpm。@pnpm/exe 通过 optionalDependencies 装当前平台版本；
-# 钉 ^11（pnpm 11 的门禁语义：allowBuilds / minimumReleaseAge，pnpm 12 为
-# Rust 重写，行为未验证）。注意：@pnpm/exe 目前不发布 Intel macOS 二进制
-# （Node SEA 上游问题），Intel 机器上安装会失败——拷出后必须校验可执行，
-# 失败即中止，避免把占位符文本当二进制打包进 App。
+# --- 2b3. pnpm（插件管理；JS 发行版 + shim，零运行时网络）----------------------
+# dsh plugin 写死 spawnSync("pnpm") 从 PATH 找；App 内置 pnpm 并注入 PATH。
+# 方案：安装 pnpm 的 JS 发行版（pnpm@^11，dist 为自包含 bundle），把
+# bin/pnpm.mjs + dist/ + package.json 拷到 resources/pnpm-bin，并生成同名
+# `pnpm` shim（用内置 node 按相对路径执行，打包后路径不变）。相比 @pnpm/exe
+# 的 SEA 二进制（约 153MB）省约 130MB。钉 ^11（pnpm 11 门禁语义：allowBuilds /
+# minimumReleaseAge，pnpm 12 为 Rust 重写，行为未验证）。
 PNPM_STAGE="$(mktemp -d)"
-if npm install --prefix "$PNPM_STAGE" "@pnpm/exe@^11" --no-audit --no-fund >/dev/null 2>&1; then
-  mkdir -p "$RES/pnpm-bin"
-  if [[ -f "$PNPM_STAGE/node_modules/@pnpm/exe/pnpm" ]]; then
-    cp -f "$PNPM_STAGE/node_modules/@pnpm/exe/pnpm" "$RES/pnpm-bin/pnpm"
-    chmod +x "$RES/pnpm-bin/pnpm"
-  elif [[ -f "$PNPM_STAGE/node_modules/@pnpm/exe/pnpm.exe" ]]; then
-    cp -f "$PNPM_STAGE/node_modules/@pnpm/exe/pnpm.exe" "$RES/pnpm-bin/pnpm.exe"
-  else
-    echo "ERROR: @pnpm/exe 二进制未找到（本平台不支持？）" >&2
-    exit 1
-  fi
-  # 校验可执行（Intel Mac 的 setup.js 会失败并留下占位符文本）
-  BIN="$RES/pnpm-bin/pnpm$([ -f "$RES/pnpm-bin/pnpm.exe" ] && echo .exe)"
-  PNPM_VER="$("$BIN" --version 2>/dev/null || true)"
-  if [[ -z "$PNPM_VER" ]]; then
-    echo "ERROR: 内置 pnpm 校验失败（$BIN 不可执行；本机为 Intel Mac？@pnpm/exe 暂不支持）" >&2
-    exit 1
-  fi
-  echo "    pnpm: $PNPM_VER"
-else
-  echo "ERROR: @pnpm/exe 安装失败" >&2
+if ! npm install --prefix "$PNPM_STAGE" "pnpm@^11" --ignore-scripts --no-audit --no-fund; then
+  echo "ERROR: pnpm 安装失败（见上方 npm 输出）" >&2
   exit 1
 fi
+PKG="$PNPM_STAGE/node_modules/pnpm"
+if [[ ! -f "$PKG/bin/pnpm.mjs" || ! -d "$PKG/dist" ]]; then
+  echo "ERROR: pnpm 包结构异常（$PKG）" >&2
+  exit 1
+fi
+mkdir -p "$RES/pnpm-bin"
+cp -R "$PKG/bin" "$RES/pnpm-bin/bin"
+cp -R "$PKG/dist" "$RES/pnpm-bin/dist"
+cp -f "$PKG/package.json" "$RES/pnpm-bin/package.json"
+# pnpm shim：相对路径解析内置 node（resources/pnpm-bin -> resources/node）
+cat > "$RES/pnpm-bin/pnpm" <<'SHIM'
+#!/bin/sh
+SELF_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+exec "$SELF_DIR/../node/bin/node" "$SELF_DIR/bin/pnpm.mjs" "$@"
+SHIM
+chmod +x "$RES/pnpm-bin/pnpm"
+PNPM_VER="$("$RES/pnpm-bin/pnpm" --version 2>/dev/null || true)"
+if [[ -z "$PNPM_VER" ]]; then
+  echo "ERROR: 内置 pnpm 校验失败（$RES/pnpm-bin/pnpm）" >&2
+  exit 1
+fi
+echo "    pnpm: $PNPM_VER"
 rm -rf "$PNPM_STAGE"
 
 # --- 2c. closure self-check (must boot under the bundled node) --------------

@@ -67,34 +67,35 @@ if ($LASTEXITCODE -ne 0) {
 }
 Write-Host "    mdns-advertise.js self-test OK"
 
-# --- 2b3. pnpm standalone binary (plugin management; @pnpm/exe platform binary) --
-# dsh plugin spawns "pnpm" from PATH; bundle the standalone binary so users
-# never need to install pnpm. @pnpm/exe resolves the current platform via
-# optionalDependencies. Pin ^11 (pnpm 11 gate semantics: allowBuilds /
-# minimumReleaseAge; pnpm 12 is a Rust rewrite). Verify the copied binary runs,
-# else FAIL -- the platform package may be missing (e.g. Intel macOS).
+# --- 2b3. pnpm (plugin management; JS distribution + shim, zero runtime net) ---
+# dsh plugin spawns "pnpm" from PATH; bundle pnpm so users never install it.
+# Strategy: install pnpm's JS distribution (pnpm@^11, self-contained dist
+# bundle), copy bin/pnpm.mjs + dist/ + package.json into resources/pnpm-bin,
+# and generate a `pnpm.cmd` shim that runs the bundled node by relative path
+# (path-stable after packaging). Pin ^11 (pnpm 11 gate semantics: allowBuilds /
+# minimumReleaseAge; pnpm 12 is a Rust rewrite).
 $PnpmStage = Join-Path $env:TEMP ("pnpm-stage-" + [guid]::NewGuid().ToString("N"))
 try {
-    npm install --prefix $PnpmStage "@pnpm/exe@^11" --no-audit --no-fund *> $null
-    if ($LASTEXITCODE -ne 0) {
-        throw "@pnpm/exe install failed"
+    npm install --prefix $PnpmStage "pnpm@^11" --ignore-scripts --no-audit --no-fund
+    if ($LASTEXITCODE -ne 0) { throw "pnpm install failed (see npm output above)" }
+    $Pkg = Join-Path $PnpmStage "node_modules\pnpm"
+    if (-not (Test-Path (Join-Path $Pkg "bin\pnpm.mjs")) -or -not (Test-Path (Join-Path $Pkg "dist"))) {
+        throw "pnpm package structure unexpected ($Pkg)"
     }
     $PnpmBin = Join-Path $RES "pnpm-bin"
     New-Item -ItemType Directory -Force -Path $PnpmBin | Out-Null
-    $exeSrc = Join-Path $PnpmStage "node_modules\@pnpm\exe\pnpm.exe"
-    if (-not (Test-Path $exeSrc)) {
-        throw "@pnpm/exe binary not found (unsupported platform?)"
-    }
-    Copy-Item -Force $exeSrc (Join-Path $PnpmBin "pnpm.exe")
-    $pnpmVer = ((& (Join-Path $PnpmBin "pnpm.exe") --version 2>$null) | Out-String).Trim()
-    if (-not $pnpmVer) {
-        throw "bundled pnpm failed verification (pnpm.exe --version)"
-    }
+    Copy-Item -Recurse -Force (Join-Path $Pkg "bin") (Join-Path $PnpmBin "bin")
+    Copy-Item -Recurse -Force (Join-Path $Pkg "dist") (Join-Path $PnpmBin "dist")
+    Copy-Item -Force (Join-Path $Pkg "package.json") (Join-Path $PnpmBin "package.json")
+    # pnpm shim: bundled node by relative path (resources/pnpm-bin -> resources/node)
+    $shim = "@echo off`r`n`"%~dp0..\node\node.exe`" `"%~dp0bin\pnpm.mjs`" %*`r`n"
+    Set-Content -Path (Join-Path $PnpmBin "pnpm.cmd") -Value $shim -Encoding ascii
+    $pnpmVer = ((& (Join-Path $PnpmBin "pnpm.cmd") --version 2>$null) | Out-String).Trim()
+    if (-not $pnpmVer) { throw "bundled pnpm failed verification (pnpm.cmd --version)" }
     Write-Host "    pnpm: $pnpmVer"
 } finally {
     if (Test-Path $PnpmStage) { Remove-Item -Recurse -Force $PnpmStage }
 }
-
 # --- 2c. closure self-check (must boot under the bundled node) --------------
 $node = Join-Path $NodeDir "node.exe"
 $bin = Join-Path $DST "node_modules\@deepseek-ai\dsh\lib\bin.js"
