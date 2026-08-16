@@ -214,7 +214,10 @@ function forward(req, res) {
         let cached = PATCH_CACHE.get(req.url);
         if (!cached || cached.original !== original) {
           const patched = original.replace(LOOPBACK_PATCH_RE, LOOPBACK_PATCH_TO);
-          const ok = patched !== original;
+          // 断言补丁后必须是"签名+return true+闭合"的完整形态；若上游重构出独立成行的
+          // 嵌套 }，正则可能提前截断产出损坏 JS，此时视为未命中、直通原内容。
+          const ok = patched !== original &&
+            /function isLoopbackHostname\(hostname\)\s*\{\s*return true;\s*\}/.test(patched);
           cached = { original, body: ok ? patched : original };
           if (PATCH_CACHE.size >= PATCH_CACHE_MAX) PATCH_CACHE.delete(PATCH_CACHE.keys().next().value);
           PATCH_CACHE.set(req.url, cached);
