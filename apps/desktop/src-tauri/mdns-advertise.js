@@ -262,10 +262,19 @@ function main() {
 
   /// 确保组播成员/出口绑定在"当前 LAN 接口"上：IP 变化（休眠重连/换 Wi-Fi/
   /// DHCP 重分配）后自动重绑，否则收/发组播会停在旧接口上失效。
+  /// drop 与 add 分开容错：旧接口已消失时 dropMembership 可能抛错（Windows
+  /// 对失效接口的 IP_DROP_MEMBERSHIP 通常报错），绝不能因此跳过 add——
+  /// 否则 socket 永久留在失效接口、IP 变化后永不重绑。
   function ensureBound(ip) {
     if (boundIP === ip) return true;
+    if (boundIP) {
+      try {
+        sock.dropMembership(MDNS_ADDR, boundIP);
+      } catch (_) {
+        /* 旧接口可能已消失：忽略，继续尝试 add */
+      }
+    }
     try {
-      if (boundIP) sock.dropMembership(MDNS_ADDR, boundIP);
       sock.addMembership(MDNS_ADDR, ip);
       sock.setMulticastInterface(ip);
       boundIP = ip;
@@ -352,7 +361,7 @@ function main() {
 
 /// 用法: node mdns-advertise.js --self-test [ip]
 /// 构造各类查询 → 走与线上完全相同的 handleQuery/wantSet/parseName 逻辑 →
-/// 断言应答内容。返回非 0 表示失败（可用于 CI / 打包前自检）。
+/// 断言应答内容（20 项）。返回非 0 表示失败（可用于 CI / 打包前自检）。
 function selfTest() {
   const testIP = process.argv[3] || currentIP() || '192.168.0.10';
   let failures = 0;
@@ -448,8 +457,8 @@ function selfTest() {
   const other = handleQuery(buildQuery('_ssh._tcp.local.', TYPE_PTR), false);
   check(other === null, 'unrelated query ignored');
 
-  // 3b. 大小写变体查询（DNS 名字大小写不敏感）→ 应响应
-  const lower = handleQuery(buildQuery('_http._tcp.local.', TYPE_PTR), false);
+  // 3b. 大小写变体查询（DNS 名字大小写不敏感；用真正不同的大小写验证）
+  const lower = handleQuery(buildQuery('_HTTP._TCP.LOCAL.', TYPE_PTR), false);
   check(lower !== null, 'case-variant query answered (case-insensitive)');
 
   // 4. 响应包（QR=1）→ 忽略

@@ -595,15 +595,18 @@ fn open_dir(dir: &Path) {
 }
 
 /// 是否为允许在 WebView 内导航的地址：App 内置页（tauri://localhost /
-/// http(s)://tauri.localhost）与 dsh 工作台源（http://127.0.0.1:*）。
-/// 精确比对 host（不用 starts_with，避免 `http://127.0.0.1evil.com` 这类
-/// 恶意主机名被误放行）。
+/// http(s)://tauri.localhost）与 dsh 工作台源（http://127.0.0.1:*、
+/// http://localhost:*）。精确比对 host（不用 starts_with，避免
+/// `http://127.0.0.1evil.com` 这类恶意主机名被误放行）。
 fn is_internal_webview_url(url: &tauri::Url) -> bool {
     if url.scheme() == "tauri" {
         return true; // 内置页（tauri://localhost/...）
     }
     if url.scheme() == "http" || url.scheme() == "https" {
-        return matches!(url.host_str(), Some("tauri.localhost") | Some("127.0.0.1"));
+        return matches!(
+            url.host_str(),
+            Some("tauri.localhost") | Some("127.0.0.1") | Some("localhost")
+        );
     }
     false
 }
@@ -612,10 +615,11 @@ fn is_internal_webview_url(url: &tauri::Url) -> bool {
 /// 协议（mailto:/tel:/ftp:/file: 等）交给系统浏览器并拦截。修复：AI 回答里的
 /// 外链（https://…）此前点击无反应——Tauri 对 target=_blank 新窗口请求默认
 /// 一律 Deny。
-/// 注意（已知限制）：wry 的导航回调不区分主框架/子框架，外部 http(s) 的
-/// iframe/表单提交也会被拦截并转交浏览器——这是有意的安全边界（外部内容不进
-/// 工作台）；data:/blob:/about:/javascript: 放行以免破坏内嵌内容（如 srcdoc
-/// 预览）。
+/// 已知限制（平台不对称）：wry 在 **macOS** 的导航回调（decidePolicyForNavigationAction）
+/// 覆盖所有帧——外部 http(s) 的 iframe/表单提交会被拦截并转交浏览器（有意的
+/// 安全边界：外部内容不进工作台）；**Windows** 的 NavigationStarting 仅顶层
+/// 导航触发，iframe 不受影响。data:/blob:/about:/javascript: 一律放行以免
+/// 破坏内嵌内容（如 srcdoc 预览）。
 fn webview_navigation_policy(url: &tauri::Url) -> bool {
     if is_internal_webview_url(url) {
         return true;
@@ -1253,6 +1257,10 @@ fn start_mdns(app: &AppHandle, port: u16) {
     };
     let pid = child.id();
     let gen = MDNS_GEN.fetch_add(1, Ordering::SeqCst) + 1;
+    // 先落槽再起看护：若子进程瞬间退出（5353 被占等），看护线程不会先于
+    // MDNS_CHILD/MDNS_ON 赋值执行 else 清理，避免"陈旧 true + 死 PID"竞态。
+    *mlock(&MDNS_CHILD) = Some(pid);
+    MDNS_ON.store(true, Ordering::SeqCst);
     let app2 = app.clone();
     std::thread::spawn(move || {
         let status = child.wait(); // 持有 Child：负责 reap，退出后才会走到重启判断
@@ -1260,6 +1268,13 @@ fn start_mdns(app: &AppHandle, port: u16) {
             Ok(st) => logln!("mdns advertisement exited (code {:?})", st.code()),
             Err(e) => logln!("mdns advertisement wait failed: {e}"),
         }
+        // 重启退避（锁外 sleep，不阻塞 LAN 操作）：脚本持续崩溃/5353 被占时
+        // 避免 spawn→wait→spawn 紧循环。
+        std::thread::sleep(Duration::from_millis(1000));
+        // 与 LAN 代理看护同模式：全程持 LAN_MUTEX 做"校验 + 重启"，与托盘开关/
+        // kill_lan/start_lan 严格串行，杜绝"检查通过后、重启前 LAN 被关"导致
+        // 重启出游离 mdns 进程的竞态（代际 + LAN_ON + MDNS_ON 三重校验兜底）。
+        let _g = mlock(&LAN_MUTEX);
         if LAN_ON.load(Ordering::SeqCst) && MDNS_ON.load(Ordering::SeqCst) && MDNS_GEN.load(Ordering::SeqCst) == gen {
             logln!("mdns advertisement died; restarting");
             start_mdns(&app2, port); // 新代际，看护随之重建
@@ -1271,8 +1286,6 @@ fn start_mdns(app: &AppHandle, port: u16) {
             }
         }
     });
-    *mlock(&MDNS_CHILD) = Some(pid);
-    MDNS_ON.store(true, Ordering::SeqCst);
 }
 
 /// 增强②（macOS）：spawn `/usr/bin/dns-sd -R "DeepSeek Harness" _http._tcp
@@ -1354,7 +1367,11 @@ fn start_ip_watch(port: u16) {
             if let Some(now) = lan_ip() {
                 if last.as_ref() != Some(&now) {
                     logln!("lan ip changed: {:?} -> {}", last, now);
-                    update::notify("局域网地址已变化", &format!("新地址 http://{now}:{port}"));
+                    // None→Some（网络刚就绪）只记日志不弹通知，避免误报
+                    // "地址变化"；只有两个真实地址之间的变化才通知用户。
+                    if last.is_some() {
+                        update::notify("局域网地址已变化", &format!("新地址 http://{now}:{port}"));
+                    }
                     last = Some(now);
                     *mlock(&LAN_IP_LAST) = last.clone();
                 }

@@ -148,6 +148,8 @@
 
 ## 7. 变更说明（实现后回填）
 
+> **二轮复审修复（子代理复审修复后状态：12 项中 8 项正确；确认 2 项真实缺陷 + 2 项完善，全部修复）**：mdns 看护线程补持 `LAN_MUTEX`（与 LAN 代理看护一致，堵住"LAN 已关仍重启出孤儿通告进程"的 TOCTOU）+ 先落槽再起看护（消除"瞬间退出→陈旧 MDNS_ON=true"竞态）+ 重启 1s 退避（锁外，防 5353 持续冲突紧循环）；`ensureBound` 的 drop 与 add 分离容错（旧接口 drop 抛错不再跳过 add，IP 变化后必能重绑）；`on_navigation` 注释如实标注平台不对称（macOS 拦所有帧 / Windows 仅顶层），内部名单补 `localhost`；IP 轮询 `None→Some` 只记日志不弹通知（避免误报）；mdns 自测用真正大小写变体断言；自测断言计数更正为 20。
+
 > **复审修复（子代理深度审查 4×P1 + 8×P2/P3 全部确认并修复）**：Windows 阻止休眠改为专用常驻守卫线程（SetThreadExecutionState 是线程作用域状态，直接调用会"看护重启后失效/关闭放不掉"）；`open_url` Windows 改 `rundll32 url.dll,FileProtocolHandler`（`cmd start` 遇 `&` 截断）；`on_new_window` 内部地址 Allow（共享 session）、外部转浏览器；`on_navigation` 放行 data/blob/about/javascript（避免劫持 iframe 内嵌）；mdns：PTR/单播应答按 RFC 6762 §10.2 不设 cache-flush、goodbye 落网后退出、崩溃看护重启 + MDNS_ON 复位、IP 变化重绑组播接口、查询名大小写不敏感、组播应答 ID=0；caffeinate 加 `-w` 自身 PID（强杀不留孤儿断言）；update.rs 校验命令补 no_console；Cargo.toml 注释更正（windows 0.61 由 tauri/wry 引入）。
 
 > **实现偏差（按用户决定调整，覆盖原规格）**：
