@@ -1,7 +1,7 @@
 [package]
 name = "dsh-desktop"
 version = "0.1.0"
-description = "DeepSeek Harness Desktop — macOS 桌面端，内置 node + dsh 闭包"
+description = "DeepSeek Harness Desktop — 跨平台桌面端（macOS / Windows），内置 node + dsh 闭包"
 edition = "2021"
 
 [build-dependencies]
@@ -14,7 +14,22 @@ serde_json = "1"
 rfd = "0.17"
 ureq = "2"
 dirs = "6"
+# 跨平台 CSPRNG（替换 macOS 专属的 /dev/urandom；getrandom 已是本依赖树成员，无新增下载）
+getrandom = "0.2"
+
+[target.'cfg(unix)'.dependencies]
+# 仅 unix 用 PID+SIGTERM 结束 LAN 代理（Windows 走 taskkill）
 libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+# Windows 专属：剪贴板（替代 pbcopy）与回收站（替代 Finder osascript）。
+# 仅在 Windows 目标上编译，macOS/Linux 构建不会下载。
+arboard = "3"
+trash = "5"
+# Windows 专属：SetThreadExecutionState（LAN 期间阻止休眠，增强①）。
+# windows 0.61 已由 tauri/wry 依赖树引入（Cargo.lock 核实），仅启用
+# Win32_System_Power 特性，不新增下载；macOS/Linux 构建不编译。
+windows = { version = "0.61", features = ["Win32_System_Power"] }
 
 [profile.release]
 strip = true

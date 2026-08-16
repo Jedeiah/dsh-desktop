@@ -47,12 +47,24 @@ mv "$STAGE/node_modules" "$DST/node_modules"
 rmdir "$STAGE"
 echo "{\"name\":\"dsh-closure\",\"version\":\"$VER\"}" >"$DST/package.json"
 echo "$VER" >"$DST/VERSION"
-ln -sfn "$VER" "$RES/dsh/current"
+# `current` 是版本标记文件（内容=版本号），跨平台（Windows 无软链权限也通用）。
+# 旧版用软链时 Rust 侧会回退扫描，无需迁移。
+echo "$VER" >"$RES/dsh/current"
+rm -f "$RES/dsh/current.tmp"
 echo "    closure: $(du -sh "$DST" | cut -f1) at $DST"
 
 # --- 2b. LAN proxy (M6: 局域网访问转发器) --------------------------------
 cp "$SRC_TAURI/lan-proxy.js" "$RES/lan-proxy.js"
 echo "    lan-proxy.js: $(wc -c < "$RES/lan-proxy.js" | tr -d ' ')B"
+# --- 2b2. mDNS 通告器（壳层增强②，Windows 用） ---------------------------
+cp "$SRC_TAURI/mdns-advertise.js" "$RES/mdns-advertise.js"
+echo "    mdns-advertise.js: $(wc -c < "$RES/mdns-advertise.js" | tr -d ' ')B"
+# 无网络自测：验证 mDNS 报文逻辑（打包前兜底，失败即中止）
+if ! "$RES/node/bin/node" "$RES/mdns-advertise.js" --self-test >/dev/null 2>&1; then
+  echo "ERROR: mdns-advertise self-test failed" >&2
+  exit 1
+fi
+echo "    mdns-advertise.js self-test OK"
 
 # --- 2c. closure self-check (must boot under the bundled node) --------------
 DETECTED_VER="$("$RES/node/bin/node" "$DST/node_modules/@deepseek-ai/dsh/lib/bin.js" --version 2>/dev/null || true)"

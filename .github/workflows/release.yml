@@ -3,7 +3,9 @@ name: Release
 # 发版两种方式：
 #   A) 推送 v* 标签（如 v0.1.1）→ tag 即版本，自动构建发布（推荐）
 #   B) 网页手动触发 → 填版本号（如 0.1.1），自动打 v0.1.1 并发布
-# App 版本会统一为输入的版本号（写入 tauri.conf.json，DMG 名随之）
+# App 版本会统一为输入的版本号（写入 tauri.conf.json，安装包名随之）
+# 两个 job 并行构建：macOS（.app + DMG）与 Windows（NSIS + 便携 zip），
+# 产物上传到同一个 GitHub Release。
 on:
   push:
     tags: ["v*"]
@@ -18,7 +20,7 @@ permissions:
   contents: write
 
 jobs:
-  build:
+  build-macos:
     runs-on: macos-14 # arm64（产物为 aarch64 DMG）
     env:
       DSH_VERSION: 0.1.0-rc.6 # 内置 dsh 闭包版本（上游 dsh 更新时改这里）
@@ -87,15 +89,92 @@ jobs:
           body: |
             ## 安装 / 升级（自动追最新版）
 
+            macOS：
             ```bash
             curl -sSL https://raw.githubusercontent.com/Jedeiah/dsh-desktop/main/scripts/install.sh | bash
             ```
 
-            或手动安装：下载下方的 DMG → 拖入「应用程序」→ 首次右键 → 打开。
-            若提示「已损坏」：`xattr -dr com.apple.quarantine "/Applications/DeepSeek Harness.app"`
+            Windows（PowerShell）：
+            ```powershell
+            powershell -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/Jedeiah/dsh-desktop/main/scripts/install.ps1 | iex"
+            ```
+
+            或手动安装：macOS 下载 DMG → 拖入「应用程序」→ 首次右键 → 打开
+            （若提示「已损坏」：`xattr -dr com.apple.quarantine "/Applications/DeepSeek Harness.app"`）；
+            Windows 下载 `*-setup.exe` 双击安装（或解压便携 zip 直接运行）。
 
             ## 本次更新
           files: |
             apps/desktop/src-tauri/target/release/bundle/dmg/*.dmg
             apps/desktop/src-tauri/target/release/bundle/macos/DeepSeek-Harness-macOS-arm64.zip
           generate_release_notes: true
+
+  build-windows:
+    runs-on: windows-latest # x64（产物为 NSIS 安装器 + 便携 zip）
+    env:
+      DSH_VERSION: 0.1.0-rc.6 # 与 macOS job 一致；Windows 会装 win32 原生二进制
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Resolve version & tag
+        id: ver
+        shell: bash
+        run: |
+          if [ -n "${{ inputs.version }}" ]; then
+            APP_VERSION="${{ inputs.version }}"
+          else
+            APP_VERSION="${GITHUB_REF_NAME#v}"
+          fi
+          echo "app_version=$APP_VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=v${APP_VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+
+      - name: Sync tauri.conf.json version to ${{ steps.ver.outputs.app_version }}
+        shell: pwsh
+        run: |
+          $v = "${{ steps.ver.outputs.app_version }}"
+          node -e "const fs=require('fs');const p='apps/desktop/src-tauri/tauri.conf.json';const d=JSON.parse(fs.readFileSync(p));d.version=process.argv[1];fs.writeFileSync(p,JSON.stringify(d,null,2)+'\n')" $v
+
+      - name: Prepare bundled resources (node.exe + dsh closure + icons)
+        shell: pwsh
+        run: |
+          npm install --prefix "$env:RUNNER_TEMP\closure" "@deepseek-ai/dsh@$env:DSH_VERSION" --ignore-scripts --no-audit --no-fund
+          ./scripts/prepare-resources.ps1 `
+            -DshVersion $env:DSH_VERSION `
+            -NodeSrc (Get-Command node).Source `
+            -ClosureSrc "$env:RUNNER_TEMP\closure\node_modules"
+
+      - name: Install tauri-cli
+        run: cargo install tauri-cli --locked
+
+      - name: Build NSIS installer
+        shell: pwsh
+        run: |
+          cd apps/desktop/src-tauri
+          cargo tauri build --bundles nsis
+
+      - name: Zip portable build (exe + resources, 解压即用)
+        shell: pwsh
+        run: |
+          $rel = "apps/desktop/src-tauri/target/release"
+          $tmp = Join-Path $env:RUNNER_TEMP "portable"
+          New-Item -ItemType Directory -Force -Path $tmp | Out-Null
+          Copy-Item "$rel/dsh-desktop.exe" $tmp
+          Copy-Item -Recurse "$rel/resources" $tmp
+          Compress-Archive -Path "$tmp/*" -DestinationPath "DeepSeek-Harness-Windows-x64.zip" -Force
+
+      - name: Upload to GitHub Release (${{ steps.ver.outputs.tag }})
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ steps.ver.outputs.tag }}
+          files: |
+            apps/desktop/src-tauri/target/release/bundle/nsis/*-setup.exe
+            DeepSeek-Harness-Windows-x64.zip
+          generate_release_notes: false

@@ -3,17 +3,30 @@ name: CI
 # 每次 push / PR 做一次构建检查，确保代码可编译（不打包，快）
 on:
   push:
-    branches: [main]
+    branches: [main, windows-support]
   pull_request:
 
 jobs:
-  build:
+  build-macos:
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v7
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
-      - name: Cargo build (dev)
+      - name: Cargo check (dev)
         run: |
           cd apps/desktop/src-tauri
-          cargo build
+          cargo check
+
+  build-windows:
+    # Windows 目标上的真实编译检查（验证全部 #[cfg(windows)] 代码路径与
+    # arboard/trash 依赖；macOS 本机无法交叉编译，故由 CI 把关）
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+      - name: Cargo check (dev)
+        run: |
+          cd apps/desktop/src-tauri
+          cargo check
