@@ -28,7 +28,7 @@
 
 mod update;
 
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -312,10 +312,18 @@ fn user_shell_path() -> String {
     "/bin/zsh".into()
 }
 
-/// 捕获用户登录交互 shell 的环境（5s 超时：rc 文件可能卡住，超时即降级）。
+/// 捕获用户登录交互 shell 的环境（整体 5s 超时：rc 文件可能卡住，超时即降级）。
+/// 读取采用**非阻塞 + 边轮询边排空**：
+/// - 等待期间持续排空 stdout，避免 rc 打印超过 64KB 管道缓冲时子 shell 写满
+///   卡死（否则会静默超时降级，修复对 verbose-rc 用户失效）；
+/// - 不依赖"子进程退出后 read 必 EOF"：rc 里 `&` 后台进程若继承 stdout 写端，
+///   退出后 read 也会无限阻塞（会拖垮所有 spawn_dsh）——非阻塞读 + WouldBlock
+///   轮询 + 同一 deadline 兜底，任何情况下 5s 内必返回。
 /// 返回过滤后的 KEY=VALUE 列表；失败返回 None（调用方静默继承原环境）。
 #[cfg(target_os = "macos")]
 fn capture_user_env() -> Option<Vec<(String, String)>> {
+    use std::io::Read;
+    use std::os::unix::io::AsRawFd;
     let shell = user_shell_path();
     logln!("capturing user shell env via {shell} (-l -i -c env)");
     let mut child = Command::new(&shell)
@@ -325,30 +333,56 @@ fn capture_user_env() -> Option<Vec<(String, String)>> {
         .stderr(Stdio::null())
         .spawn()
         .ok()?;
+    let mut stdout = child.stdout.take()?;
+    // 管道置非阻塞：靠 WouldBlock 判断"暂无数据"，read 永不阻塞。
+    unsafe {
+        libc::fcntl(stdout.as_raw_fd(), libc::F_SETFL, libc::O_NONBLOCK);
+    }
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
-    let out = loop {
-        match child.try_wait() {
-            Ok(Some(_)) => {
-                let mut s = String::new();
-                child.stdout.take()?.read_to_string(&mut s).ok()?;
-                break s;
+    let mut buf: Vec<u8> = Vec::new();
+    let mut chunk = [0u8; 4096];
+    loop {
+        match stdout.read(&mut chunk) {
+            Ok(0) => break, // EOF：写端全部关闭，数据完整
+            Ok(n) => {
+                buf.extend_from_slice(&chunk[..n]);
+                // 连续写入（后台进程持续向继承的 stdout 写）也要受 deadline 约束，
+                // 否则永远到不了 WouldBlock 分支，变成无界排空。
+                if std::time::Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    logln!("user shell env capture timed out; degraded to inherited env");
+                    return None;
+                }
             }
-            Ok(None) if std::time::Instant::now() < deadline => {
-                std::thread::sleep(Duration::from_millis(50));
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                if std::time::Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    logln!("user shell env capture timed out; degraded to inherited env");
+                    return None;
+                }
+                std::thread::sleep(Duration::from_millis(20));
             }
-            _ => {
-                // 超时：杀掉子 shell，静默降级
-                let _ = child.kill();
-                let _ = child.wait();
-                logln!("user shell env capture timed out; degraded to inherited env");
-                return None;
-            }
+            Err(_) => return None,
         }
-    };
-    // 解析 KEY=VALUE；过滤掉 exec 会重设的变量与其它无意义项
+    }
+    // reap：若子 shell 已退出直接收；若尚未退出（提前关 stdout 的怪 rc），杀掉。
+    match child.try_wait() {
+        Ok(Some(_)) => {}
+        _ => {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+    let out = String::from_utf8_lossy(&buf);
+    // 解析 KEY=VALUE；过滤 exec 会重设的变量，以及 DYLD_*/LD_PRELOAD 这类
+    // 注入面（保护内置 node 进程；其余变量全部保留，保证与终端环境一致）。
     let denylist = [
         "PWD", "OLDPWD", "SHLVL", "_", "SSH_CONNECTION", "TERM_SESSION_ID",
-        "__CFBundleIdentifier",
+        "__CFBundleIdentifier", "DYLD_LIBRARY_PATH", "DYLD_INSERT_LIBRARIES",
+        "DYLD_FRAMEWORK_PATH", "LD_PRELOAD",
     ];
     let mut envs = Vec::new();
     for line in out.lines() {
@@ -365,10 +399,7 @@ fn capture_user_env() -> Option<Vec<(String, String)>> {
         logln!("user shell env capture produced nothing; degraded to inherited env");
         return None;
     }
-    logln!(
-        "user shell env captured: {} vars",
-        envs.len()
-    );
+    logln!("user shell env captured: {} vars", envs.len());
     Some(envs)
 }
 
