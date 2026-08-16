@@ -67,6 +67,34 @@ if ($LASTEXITCODE -ne 0) {
 }
 Write-Host "    mdns-advertise.js self-test OK"
 
+# --- 2b3. pnpm standalone binary (plugin management; @pnpm/exe platform binary) --
+# dsh plugin spawns "pnpm" from PATH; bundle the standalone binary so users
+# never need to install pnpm. @pnpm/exe resolves the current platform via
+# optionalDependencies. Pin ^11 (pnpm 11 gate semantics: allowBuilds /
+# minimumReleaseAge; pnpm 12 is a Rust rewrite). Verify the copied binary runs,
+# else FAIL -- the platform package may be missing (e.g. Intel macOS).
+$PnpmStage = Join-Path $env:TEMP ("pnpm-stage-" + [guid]::NewGuid().ToString("N"))
+try {
+    npm install --prefix $PnpmStage "@pnpm/exe@^11" --no-audit --no-fund *> $null
+    if ($LASTEXITCODE -ne 0) {
+        throw "@pnpm/exe install failed"
+    }
+    $PnpmBin = Join-Path $RES "pnpm-bin"
+    New-Item -ItemType Directory -Force -Path $PnpmBin | Out-Null
+    $exeSrc = Join-Path $PnpmStage "node_modules\@pnpm\exe\pnpm.exe"
+    if (-not (Test-Path $exeSrc)) {
+        throw "@pnpm/exe binary not found (unsupported platform?)"
+    }
+    Copy-Item -Force $exeSrc (Join-Path $PnpmBin "pnpm.exe")
+    $pnpmVer = ((& (Join-Path $PnpmBin "pnpm.exe") --version 2>$null) | Out-String).Trim()
+    if (-not $pnpmVer) {
+        throw "bundled pnpm failed verification (pnpm.exe --version)"
+    }
+    Write-Host "    pnpm: $pnpmVer"
+} finally {
+    if (Test-Path $PnpmStage) { Remove-Item -Recurse -Force $PnpmStage }
+}
+
 # --- 2c. closure self-check (must boot under the bundled node) --------------
 $node = Join-Path $NodeDir "node.exe"
 $bin = Join-Path $DST "node_modules\@deepseek-ai\dsh\lib\bin.js"

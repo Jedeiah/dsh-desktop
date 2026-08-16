@@ -1,0 +1,246 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>插件管理</title>
+    <style>
+      /* ===== 插件管理：与启动页/登录页同一设计语言（紫粉蓝光斑 + 深紫玻璃） ===== */
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+
+      html, body { height: 100%; }
+
+      body {
+        font-family: -apple-system, system-ui, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+        background: #05060a;
+        color: #f0f2f7;
+        overflow: hidden;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 18px;
+      }
+
+      /* 轻量氛围光斑（工具窗口克制版：2 个、低模糊、慢漂移） */
+      .glow {
+        position: fixed;
+        z-index: 0;
+        border-radius: 50%;
+        filter: blur(70px);
+        pointer-events: none;
+        will-change: transform;
+        animation: drift 24s ease-in-out infinite alternate;
+      }
+      .glow--a {
+        width: 34vw; height: 34vw; left: -14vw; top: -12vh;
+        background: radial-gradient(circle, rgba(250, 147, 250, 0.4) 0%, rgba(250, 147, 250, 0) 70%);
+        animation-duration: 22s;
+      }
+      .glow--b {
+        width: 38vw; height: 38vw; right: -16vw; bottom: -14vh;
+        background: radial-gradient(circle, rgba(47, 129, 247, 0.38) 0%, rgba(47, 129, 247, 0) 70%);
+        animation-duration: 28s;
+        animation-delay: -8s;
+      }
+      @keyframes drift {
+        from { transform: translate3d(0, 0, 0) scale(1); }
+        to   { transform: translate3d(5vw, -3vh, 0) scale(1.12); }
+      }
+
+      /* 玻璃卡片（登录页同款：深紫玻璃 + 渐变描边） */
+      .card {
+        position: relative;
+        z-index: 1;
+        width: min(480px, 92vw);
+        max-height: calc(100vh - 36px);
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+        padding: 22px 24px 20px;
+        border-radius: 20px;
+        background: rgba(28, 27, 36, 0.45);
+        backdrop-filter: blur(20px);
+        -webkit-backdrop-filter: blur(20px);
+        box-shadow:
+          0 0 34px rgba(201, 103, 232, 0.16),
+          inset 0 1px 1px rgba(255, 255, 255, 0.15),
+          0 20px 60px rgba(0, 0, 0, 0.45);
+      }
+      .card::before {
+        content: '';
+        position: absolute;
+        inset: 0;
+        border-radius: inherit;
+        padding: 1.5px;
+        background: linear-gradient(180deg,
+          rgba(255,255,255,0.55) 0%,
+          rgba(255,255,255,0.15) 40%,
+          rgba(255,255,255,0.15) 60%,
+          rgba(255,255,255,0.55) 100%);
+        -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+        -webkit-mask-composite: xor;
+                mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+                mask-composite: exclude;
+        pointer-events: none;
+      }
+
+      h1 {
+        font-size: 16px;
+        font-weight: 600;
+        letter-spacing: 0.01em;
+      }
+      .sub {
+        font-size: 12px;
+        color: rgba(240, 242, 247, 0.55);
+        line-height: 1.6;
+        margin-top: -6px;
+      }
+      code {
+        background: rgba(255, 255, 255, 0.08);
+        border-radius: 4px;
+        padding: 1px 5px;
+        font-size: 11px;
+      }
+
+      .row { display: flex; gap: 8px; }
+
+      /* 玻璃输入框（登录页同款：聚焦紫色光环） */
+      input {
+        flex: 1;
+        min-width: 0;
+        padding: 9px 12px;
+        border-radius: 10px;
+        border: 1px solid rgba(255, 255, 255, 0.14);
+        background: rgba(255, 255, 255, 0.06);
+        backdrop-filter: blur(10px);
+        -webkit-backdrop-filter: blur(10px);
+        color: #f0f2f7;
+        font-size: 13px;
+        outline: none;
+        transition: border-color 0.2s ease, box-shadow 0.2s ease;
+      }
+      input::placeholder { color: rgba(240, 242, 247, 0.35); }
+      input:focus {
+        border-color: rgba(201, 103, 232, 0.65);
+        box-shadow: 0 0 0 3px rgba(152, 58, 214, 0.2), 0 0 16px rgba(201, 103, 232, 0.25);
+      }
+      input:disabled { opacity: 0.55; }
+
+      /* 玻璃按钮（登录页同款：半透明紫色底 + 渐变描边 + 紫色光晕） */
+      button {
+        position: relative;
+        padding: 9px 16px;
+        border-radius: 10px;
+        border: none;
+        background: linear-gradient(180deg, rgba(201, 103, 232, 0.16), rgba(122, 90, 248, 0.10));
+        backdrop-filter: blur(16px);
+        -webkit-backdrop-filter: blur(16px);
+        color: #f0f2f7;
+        font-size: 13px;
+        font-weight: 500;
+        cursor: pointer;
+        box-shadow:
+          inset 0 1px 1px rgba(255, 255, 255, 0.15),
+          0 0 18px rgba(201, 103, 232, 0.18);
+        transition: background 0.2s ease, box-shadow 0.2s ease, transform 0.15s ease;
+      }
+      button::before {
+        content: '';
+        position: absolute;
+        inset: 0;
+        border-radius: inherit;
+        padding: 1.3px;
+        background: linear-gradient(180deg,
+          rgba(255,255,255,0.5) 0%,
+          rgba(255,255,255,0.14) 40%,
+          rgba(255,255,255,0.14) 60%,
+          rgba(255,255,255,0.5) 100%);
+        -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+        -webkit-mask-composite: xor;
+                mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+                mask-composite: exclude;
+        pointer-events: none;
+      }
+      button:hover {
+        background: linear-gradient(180deg, rgba(201, 103, 232, 0.26), rgba(122, 90, 248, 0.16));
+        box-shadow:
+          inset 0 1px 1px rgba(255, 255, 255, 0.2),
+          0 0 28px rgba(201, 103, 232, 0.4);
+      }
+      button:active { transform: scale(0.98); }
+      button:disabled { opacity: 0.5; cursor: default; }
+      #btnRemove {
+        background: linear-gradient(180deg, rgba(248, 81, 73, 0.18), rgba(218, 54, 51, 0.10));
+        box-shadow: inset 0 1px 1px rgba(255,255,255,0.15), 0 0 18px rgba(248, 81, 73, 0.16);
+      }
+      #btnRemove:hover {
+        background: linear-gradient(180deg, rgba(248, 81, 73, 0.3), rgba(218, 54, 51, 0.18));
+        box-shadow: inset 0 1px 1px rgba(255,255,255,0.2), 0 0 28px rgba(248, 81, 73, 0.35);
+      }
+
+      .status {
+        min-height: 17px;
+        font-size: 12px;
+        line-height: 1.5;
+      }
+      .status.ok { color: #3fb950; text-shadow: 0 0 12px rgba(63, 185, 80, 0.35); }
+      .status.err { color: #f85149; text-shadow: 0 0 12px rgba(248, 81, 73, 0.35); }
+      .status.run { color: rgba(240, 242, 247, 0.7); }
+
+      /* 玻璃输出区 */
+      pre {
+        background: rgba(13, 14, 19, 0.6);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        border-radius: 12px;
+        padding: 10px 12px;
+        font-size: 11px;
+        line-height: 1.55;
+        white-space: pre-wrap;
+        word-break: break-all;
+        max-height: 220px;
+        overflow-y: auto;
+        color: #c9d1d9;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      }
+      pre:empty { display: none; }
+
+      .hint {
+        font-size: 12px;
+        color: rgba(240, 242, 247, 0.55);
+        line-height: 1.6;
+      }
+
+      /* 入场动效（motionsites hero-anim 思路：cubic-bezier 缓入 + 上浮） */
+      .anim { opacity: 0; animation: fadeUp 0.45s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
+      .anim--d1 { animation-delay: 0.06s; }
+      .anim--d2 { animation-delay: 0.12s; }
+      @keyframes fadeUp {
+        from { opacity: 0; transform: translateY(12px); }
+        to   { opacity: 1; transform: translateY(0); }
+      }
+
+      /* 系统开启"减少动态效果"时停用全部动画 */
+      @media (prefers-reduced-motion: reduce) {
+        .glow, .anim { animation: none; opacity: 1; }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="glow glow--a" aria-hidden="true"></div>
+    <div class="glow glow--b" aria-hidden="true"></div>
+
+    <div class="card">
+      <h1 class="anim">插件管理</h1>
+      <div class="sub anim anim--d1">安装 / 卸载 dsh 插件（安装到 <code>~/.dsh/profiles/web</code>，与终端共享）</div>
+      <div class="row anim anim--d1">
+        <input id="pkg" type="text" placeholder="包名，如 @linxin666/dsh-web-ui-all" autofocus spellcheck="false" />
+        <button id="btnInstall">安装</button>
+        <button id="btnRemove">卸载</button>
+      </div>
+      <div class="status anim anim--d2" id="status"></div>
+      <pre id="output" class="anim anim--d2" hidden></pre>
+      <div class="hint anim anim--d2">插件会运行其构建脚本；安装/卸载完成后请通过托盘菜单「重启工作台」生效。</div>
+    </div>
+    <script src="plugins.js"></script>
+  </body>
+</html>

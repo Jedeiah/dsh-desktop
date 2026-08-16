@@ -46,6 +46,9 @@ use tauri::{
 static CHILD: Mutex<Option<Child>> = Mutex::new(None);
 /// The parsed base URL of the running dsh web server.
 static DSH_URL: Mutex<Option<String>> = Mutex::new(None);
+/// 插件操作串行锁：pnpm-workspace.yaml 的读-改-写与 dsh 的 reconcile 均非原子，
+/// 并发触发（多窗口/远程）会撕裂文件；插件操作低频，全局串行化最简单可靠。
+static PLUGIN_LOCK: Mutex<()> = Mutex::new(());
 /// True when we intentionally stopped the child (quit/restart), so EOF is not
 /// treated as a crash.
 static INTENTIONAL_STOP: AtomicBool = AtomicBool::new(false);
@@ -100,6 +103,7 @@ pub const APP_ID: &str = "com.dsh-desktop.app";
 const RESTART_BASE_MS: u64 = 1000;
 const RESTART_MAX_MS: u64 = 15000;
 const WINDOW_LABEL: &str = "main";
+const PLUGIN_LABEL: &str = "plugins";
 
 /// 用户主目录：优先平台主目录环境变量（unix: HOME，Windows: USERPROFILE），
 /// 回退到系统用户目录（跨平台，不写死用户名）。
@@ -849,6 +853,294 @@ fn choose_workspace(app: &AppHandle) {
 fn open_workspace_in_finder(app: &AppHandle) {
     let dir = workspace_dir(app);
     open_dir(&dir);
+}
+
+// ---------------------------------------------------------------------------
+// Plugin management（托盘「插件管理…」窗口的后端）
+//
+// `dsh plugin --profile web <op> <pkg>` = 在 ~/.dsh/profiles/web 里转发给
+// pnpm（dsh 闭包写死 spawnSync("pnpm") 从 PATH 找，见 plugin-9h8shc4d.js）。
+// 本实现：
+//   - 用内置 node 调内置 dsh bin.js，PATH 前置 resources/pnpm-bin（打包的
+//     @pnpm/exe 独立二进制，见 prepare-resources.sh/ps1），用户无需装 pnpm；
+//   - 安装前确保 profile 的 pnpm-workspace.yaml 含 allowBuilds（pnpm 11 构建
+//     脚本门禁）与 minimumReleaseAge: 0（新包发布年龄门禁），并在输出出现
+//     ERR_PNPM_IGNORED_BUILDS 时自动补写缺失包名重试；
+//   - 尊重 settings.registry（npm registry 覆盖）。
+// ---------------------------------------------------------------------------
+
+/// npm 包名宽松校验：仅字母数字与 @ . _ - / ~，不以 . / _ / - 开头（npm 规则 +
+/// 防 pnpm 参数混淆：`-g`、`--dir=` 等以 - 开头的 token 会被 pnpm 当选项），
+/// 防参数注入/路径穿越。
+fn valid_pkg_name(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 214
+        && !s.starts_with('.')
+        && !s.starts_with('_')
+        && !s.starts_with('-')
+        && s.bytes().all(|b| {
+            b.is_ascii_alphanumeric() || matches!(b, b'@' | b'.' | b'_' | b'-' | b'/' | b'~')
+        })
+}
+
+/// 在命令 PATH 最前面插入 dir（读取 cmd 已设置的环境，兼容 apply_user_env 的覆盖）。
+fn prepend_path(cmd: &mut Command, dir: &std::path::Path) {
+    let mut cur: Option<std::ffi::OsString> = None;
+    for (k, v) in cmd.get_envs() {
+        if k == "PATH" {
+            cur = v.map(|x| x.to_os_string());
+        }
+    }
+    let cur = cur.unwrap_or_else(|| std::env::var_os("PATH").unwrap_or_default());
+    let sep = if cfg!(windows) { ";" } else { ":" };
+    let mut joined = dir.as_os_str().to_os_string();
+    joined.push(sep);
+    joined.push(&cur);
+    cmd.env("PATH", joined);
+}
+
+/// 确保 profile 的 pnpm-workspace.yaml 包含 pnpm 11 门禁配置：
+/// allowBuilds（默认已知构建脚本包 + extra_builds）与 minimumReleaseAge: 0。
+/// 文件不存在时按 dsh initProfile 模板创建（dsh 检测到缺 package.json 仍会
+/// initProfile，且"已有文件不覆盖"，故预写内容会被保留）。
+fn ensure_pnpm_workspace(profile: &std::path::Path, extra_builds: &[String]) -> std::io::Result<()> {
+    std::fs::create_dir_all(profile)?;
+    let yaml_path = profile.join("pnpm-workspace.yaml");
+    let mut lines: Vec<String> = if yaml_path.exists() {
+        std::fs::read_to_string(&yaml_path)?
+            .lines()
+            .map(String::from)
+            .collect()
+    } else {
+        vec![
+            "packages:".into(),
+            "  - .".into(),
+            "nodeLinker: hoisted".into(),
+            "autoInstallPeers: false".into(),
+        ]
+    };
+    let mut changed = false;
+
+    let mut builds: Vec<String> = vec![
+        "cloudflared".into(),
+        "ssh2".into(),
+        "cpu-features".into(),
+    ];
+    for b in extra_builds {
+        if !builds.contains(b) {
+            builds.push(b.clone());
+        }
+    }
+    let allow_idx = lines
+        .iter()
+        .position(|l| l.trim_end() == "allowBuilds:" || l.starts_with("allowBuilds:"));
+    match allow_idx {
+        Some(idx) => {
+            let mut end = idx + 1;
+            while end < lines.len() && lines[end].starts_with("  ") {
+                end += 1;
+            }
+            let existing: Vec<String> = lines[idx + 1..end]
+                .iter()
+                .filter_map(|l| l.trim_start().split(':').next().map(|s| s.trim().to_string()))
+                .collect();
+            for b in &builds {
+                if !existing.contains(b) {
+                    lines.insert(end, format!("  {b}: true"));
+                    end += 1;
+                    changed = true;
+                }
+            }
+        }
+        None => {
+            lines.push("allowBuilds:".into());
+            for b in &builds {
+                lines.push(format!("  {b}: true"));
+            }
+            changed = true;
+        }
+    }
+    if !lines.iter().any(|l| l.starts_with("minimumReleaseAge:")) {
+        lines.push("minimumReleaseAge: 0".into());
+        changed = true;
+    }
+    if changed {
+        std::fs::write(&yaml_path, lines.join("\n") + "\n")?;
+    }
+    Ok(())
+}
+
+/// 从 pnpm 输出提取 "Ignored build scripts: a, b" 中的包名（自动补 allowBuilds 用）。
+/// 取 "build scripts:" 后到第一个英文句号之间的逗号分隔片段，避免把错误消息
+/// 里的普通单词（Run/pnpm/approve-builds…）误当包名。
+fn extract_pkg_names(text: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for line in text.lines() {
+        if let Some(idx) = line.find("build scripts:") {
+            let rest = &line[idx + "build scripts:".len()..];
+            let end = rest.find('.').unwrap_or(rest.len());
+            for tok in rest[..end].split(',') {
+                let t = tok.trim().trim_matches('"').trim();
+                if valid_pkg_name(t) && !out.iter().any(|x| x == t) {
+                    out.push(t.to_string());
+                }
+            }
+        }
+    }
+    out
+}
+
+/// 保留输出尾部 max 字符（输出可能很大，尾部最有价值；按 char 安全截断）。
+fn tail_text(s: &str, max: usize) -> String {
+    let chars: Vec<char> = s.chars().collect();
+    if chars.len() <= max {
+        s.to_string()
+    } else {
+        let kept: String = chars[chars.len() - max..].iter().collect();
+        format!("…（输出过长，截断前 {} 字符）\n{kept}", chars.len())
+    }
+}
+
+/// 执行一次 `dsh plugin --profile web <op> <pkg>`，返回（合并输出, 是否成功）。
+fn run_dsh_plugin(
+    app: &AppHandle,
+    op: &str,
+    pkg: &str,
+    extra_builds: &[String],
+) -> Result<(String, bool), String> {
+    let p = paths_from_app(app);
+    let node = node_bin(&p.resources);
+    let closure = active_closure(&p)
+        .ok_or_else(|| format!("dsh 闭包未找到：{}", p.resources.display()))?;
+    let bin = closure.join("node_modules/@deepseek-ai/dsh/lib/bin.js");
+    let home = home_dir();
+    let profile = home.join(".dsh/profiles/web");
+    // 内置 pnpm（@pnpm/exe，由 prepare-resources 打包）；缺失时给明确错误
+    let pnpm_bin = if cfg!(windows) {
+        p.resources.join("pnpm-bin/pnpm.exe")
+    } else {
+        p.resources.join("pnpm-bin/pnpm")
+    };
+    if !pnpm_bin.exists() {
+        return Err(format!(
+            "内置 pnpm 缺失：{}\n请重新安装 App（或自行安装 pnpm 后重试）",
+            pnpm_bin.display()
+        ));
+    }
+    // 插件操作串行化（ensure 的读-改-写与 dsh reconcile 非原子）
+    let _guard = mlock(&PLUGIN_LOCK);
+    ensure_pnpm_workspace(&profile, extra_builds)
+        .map_err(|e| format!("写入 pnpm-workspace.yaml 失败：{e}"))?;
+
+    let mut cmd = Command::new(&node);
+    #[cfg(target_os = "windows")]
+    {
+        cmd = no_console(cmd); // node.exe 是控制台程序，避免弹出控制台窗口
+    }
+    // 用户环境合并（macOS）：PATH 里可能有用户自己的 pnpm；随后 prepend 内置 pnpm-bin
+    #[cfg(target_os = "macos")]
+    apply_user_env(&mut cmd);
+    // 内置 pnpm（@pnpm/exe）优先于系统 pnpm，行为可预期
+    prepend_path(&mut cmd, &p.resources.join("pnpm-bin"));
+    // 尊重用户设置的 npm registry 覆盖
+    if let Some(reg) = load_settings(app).registry {
+        cmd.env("npm_config_registry", reg);
+    }
+    cmd.arg(&bin)
+        .arg("plugin")
+        .arg("--profile")
+        .arg("web")
+        .arg(op)
+        .arg(pkg)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    if cfg!(windows) {
+        cmd.env("USERPROFILE", &home).env("HOME", &home);
+    } else {
+        cmd.env("HOME", &home);
+    }
+    let out = cmd
+        .output()
+        .map_err(|e| format!("执行 dsh plugin 失败：{e}"))?;
+    let success = out.status.success();
+    let mut text = String::from_utf8_lossy(&out.stdout).into_owned();
+    text.push_str(&String::from_utf8_lossy(&out.stderr));
+    logln!(
+        "[plugin] dsh plugin {op} {pkg} -> exit {}",
+        out.status
+    );
+    Ok((format!("退出码 {}\n\n{}", out.status, tail_text(&text, 60000)), success))
+}
+
+/// 前端插件管理窗口的 command：安装(add)/卸载(remove) 插件。
+/// pnpm 11 构建脚本门禁失败时自动补写 allowBuilds 并重试（最多 2 轮）。
+/// 最终仍失败时返回 Err（输出为错误信息），前端按失败态展示。
+///
+/// 安全：仅接受来自「插件管理」窗口（label == PLUGIN_LABEL）的调用。远程工作台
+/// 页面（http://127.0.0.1，含第三方插件 bundle）也能拿到 window.__TAURI__
+/// （withGlobalTauri），本校验把 plugin_op 的授权面收回到专用窗口，防止远程
+/// 内容诱导安装任意 npm 包并执行其构建脚本。
+#[tauri::command]
+fn plugin_op(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+    op: String,
+    pkg: String,
+) -> Result<String, String> {
+    if window.label() != PLUGIN_LABEL {
+        return Err("该操作仅限插件管理窗口使用".to_string());
+    }
+    if op != "add" && op != "remove" {
+        return Err(format!("不支持的插件操作：{op}（仅支持 add / remove）"));
+    }
+    if !valid_pkg_name(&pkg) {
+        return Err("包名不合法（仅允许字母、数字与 @ . _ - / ~，且不能以 - 开头）".to_string());
+    }
+    let (mut output, mut success) = run_dsh_plugin(&app, &op, &pkg, &[])?;
+    for _ in 0..2 {
+        if success {
+            break;
+        }
+        let hits_ignored = output.contains("ERR_PNPM_IGNORED_BUILDS")
+            || output.to_lowercase().contains("ignored build scripts");
+        if !hits_ignored {
+            break;
+        }
+        let extra = extract_pkg_names(&output);
+        if extra.is_empty() {
+            break;
+        }
+        logln!("[plugin] auto-approving build scripts: {extra:?}");
+        (output, success) = run_dsh_plugin(&app, &op, &pkg, &extra)?;
+    }
+    if success {
+        Ok(output)
+    } else {
+        Err(output)
+    }
+}
+
+/// 打开（或聚焦）插件管理窗口。
+fn open_plugin_manager(app: &AppHandle) {
+    if let Some(w) = app.get_webview_window(PLUGIN_LABEL) {
+        let _ = w.show();
+        let _ = w.set_focus();
+        return;
+    }
+    match WebviewWindowBuilder::new(app, PLUGIN_LABEL, WebviewUrl::App("plugins.html".into()))
+        .title("插件管理")
+        .inner_size(560.0, 480.0)
+        .min_inner_size(400.0, 320.0)
+        .on_navigation(webview_navigation_policy)
+        .on_new_window(webview_new_window_policy)
+        .build()
+    {
+        Ok(w) => {
+            logln!("[plugins] window opened");
+            let _ = w;
+        }
+        Err(e) => logln!("[plugins] failed to open window: {e}"),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1932,6 +2224,7 @@ fn main() {
     }
 
     tauri::Builder::default()
+        .invoke_handler(tauri::generate_handler![plugin_op])
         .setup(|app| {
             let show = MenuItem::with_id(app, "show", "显示主窗口", true, None::<&str>)?;
             let open = MenuItem::with_id(app, "open_browser", "在浏览器中打开", true, None::<&str>)?;
@@ -1940,7 +2233,8 @@ fn main() {
                 MenuItem::with_id(app, "open_ws", "打开默认工作目录", true, None::<&str>)?;
             let check = MenuItem::with_id(app, "check_update", "检查更新…", true, None::<&str>)?;
             let logs = MenuItem::with_id(app, "open_logs", "打开日志", true, None::<&str>)?;
-            let restart = MenuItem::with_id(app, "restart", "重启 Harness", true, None::<&str>)?;
+            let restart = MenuItem::with_id(app, "restart", "重启工作台", true, None::<&str>)?;
+            let plugins = MenuItem::with_id(app, "plugins", "插件管理…", true, None::<&str>)?;
             let login = CheckMenuItem::with_id(
                 app,
                 "launch_login",
@@ -1979,6 +2273,7 @@ fn main() {
                     &check,
                     &logs,
                     &restart,
+                    &plugins,
                     &sep2,
                     &login,
                     &lan,
@@ -2017,6 +2312,7 @@ fn main() {
                     }
                     "lan_info" => show_lan_info(app),
                     "restart" => restart_dsh(app),
+                    "plugins" => open_plugin_manager(app),
                     "launch_login" => {
                         let next = !LOGIN_ON.load(Ordering::SeqCst);
                         match set_login_item(next) {
@@ -2102,4 +2398,99 @@ fn main() {
             RunEvent::ExitRequested { .. } | RunEvent::Exit => kill_dsh(),
             _ => {}
         });
+}
+
+// ---------------------------------------------------------------------------
+// 单元测试：插件管理纯函数
+// ---------------------------------------------------------------------------
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pkg_name_validation() {
+        // 合法
+        for ok in ["@linxin666/dsh-web-ui-all", "lodash", "@scope/pkg-name", "a.b-c_d", "x~y"] {
+            assert!(valid_pkg_name(ok), "{ok} 应合法");
+        }
+        // 非法
+        for bad in [
+            "",
+            "a b",
+            "a$b",
+            "a;rm",
+            "a\"b",
+            "a`b",
+            "a\\b",
+            "a|b",
+            "a>b",
+            ".x",
+            "-g",
+            "--dir=/tmp",
+            "--prefix=x",
+            "..",
+            &"x".repeat(215),
+        ] {
+            assert!(!valid_pkg_name(bad), "{bad:?} 应非法");
+        }
+    }
+
+    #[test]
+    fn extract_ignored_builds() {
+        let out = "ERR_PNPM_IGNORED_BUILDS Ignored build scripts: cloudflared, ssh2. Run \"pnpm approve-builds\" to pick which dependencies should be allowed to run scripts.";
+        let names = extract_pkg_names(out);
+        assert!(names.contains(&"cloudflared".to_string()));
+        assert!(names.contains(&"ssh2".to_string()));
+        assert_eq!(names.len(), 2);
+        // scope 包名 + 无句点结尾的 pnpm 11 真实格式（[ERR_...] 前缀、行尾无句点）
+        let real = "[ERR_PNPM_IGNORED_BUILDS] Ignored build scripts: @scope/pkg, cpu-features, ssh2";
+        let names2 = extract_pkg_names(real);
+        assert!(names2.contains(&"@scope/pkg".to_string()));
+        assert!(names2.contains(&"cpu-features".to_string()));
+        assert_eq!(names2.len(), 3);
+        assert!(extract_pkg_names("no matches here").is_empty());
+    }
+
+    #[test]
+    fn workspace_gate_config() {
+        let dir = std::env::temp_dir().join(format!("dsh-ws-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        // 首次：文件不存在 → 生成模板 + 门禁配置
+        ensure_pnpm_workspace(&dir, &["cloudflared".into()]).unwrap();
+        let yaml = std::fs::read_to_string(dir.join("pnpm-workspace.yaml")).unwrap();
+        assert!(yaml.contains("nodeLinker: hoisted"));
+        assert!(yaml.contains("allowBuilds:"));
+        assert!(yaml.contains("  cloudflared: true"));
+        assert!(yaml.contains("minimumReleaseAge: 0"));
+        // 幂等：再次调用不重复
+        ensure_pnpm_workspace(&dir, &["cloudflared".into()]).unwrap();
+        let again = std::fs::read_to_string(dir.join("pnpm-workspace.yaml")).unwrap();
+        assert_eq!(yaml, again);
+        // 补充新包名（allowBuilds 已存在时插入块尾）
+        ensure_pnpm_workspace(&dir, &["ssh2".into(), "some-other".into()]).unwrap();
+        let third = std::fs::read_to_string(dir.join("pnpm-workspace.yaml")).unwrap();
+        assert!(third.contains("  ssh2: true"));
+        assert!(third.contains("  some-other: true"));
+        assert!(!third.contains("  ssh2: true\n  ssh2: true"));
+        // minimumReleaseAge 已存在时保持幂等、不重复
+        assert_eq!(third.matches("minimumReleaseAge:").count(), 1);
+        ensure_pnpm_workspace(&dir, &[]).unwrap();
+        let fourth = std::fs::read_to_string(dir.join("pnpm-workspace.yaml")).unwrap();
+        assert_eq!(fourth.matches("minimumReleaseAge:").count(), 1);
+        assert_eq!(fourth, third); // 无新增时内容不变
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn tail_limits_output() {
+        assert_eq!(tail_text("short", 100), "short");
+        let long = "x".repeat(1000);
+        let t = tail_text(&long, 100);
+        assert!(t.contains("截断"));
+        assert!(t.ends_with("x".repeat(100).as_str()));
+        // char 边界安全（中文）
+        let cn = "中".repeat(500);
+        let t2 = tail_text(&cn, 100);
+        assert!(t2.ends_with("中".repeat(100).as_str()));
+    }
 }
