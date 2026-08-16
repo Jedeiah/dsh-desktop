@@ -28,28 +28,224 @@ function safeEqual(a, b) {
   return crypto.timingSafeEqual(ba, bb);
 }
 
+// 登录页：与壳应用启动页同一设计语言（粉紫蓝漂移光斑 + 动态噪点 + 深紫玻璃卡片）。
 function loginPage(err) {
-  return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>DeepSeek Harness 访问验证</title>
-<style>
-body{font-family:-apple-system,system-ui,sans-serif;background:#0d1117;color:#e6edf3;
-display:flex;align-items:center;justify-content:center;height:100vh;margin:0}
-.card{background:#161b22;border:1px solid #30363d;border-radius:12px;padding:32px;width:min(360px,90vw)}
-h1{font-size:18px;margin:0 0 4px}
-.sub{font-size:13px;color:#8b949e;margin-bottom:8px}
-input{width:100%;box-sizing:border-box;padding:10px;border-radius:8px;border:1px solid #30363d;
-background:#0d1117;color:#e6edf3;font-size:16px;margin:12px 0}
-button{width:100%;padding:10px;border-radius:8px;border:none;background:#2f81f7;color:#fff;font-size:16px;cursor:pointer}
-.err{color:#f85149;font-size:13px;margin-top:8px}
-</style></head><body>
-<form class="card" method="post" action="${LOGIN_PATH}">
-<h1>DeepSeek Harness</h1>
-<div class="sub">请输入访问令牌继续</div>
-<input name="token" type="password" placeholder="访问令牌" autofocus required>
-<button type="submit">进入</button>
-${err ? `<div class="err">${err}</div>` : ''}
-</form></body></html>`;
+  return `<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>DeepSeek Harness 访问验证</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+
+      body {
+        font-family: -apple-system, system-ui, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+        background: #05060a;
+        color: #f0f2f7;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        height: 100vh;
+        margin: 0;
+        overflow: hidden;
+      }
+
+      /* ===== 高饱和氛围光斑 + 漂移动画（与启动页一致） ===== */
+      .glow {
+        position: fixed;
+        z-index: 0;
+        border-radius: 50%;
+        filter: blur(100px);
+        pointer-events: none;
+        will-change: transform;
+        animation: drift 20s ease-in-out infinite alternate;
+      }
+      .glow--a {
+        width: 46vw; height: 46vw; left: -12vw; top: -8vh;
+        background: radial-gradient(circle, rgba(250, 147, 250, 0.55) 0%, rgba(250, 147, 250, 0) 70%);
+        animation-duration: 18s;
+      }
+      .glow--b {
+        width: 42vw; height: 42vw; right: -10vw; top: 24vh;
+        background: radial-gradient(circle, rgba(152, 58, 214, 0.55) 0%, rgba(152, 58, 214, 0) 70%);
+        animation-duration: 24s;
+        animation-delay: -6s;
+      }
+      .glow--c {
+        width: 50vw; height: 50vw; left: 22vw; bottom: -22vh;
+        background: radial-gradient(circle, rgba(47, 129, 247, 0.5) 0%, rgba(47, 129, 247, 0) 70%);
+        animation-duration: 28s;
+        animation-delay: -12s;
+      }
+      @keyframes drift {
+        from { transform: translate3d(0, 0, 0) scale(1); }
+        to   { transform: translate3d(6vw, -4vh, 0) scale(1.15); }
+      }
+
+      /* ===== 动态噪点（与启动页一致） ===== */
+      body::after {
+        content: '';
+        position: fixed;
+        inset: 0;
+        z-index: 0;
+        background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+        opacity: 0.06;
+        mix-blend-mode: overlay;
+        pointer-events: none;
+        animation: grainShift 0.5s steps(4) infinite;
+      }
+      @keyframes grainShift {
+        0%   { background-position: 0 0; }
+        25%  { background-position: -20px 10px; }
+        50%  { background-position: 10px -20px; }
+        75%  { background-position: -10px 20px; }
+        100% { background-position: 0 0; }
+      }
+
+      /* ===== 深紫玻璃卡片（启动页玻璃胶囊的放大版） ===== */
+      .card {
+        position: relative;
+        z-index: 1;
+        width: min(340px, 90vw);
+        padding: 36px 30px 28px;
+        border-radius: 20px;
+        background: rgba(28, 27, 36, 0.45);
+        backdrop-filter: blur(20px);
+        -webkit-backdrop-filter: blur(20px);
+        box-shadow:
+          0 0 34px rgba(201, 103, 232, 0.22),
+          inset 0 1px 1px rgba(255, 255, 255, 0.15),
+          0 20px 60px rgba(0, 0, 0, 0.45);
+      }
+      .card::before {
+        content: '';
+        position: absolute;
+        inset: 0;
+        border-radius: inherit;
+        padding: 1.5px;
+        background: linear-gradient(180deg,
+          rgba(255,255,255,0.55) 0%,
+          rgba(255,255,255,0.15) 40%,
+          rgba(255,255,255,0.15) 60%,
+          rgba(255,255,255,0.55) 100%);
+        -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+        -webkit-mask-composite: xor;
+                mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+                mask-composite: exclude;
+        pointer-events: none;
+      }
+
+      h1 {
+        font-size: 17px;
+        font-weight: 600;
+        letter-spacing: 0.01em;
+        margin: 0 0 4px;
+        color: #f0f2f7;
+      }
+      .sub {
+        font-size: 13px;
+        color: rgba(240, 242, 247, 0.55);
+        margin-bottom: 20px;
+      }
+
+      /* 玻璃输入框（聚焦紫色光环，配套启动页的紫色系） */
+      input {
+        width: 100%;
+        box-sizing: border-box;
+        padding: 10px 12px;
+        border-radius: 10px;
+        border: 1px solid rgba(255, 255, 255, 0.14);
+        background: rgba(255, 255, 255, 0.06);
+        backdrop-filter: blur(10px);
+        -webkit-backdrop-filter: blur(10px);
+        color: #f0f2f7;
+        font-size: 15px;
+        margin: 0 0 14px;
+        outline: none;
+        transition: border-color 0.2s ease, box-shadow 0.2s ease;
+      }
+      input::placeholder { color: rgba(240, 242, 247, 0.35); }
+      input:focus {
+        border-color: rgba(201, 103, 232, 0.65);
+        box-shadow: 0 0 0 3px rgba(152, 58, 214, 0.2), 0 0 16px rgba(201, 103, 232, 0.25);
+      }
+
+      /* 玻璃态按钮（半透明紫色底 + blur + 渐变描边 + 紫色光晕，短款居中） */
+      button {
+        position: relative;
+        display: block;
+        width: 160px;
+        margin: 0 auto;
+        padding: 10px 12px;
+        border-radius: 10px;
+        border: none;
+        background: linear-gradient(180deg, rgba(201, 103, 232, 0.16), rgba(122, 90, 248, 0.10));
+        backdrop-filter: blur(16px);
+        -webkit-backdrop-filter: blur(16px);
+        color: #f0f2f7;
+        font-size: 15px;
+        font-weight: 500;
+        cursor: pointer;
+        box-shadow:
+          inset 0 1px 1px rgba(255, 255, 255, 0.15),
+          0 0 18px rgba(201, 103, 232, 0.18);
+        transition: background 0.2s ease, box-shadow 0.2s ease, transform 0.15s ease;
+      }
+      /* 渐变描边（与卡片同款） */
+      button::before {
+        content: '';
+        position: absolute;
+        inset: 0;
+        border-radius: inherit;
+        padding: 1.3px;
+        background: linear-gradient(180deg,
+          rgba(255,255,255,0.5) 0%,
+          rgba(255,255,255,0.14) 40%,
+          rgba(255,255,255,0.14) 60%,
+          rgba(255,255,255,0.5) 100%);
+        -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+        -webkit-mask-composite: xor;
+                mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+                mask-composite: exclude;
+        pointer-events: none;
+      }
+      button:hover {
+        background: linear-gradient(180deg, rgba(201, 103, 232, 0.26), rgba(122, 90, 248, 0.16));
+        box-shadow:
+          inset 0 1px 1px rgba(255, 255, 255, 0.2),
+          0 0 28px rgba(201, 103, 232, 0.4);
+      }
+      button:active { transform: scale(0.98); }
+
+      .err {
+        color: #f85149;
+        font-size: 13px;
+        margin-top: 12px;
+        text-align: center;
+        text-shadow: 0 0 12px rgba(248, 81, 73, 0.4);
+      }
+
+      /* 系统开启"减少动态效果"时停用全部动画 */
+      @media (prefers-reduced-motion: reduce) {
+        .glow, body::after { animation: none; }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="glow glow--a" aria-hidden="true"></div>
+    <div class="glow glow--b" aria-hidden="true"></div>
+    <div class="glow glow--c" aria-hidden="true"></div>
+
+    <form class="card" method="post" action="${LOGIN_PATH}">
+      <h1>DeepSeek Harness</h1>
+      <div class="sub">请输入访问令牌继续</div>
+      <input name="token" type="password" placeholder="访问令牌" autofocus required />
+      <button type="submit">进入</button>
+      ${err ? `<div class="err" role="alert">${err}</div>` : ''}
+    </form>
+  </body>
+</html>`;
 }
 
 function hasValidCookie(req) {
