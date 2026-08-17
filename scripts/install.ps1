@@ -1,4 +1,4 @@
-# DSh Desktop 一键安装 / 升级脚本（Windows / PowerShell）
+﻿# DSh Desktop 一键安装 / 升级脚本（Windows / PowerShell）
 #
 # 用法（PowerShell，自动安装/升级到最新正式版）：
 #   powershell -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/Jedeiah/dsh-desktop/main/scripts/install.ps1 | iex"
@@ -30,9 +30,9 @@ try {
     # 兼容 Windows PowerShell 5.1（HttpWebResponse.ResponseUri）与 PowerShell 7
     # （HttpResponseMessage.RequestMessage.RequestUri）。
     if ($Resp.BaseResponse.ResponseUri) {
-        $Tag = [System.Uri]::UnescapeDataString($Resp.BaseResponse.ResponseUri.AbsolutePath -split "/" | Select-Object -Last 1)
+        $Tag = [System.Uri]::UnescapeDataString(($Resp.BaseResponse.ResponseUri.AbsolutePath -split "/" | Select-Object -Last 1))
     } elseif ($Resp.BaseResponse.RequestMessage.RequestUri) {
-        $Tag = [System.Uri]::UnescapeDataString($Resp.BaseResponse.RequestMessage.RequestUri.AbsolutePath -split "/" | Select-Object -Last 1)
+        $Tag = [System.Uri]::UnescapeDataString(($Resp.BaseResponse.RequestMessage.RequestUri.AbsolutePath -split "/" | Select-Object -Last 1))
     }
     if (-not $Tag -or -not $Tag.StartsWith("v")) {
         throw "未找到最新版本（可能尚无发布）"
@@ -67,15 +67,20 @@ try {
     $p = Start-Process -FilePath $SetupPath -ArgumentList "/S" -PassThru -Wait
 
     # --- 启动 --------------------------------------------------------------
-    $Installed = Get-ChildItem -Path @(
-        (Join-Path $env:LOCALAPPDATA "Programs\DeepSeek Harness"),
-        (Join-Path $env:ProgramFiles "DeepSeek Harness")
-    ) -Filter $ExeName -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+    # NSIS installMode=currentUser 装在固定路径；直接 Test-Path（不递归，
+    # 避免无权限/缓慢扫描 %ProgramFiles%）。
+    $Installed = $null
+    foreach ($c in @(
+        (Join-Path $env:LOCALAPPDATA "Programs\DeepSeek Harness\$ExeName"),
+        (Join-Path $env:ProgramFiles "DeepSeek Harness\$ExeName")
+    )) {
+        if (Test-Path $c) { $Installed = Get-Item -LiteralPath $c; break }
+    }
     if ($Installed) {
         Start-Process $Installed.FullName
         Write-Host "==> ✅ 安装完成（$Tag）"
     } else {
-        Write-Host "==> 安装完成（$Tag），未找到已安装程序，请从开始菜单启动"
+        Write-Host "==> 安装完成（$Tag），请从桌面/开始菜单启动"
     }
 } finally {
     Remove-Item -Recurse -Force $Tmp -ErrorAction SilentlyContinue

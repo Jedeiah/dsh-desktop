@@ -23,9 +23,12 @@ const TARGET = `http://127.0.0.1:${DSH_PORT}`;
 const COOKIE_NAME = 'dsh_lan_token';
 const TTL_SECONDS = 30 * 24 * 3600; // 30 天
 const LOGIN_PATH = '/__lan_login';
-// 一次性配对码：进程启动时随机生成，重启（重开局域网访问）即失效。
-// 扫码链接带此码自动登录；旧二维码在代理重启后自动作废。
-const PAIR = crypto.randomBytes(32).toString('hex');
+// 一次性配对码：优先接受 App 传入（第 5 参数，App 用它构造二维码）；未传则
+// 自生成（独立运行）。重启（重开局域网访问）即失效。
+const PAIR =
+  process.argv[5] && /^[0-9a-f]{64}$/.test(String(process.argv[5]))
+    ? String(process.argv[5])
+    : crypto.randomBytes(32).toString('hex');
 // 设备会话表：登录（扫码/手动）签发随机设备凭据，cookie 值不再等于主令牌。
 // 表在内存中，代理重启即清空 → 所有已签发 cookie 立刻失效（"停止=撤销全部"）。
 // 上限 MAX_DEVICES，超出时淘汰最早签发的设备（FIFO）。
@@ -91,7 +94,19 @@ function safeEqual(a, b) {
 }
 
 // 登录页：与壳应用启动页同一设计语言（粉紫蓝漂移光斑 + 动态噪点 + 深紫玻璃卡片）。
-function loginPage(err) {
+/// 本机来源判断：二维码只展示给本机（127.0.0.1），手机等 LAN 访问者只见令牌
+/// 输入，避免"手机扫自己屏幕上的码"的困惑，也把配对码的展示面收窄到本机。
+function isLocalVisitor(req) {
+  const addr = (req.socket && req.socket.remoteAddress) || '';
+  return (
+    addr === '127.0.0.1' ||
+    addr === '::1' ||
+    addr === '::ffff:127.0.0.1' ||
+    addr === '::ffff:0:127.0.0.1'
+  );
+}
+
+function loginPage(err, showQr) {
   return `<!doctype html>
 <html lang="zh-CN">
   <head>
@@ -336,18 +351,18 @@ function loginPage(err) {
     <form class="card" method="post" action="${LOGIN_PATH}">
       <h1>DeepSeek Harness</h1>
       <div class="sub">扫码或输入访问令牌连接</div>
-      <div class="qr">
+      ${showQr ? `<div class="qr">
         <div class="qr-box">
           <div id="qr" data-url="${qrUrl()}"></div>
-          <div class="qr-hint">手机扫码即可连接（令牌配对码，重启后失效）</div>
+          <div class="qr-hint">手机扫码即可连接（配对码，重启工作台后失效）</div>
         </div>
       </div>
-      <div class="divider"><span>或输入访问令牌</span></div>
+      <div class="divider"><span>或在手机上打开下方地址后输入令牌</span></div>` : ''}
       <input name="token" type="password" placeholder="访问令牌" autofocus required />
       <button type="submit">进入</button>
       ${err ? `<div class="err" role="alert">${err}</div>` : ''}
     </form>
-    <script src="/qrcode.js"></script>
+    ${showQr ? `<script src="/qrcode.js"></script>
     <script>
       (function () {
         var el = document.getElementById('qr');
@@ -359,7 +374,7 @@ function loginPage(err) {
           el.innerHTML = qr.createImgTag(5, 8);
         }
       })();
-    </script>
+    </script>` : ''}
   </body>
 </html>`;
 }
@@ -425,13 +440,13 @@ const server = http.createServer((req, res) => {
           res.end();
         } else {
           res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-          res.end(loginPage('令牌不正确，请重试'));
+          res.end(loginPage('令牌不正确，请重试', isLocalVisitor(req)));
         }
       });
       return;
     }
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-    res.end(loginPage(''));
+    res.end(loginPage('', isLocalVisitor(req)));
     return;
   }
 
@@ -627,6 +642,12 @@ function selfTest() {
   ok('新签发的仍有效', validateDeviceToken([...DEVICES.keys()].pop()));
   // 配对码存在且每次启动不同（进程级）
   ok('配对码为 64 位 hex', /^[0-9a-f]{64}$/.test(PAIR));
+  // 本机来源判定（登录页二维码仅本机显示）
+  const mkReq = (addr) => ({ socket: { remoteAddress: addr } });
+  ok('本机 127.0.0.1 显示二维码', isLocalVisitor(mkReq('127.0.0.1')));
+  ok('本机 ::ffff:127.0.0.1 显示二维码', isLocalVisitor(mkReq('::ffff:127.0.0.1')));
+  ok('局域网 IP 不显示二维码', !isLocalVisitor(mkReq('192.168.1.2')));
+  ok('空地址不显示二维码', !isLocalVisitor(mkReq(null)));
   const failed = asserts.filter((a) => !a.pass);
   for (const a of asserts) console.log(`  ${a.pass ? '✓' : '✗'} ${a.name}`);
   if (failed.length > 0) {

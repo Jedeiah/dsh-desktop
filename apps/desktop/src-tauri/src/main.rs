@@ -105,6 +105,8 @@ const RESTART_BASE_MS: u64 = 1000;
 const RESTART_MAX_MS: u64 = 15000;
 const WINDOW_LABEL: &str = "main";
 const PLUGIN_LABEL: &str = "plugins";
+const LAN_LABEL: &str = "lan";
+const UNINSTALL_LABEL: &str = "uninstall";
 
 /// 用户主目录：优先平台主目录环境变量（unix: HOME，Windows: USERPROFILE），
 /// 回退到系统用户目录（跨平台，不写死用户名）。
@@ -227,16 +229,46 @@ fn resource_dir(app: &AppHandle) -> PathBuf {
     let res = app.path().resource_dir().unwrap_or_default();
     for cand in [res.join("resources"), res] {
         if cand.join("dsh").is_dir() {
-            return cand;
+            return strip_verbatim(cand);
         }
     }
-    std::env::current_dir()
-        .unwrap_or_default()
-        .join("resources")
+    strip_verbatim(
+        std::env::current_dir()
+            .unwrap_or_default()
+            .join("resources"),
+    )
+}
+
+/// Windows verbatim 前缀剥离核心逻辑（纯函数，可跨平台单测）：
+/// `\\?\C:\...` → `C:\...`；`\\?\UNC\server\share` → `\\server\share`；无前缀 → None。
+/// macOS/Linux 主构建中仅单测使用，故放行 dead_code 提示。
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn strip_verbatim_prefix(s: &str) -> Option<String> {
+    if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
+        Some(format!(r"\\{rest}"))
+    } else if let Some(rest) = s.strip_prefix(r"\\?\") {
+        Some(rest.to_string())
+    } else {
+        None
+    }
+}
+
+/// Windows：剥离 `\\?\` verbatim 前缀（见 strip_verbatim_prefix）。`std::env::
+/// current_exe()` 在 Windows 返回 verbatim 路径，泄漏进子进程参数后 node 的
+/// 模块解析会崩溃（`EISDIR: lstat 'C:'`），导致 dsh 无法启动。
+/// 非 Windows / 无前缀时原样返回。
+fn strip_verbatim(p: PathBuf) -> PathBuf {
+    #[cfg(target_os = "windows")]
+    {
+        if let Some(c) = strip_verbatim_prefix(&p.to_string_lossy()) {
+            return PathBuf::from(c);
+        }
+    }
+    p
 }
 
 fn paths_from_app(app: &AppHandle) -> Paths {
-    let app_data = app.path().app_data_dir().unwrap_or_default();
+    let app_data = strip_verbatim(app.path().app_data_dir().unwrap_or_default());
     Paths {
         resources: resource_dir(app),
         app_data,
@@ -248,18 +280,20 @@ fn paths_from_app(app: &AppHandle) -> Paths {
 /// `resources` beside the exe), or dev cwd.
 fn paths_from_cli() -> Paths {
     let exe = std::env::current_exe().unwrap_or_default();
-    let exe_dir = exe.parent().unwrap_or(Path::new(".")).to_path_buf();
-    let cwd = std::env::current_dir().unwrap_or_default();
+    let exe_dir = strip_verbatim(exe.parent().unwrap_or(Path::new(".")).to_path_buf());
+    let cwd = strip_verbatim(std::env::current_dir().unwrap_or_default());
     let candidates = [
         exe_dir.join("../Resources/resources"), // macOS .app bundle layout
         exe_dir.join("resources"),              // Windows / generic: beside the exe
         exe_dir,                                // Windows: resources may be the exe dir itself
         cwd.join("resources"),                  // dev: repo cwd
     ];
-    let resources = candidates
-        .into_iter()
-        .find(|p| p.join("dsh").is_dir())
-        .unwrap_or_else(|| cwd.join("resources"));
+    let resources = strip_verbatim(
+        candidates
+            .into_iter()
+            .find(|p| p.join("dsh").is_dir())
+            .unwrap_or_else(|| cwd.join("resources")),
+    );
     Paths {
         resources,
         app_data: update::app_data_from_home(),
@@ -439,6 +473,9 @@ struct Settings {
     /// 局域网访问令牌（首次开启时生成）
     #[serde(default)]
     lan_token: Option<String>,
+    /// 当前局域网配对码（每次开启重新生成；App 端二维码用它构造扫码链接）
+    #[serde(default)]
+    lan_pair: Option<String>,
 }
 
 fn settings_path_from_data(app_data: &Path) -> PathBuf {
@@ -476,10 +513,12 @@ fn save_settings(app: &AppHandle, s: &Settings) {
 }
 
 fn workspace_dir(app: &AppHandle) -> PathBuf {
-    load_settings(app)
-        .default_cwd
-        .filter(|p| p.is_dir())
-        .unwrap_or_else(home_dir)
+    strip_verbatim(
+        load_settings(app)
+            .default_cwd
+            .filter(|p| p.is_dir())
+            .unwrap_or_else(home_dir),
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -752,18 +791,25 @@ fn open_dir(dir: &Path) {
 }
 
 /// 是否为允许在 WebView 内导航的地址：App 内置页（tauri://localhost /
-/// http(s)://tauri.localhost）与 dsh 工作台源（http://127.0.0.1:*、
-/// http://localhost:*）。精确比对 host（不用 starts_with，避免
-/// `http://127.0.0.1evil.com` 这类恶意主机名被误放行）。
+/// http(s)://tauri.localhost）与 **dsh 工作台源端口**（http://127.0.0.1:<dsh
+/// 实际端口>）。只放行"当前 dsh 端口"，避免 LAN 代理端口（3190 等）在 App 内
+/// 打开（应走系统浏览器）。未就绪（DSH_URL 空）或 host 不符时一律放行到外部。
 fn is_internal_webview_url(url: &tauri::Url) -> bool {
     if url.scheme() == "tauri" {
         return true; // 内置页（tauri://localhost/...）
     }
     if url.scheme() == "http" || url.scheme() == "https" {
-        return matches!(
-            url.host_str(),
-            Some("tauri.localhost") | Some("127.0.0.1") | Some("localhost")
-        );
+        match url.host_str() {
+            Some("tauri.localhost") => return true,
+            Some("127.0.0.1") | Some("localhost") => {
+                // 仅放行与 dsh 工作台一致的目标端口
+                let wanted = mlock(&DSH_URL)
+                    .as_ref()
+                    .and_then(|u| u.rsplit(':').next().and_then(|p| p.parse::<u16>().ok()));
+                return Some(url.port().unwrap_or(0)) == wanted;
+            }
+            _ => return false,
+        }
     }
     false
 }
@@ -1236,6 +1282,145 @@ fn open_plugin_manager(app: &AppHandle) {
     }
 }
 
+/// 打开（或聚焦）「扫码远程连接」窗口。
+fn open_lan_window(app: &AppHandle) {
+    if let Some(w) = app.get_webview_window(LAN_LABEL) {
+        let _ = w.show();
+        let _ = w.set_focus();
+        return;
+    }
+    match WebviewWindowBuilder::new(app, LAN_LABEL, WebviewUrl::App("lan.html".into()))
+        .title("扫码远程连接")
+        .inner_size(480.0, 560.0)
+        .min_inner_size(400.0, 480.0)
+        .on_navigation(webview_navigation_policy)
+        .on_new_window(webview_new_window_policy)
+        .build()
+    {
+        Ok(w) => {
+            logln!("[lan] window opened");
+            let _ = w;
+        }
+        Err(e) => logln!("[lan] failed to open window: {e}"),
+    }
+}
+
+/// 打开（或聚焦）卸载确认窗口。
+fn open_uninstall_window(app: &AppHandle) {
+    if let Some(w) = app.get_webview_window(UNINSTALL_LABEL) {
+        let _ = w.show();
+        let _ = w.set_focus();
+        return;
+    }
+    match WebviewWindowBuilder::new(app, UNINSTALL_LABEL, WebviewUrl::App("uninstall.html".into()))
+        .title("卸载 DeepSeek Harness？")
+        .inner_size(460.0, 320.0)
+        .resizable(false)
+        .on_navigation(webview_navigation_policy)
+        .on_new_window(webview_new_window_policy)
+        .build()
+    {
+        Ok(w) => {
+            logln!("[uninstall] window opened");
+            let _ = w;
+        }
+        Err(e) => logln!("[uninstall] failed to open window: {e}"),
+    }
+}
+
+/// 卸载确认窗口返回的状态。
+#[derive(Serialize)]
+struct LanState {
+    enabled: bool,
+    ip: String,
+    port: u16,
+    token: String,
+    pair: Option<String>,
+    qr_url: Option<String>,
+}
+
+/// 「扫码远程连接」窗口：读取当前局域网状态（开关/地址/令牌/二维码链接）。
+#[tauri::command]
+fn lan_state(app: AppHandle, window: tauri::WebviewWindow) -> Result<LanState, String> {
+    if window.label() != LAN_LABEL {
+        return Err("该操作仅限扫码远程连接窗口使用".to_string());
+    }
+    let s = load_settings(&app);
+    let token = s.lan_token.unwrap_or_default();
+    let pair = s.lan_pair.clone();
+    let port = s.lan_port.unwrap_or(LAN_DEFAULT_PORT);
+    let ip = lan_ip().unwrap_or_else(|| "127.0.0.1".into());
+    let enabled = LAN_ON.load(Ordering::SeqCst);
+    let qr_url = if enabled {
+        pair.as_ref().map(|p| format!("http://{ip}:{port}/?pair={p}"))
+    } else {
+        None
+    };
+    Ok(LanState {
+        enabled,
+        ip,
+        port,
+        token,
+        pair,
+        qr_url,
+    })
+}
+
+/// 「扫码远程连接」窗口：切换局域网访问开关（复用 set_lan_access 逻辑）。
+#[tauri::command]
+fn lan_toggle(app: AppHandle, window: tauri::WebviewWindow, enable: bool) -> Result<(), String> {
+    if window.label() != LAN_LABEL {
+        return Err("该操作仅限扫码远程连接窗口使用".to_string());
+    }
+    set_lan_access(&app, enable);
+    Ok(())
+}
+
+/// 卸载确认窗口：执行卸载（wipe=true 连 ~/.dsh 一起删）。
+/// 完整流程：销毁 WebView（释放 WebView2 数据占用）→ teardown → 移入回收站 → 退出。
+#[tauri::command]
+async fn uninstall_run(app: AppHandle, wipe: bool) -> Result<(), String> {
+    // 先销毁全部 WebView 窗口：释放 WebView2 用户数据目录（app_data 内）占用，
+    // Windows 共享锁下不销毁则删除必然 oserror 32。
+    for label in [WINDOW_LABEL, PLUGIN_LABEL, LAN_LABEL, UNINSTALL_LABEL] {
+        if let Some(w) = app.get_webview_window(label) {
+            let _ = w.destroy();
+        }
+    }
+    std::thread::sleep(Duration::from_millis(300)); // 等 WebView2 进程释放数据目录
+    // teardown（可能耗时：杀进程 + 删除重试）移到阻塞线程
+    let app2 = app.clone();
+    let teardown = tauri::async_runtime::spawn_blocking(move || {
+        let p = paths_from_app(&app2);
+        uninstall_teardown(&p, wipe)
+    })
+    .await
+    .map_err(|e| format!("卸载线程异常：{e}"))?;
+    if let Err(e) = teardown {
+        // 卸载确认窗口已销毁，JS 无法回显：用系统通知兜底
+        update::notify("卸载未完成", &e);
+        return Err(e);
+    }
+    // teardown 成功：移入回收站 / 引导系统卸载，然后退出
+    #[cfg(target_os = "macos")]
+    {
+        trash_self();
+        std::thread::sleep(Duration::from_millis(900));
+        clear_dock_recents();
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        if !trash_self() {
+            update::notify(
+                "请通过系统卸载",
+                "应用数据已清理。请到“设置 → 应用 → 已安装的应用”中卸载 DeepSeek Harness。",
+            );
+        }
+    }
+    app.exit(0);
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Update flows (GUI)
 // ---------------------------------------------------------------------------
@@ -1303,8 +1488,7 @@ fn periodic_check(app: AppHandle) {
 const LAN_DEFAULT_PORT: u16 = 3190;
 
 /// Get (or lazily generate) the LAN access token; persists via the caller's save.
-fn lan_token(s: &mut Settings) -> String {
-    if let Some(t) = &s.lan_token {
+fn lan_token(s: &mut Settings) -> String {    if let Some(t) = &s.lan_token {
         if !t.is_empty() {
             return t.clone();
         }
@@ -1322,6 +1506,24 @@ fn lan_token(s: &mut Settings) -> String {
     let t: String = buf.iter().map(|b| format!("{b:02x}")).collect();
     s.lan_token = Some(t.clone());
     t
+}
+
+/// 生成局域网配对码（64 位 hex，供 lan-proxy 免输登录与 App 端二维码）。
+/// lan-proxy 校验 64-hex 格式：熵源不可用时用两次时间采样填满 32 字节兜底。
+fn new_pair_code() -> String {
+    let mut buf = [0u8; 32];
+    if getrandom::getrandom(&mut buf).is_err() {
+        let now = || {
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos() as u128
+        };
+        let (a, b) = (now(), now());
+        buf[0..16].copy_from_slice(&a.to_le_bytes());
+        buf[16..32].copy_from_slice(&b.to_le_bytes());
+    }
+    buf.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// Detect the primary LAN IPv4 (best effort; platform-specific mechanism).
@@ -1458,7 +1660,11 @@ fn start_lan_unlocked(app: &AppHandle, dsh_port: &str, notify: bool) -> Result<(
     let mut s = load_settings(app);
     let token = lan_token(&mut s);
     let port = s.lan_port.unwrap_or(LAN_DEFAULT_PORT).to_string();
-    save_settings(app, &s); // persist the generated token/port
+    // 每次开启生成新配对码（App 端二维码用它构造扫码链接；lan-proxy 用它做
+    // 免输登录）。代理重启=新码=旧二维码作废，语义与"重启撤销全部设备"一致。
+    let pair = new_pair_code();
+    s.lan_pair = Some(pair.clone());
+    save_settings(app, &s); // persist the generated token/port/pair
 
     kill_lan_unlocked(); // mutex already held
     let gen = LAN_GEN.fetch_add(1, Ordering::SeqCst) + 1;
@@ -1472,6 +1678,7 @@ fn start_lan_unlocked(app: &AppHandle, dsh_port: &str, notify: bool) -> Result<(
         .arg(dsh_port)
         .arg(&token)
         .arg(&port)
+        .arg(&pair)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -1525,9 +1732,8 @@ fn start_lan_unlocked(app: &AppHandle, dsh_port: &str, notify: bool) -> Result<(
     start_sleep_guard(); // ① 阻止休眠（与"局域网访问"开关联动，双平台）
     start_mdns(app, s.lan_port.unwrap_or(LAN_DEFAULT_PORT)); // ② mDNS 通告（双平台）
     start_ip_watch(s.lan_port.unwrap_or(LAN_DEFAULT_PORT)); // ③ IP 变化轮询（双平台）
-    if notify {
-        lan_info_dialog(&token, s.lan_port.unwrap_or(LAN_DEFAULT_PORT));
-    }
+    // 开启后的地址/二维码统一在「扫码远程连接」窗口查看（托盘菜单）。
+    let _ = notify;
     Ok(())
 }
 
@@ -1574,93 +1780,10 @@ fn set_lan_access(app: &AppHandle, enable: bool) {
         Ok(())
     };
     if let Err(e) = result {
+        sync_lan_check(); // Tauri 点击已自动翻转勾选：失败时恢复菜单与 LAN_ON 一致
         update::notify("局域网访问设置失败", &e);
     }
 }
-
-/// Re-show the access address + token (menu "显示局域网访问信息").
-fn show_lan_info(app: &AppHandle) {
-    if !LAN_ON.load(Ordering::SeqCst) {
-        update::notify("局域网访问未开启", "请先在托盘菜单开启“局域网访问”");
-        return;
-    }
-    let s = load_settings(app);
-    let token = s.lan_token.unwrap_or_default();
-    let port = s.lan_port.unwrap_or(LAN_DEFAULT_PORT);
-    lan_info_dialog(&token, port);
-}
-
-/// Modal dialog showing the access address + token.
-/// macOS: osascript editable-field dialog with a copy button.
-/// Windows: rfd message dialog + clipboard copy (no editable field on Win).
-fn lan_info_dialog(token: &str, port: u16) {
-    let ip = lan_ip().unwrap_or_else(|| "127.0.0.1".into());
-    #[cfg(target_os = "macos")]
-    {
-        let mut script = format!(r#"display dialog "手机浏览器打开：" & return & "http://{ip}:{port}""#);
-        if MDNS_ON.load(Ordering::SeqCst) {
-            script.push_str(&format!(
-                r#" & return & "http://DeepSeek-Harness.local:{port}（IP 变了也不用改）" & return & "提示：.local 仅 iOS/macOS/同子网可用，Android 请用上方 IP 地址""#
-            ));
-        }
-        script.push_str(&format!(
-            r#" & return & return & "访问令牌（可选中复制，或点复制按钮）：" default answer "{token}" buttons {{"关闭", "复制令牌"}} default button "复制令牌" with title "局域网访问" with icon note"#
-        ));
-        if let Ok(out) = Command::new("osascript").args(["-e", &script]).output() {
-            let s = String::from_utf8_lossy(&out.stdout);
-            if s.contains("复制令牌") {
-                copy_to_clipboard(token);
-            }
-        }
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        let mut msg = format!("手机浏览器打开：\nhttp://{ip}:{port}");
-        if MDNS_ON.load(Ordering::SeqCst) {
-            msg.push_str(&format!("\nhttp://DeepSeek-Harness.local:{port}（IP 变了也不用改）"));
-        }
-        msg.push_str(&format!("\n\n访问令牌（点“Yes/是”复制）：\n{token}"));
-        let yes = rfd::MessageDialog::new()
-            .set_title("局域网访问")
-            .set_description(&msg)
-            .set_buttons(rfd::MessageButtons::YesNo)
-            .show();
-        if yes == rfd::MessageDialogResult::Yes {
-            copy_to_clipboard(token);
-        }
-    }
-}
-
-/// Copy text to the system clipboard via pbcopy (macOS).
-#[cfg(target_os = "macos")]
-fn copy_to_clipboard(text: &str) {
-    let mut child = match Command::new("pbcopy").stdin(Stdio::piped()).spawn() {
-        Ok(c) => c,
-        Err(_) => return,
-    };
-    if let Some(mut si) = child.stdin.take() {
-        use std::io::Write;
-        let _ = si.write_all(text.as_bytes());
-        drop(si);
-    }
-    let _ = child.wait();
-    update::notify("已复制", "访问令牌已复制到剪贴板");
-}
-
-/// Copy text to the system clipboard (Windows: arboard)。
-#[cfg(target_os = "windows")]
-fn copy_to_clipboard(text: &str) {
-    if let Ok(mut cb) = arboard::Clipboard::new() {
-        if cb.set_text(text.to_string()).is_ok() {
-            update::notify("已复制", "访问令牌已复制到剪贴板");
-            return;
-        }
-    }
-}
-
-/// Fallback for other platforms (no-op).
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
-fn copy_to_clipboard(_text: &str) {}
 
 /// On dsh readiness (and when LAN is enabled), (re)point the proxy at the
 /// current dsh port — dsh may have restarted on a new random port.
@@ -2056,10 +2179,32 @@ fn set_login_item(enable: bool) -> Result<(), String> {
 }
 
 /// Shared teardown for uninstall (also used by the CLI test hook).
+/// 删除目录并自动重试（Windows 共享锁：WebView2/日志句柄释放有延迟，
+/// macOS 的 unlink 无共享锁语义不受影响）。仍失败则返回最后一次错误。
+fn remove_dir_all_retry(dir: &std::path::Path) -> std::io::Result<()> {
+    const ATTEMPTS: u32 = 5;
+    const DELAY: Duration = Duration::from_millis(400);
+    for i in 0..ATTEMPTS {
+        match std::fs::remove_dir_all(dir) {
+            Ok(()) => return Ok(()),
+            Err(e) => {
+                if i + 1 == ATTEMPTS {
+                    return Err(e);
+                }
+                std::thread::sleep(DELAY);
+            }
+        }
+    }
+    unreachable!()
+}
+
 fn uninstall_teardown(p: &Paths, wipe_dsh: bool) -> Result<(), String> {
     kill_dsh();
     let _ = set_login_item_core(false);
     let home = home_dir();
+    // 关闭日志句柄：当前进程持有 logs/launcher.log，Windows 共享锁下不关则
+    // 删除 app_data 必然 oserror 32。后续 logln 不再写文件（卸载流程无需日志）。
+    *mlock(&LOG_FILE) = None;
     // app 数据 + WebView 缓存/状态（卸载器必须连缓存一起清干净）
     let mut dirs = vec![p.app_data.clone()];
     #[cfg(target_os = "macos")]
@@ -2071,18 +2216,28 @@ fn uninstall_teardown(p: &Paths, wipe_dsh: bool) -> Result<(), String> {
     {
         // WebView2 的用户数据/缓存落在 %LOCALAPPDATA%\<id>
         if let Some(local) = std::env::var_os("LOCALAPPDATA") {
-            dirs.push(PathBuf::from(local).join(APP_ID));
+            dirs.push(strip_verbatim(PathBuf::from(local)).join(APP_ID));
         }
     }
+    // 目录级删除：失败不中断整体卸载（残留会在重启后清理），逐个重试。
+    let mut leftovers: Vec<String> = Vec::new();
     for dir in dirs {
         if dir.exists() {
-            std::fs::remove_dir_all(&dir).map_err(|e| format!("删除 {} 失败: {e}", dir.display()))?;
+            if let Err(e) = remove_dir_all_retry(&dir) {
+                leftovers.push(format!("{}（{e}）", dir.display()));
+            }
         }
+    }
+    if !leftovers.is_empty() {
+        let msg = format!("以下目录被占用未能删除，重启电脑后即可手动清理：\n{}", leftovers.join("\n"));
+        logln!("[uninstall] 残留目录: {msg}");
+        update::notify("部分数据将延迟清理", &msg);
     }
     if wipe_dsh {
         let dsh_home = home.join(".dsh");
         if dsh_home.exists() {
-            std::fs::remove_dir_all(&dsh_home).map_err(|e| format!("删除 ~/.dsh 失败: {e}"))?;
+            // 用户明确要求删除 ~/.dsh：失败必须如实报告
+            remove_dir_all_retry(&dsh_home).map_err(|e| format!("删除 ~/.dsh 失败: {e}"))?;
         }
     }
     Ok(())
@@ -2121,84 +2276,6 @@ with open(p,'wb') as f: plistlib.dump(d, f, fmt=plistlib.FMT_BINARY)
 fn clear_dock_recents() {}
 
 /// Ask the user how to uninstall. Returns:
-/// Some(true) = uninstall + wipe ~/.dsh; Some(false) = uninstall, keep ~/.dsh;
-/// None = cancelled.
-#[cfg(target_os = "macos")]
-fn ask_uninstall() -> Option<bool> {
-    let script = r#"
-try
-  set r to display dialog "卸载 DeepSeek Harness 将执行：
-• 结束 dsh 子进程
-• 删除应用数据与登录自启项
-• 把 App 移入废纸篓（可恢复）
-
-~/.dsh（你的会话与凭据）默认保留，也可一并删除，且不可恢复。" with title "卸载 DeepSeek Harness？" buttons {"取消", "卸载（保留 ~/.dsh）", "卸载并删除 ~/.dsh"} default button "卸载（保留 ~/.dsh）" with icon caution
-  return button returned of r
-on error number -128
-  return "取消"
-end try
-"#;
-    let out = Command::new("osascript").args(["-e", script]).output().ok()?;
-    let s = String::from_utf8_lossy(&out.stdout);
-    if s.contains("卸载并删除") {
-        Some(true)
-    } else if s.contains("卸载（保留") {
-        Some(false)
-    } else {
-        None
-    }
-}
-
-/// Ask the user how to uninstall (Windows: rfd 三键弹窗)。
-#[cfg(not(target_os = "macos"))]
-fn ask_uninstall() -> Option<bool> {
-    let r = rfd::MessageDialog::new()
-        .set_title("卸载 DeepSeek Harness？")
-        .set_description(
-            "卸载将：结束 dsh 子进程、删除应用数据与登录自启项、把程序移入回收站（可恢复）。\n\n~/.dsh（你的会话与凭据）默认保留，也可一并删除，且不可恢复。\n\nYes/是 = 卸载并删除 ~/.dsh；No/否 = 卸载，保留 ~/.dsh；Cancel/取消 = 什么都不做",
-        )
-        .set_buttons(rfd::MessageButtons::YesNoCancel)
-        .show();
-    match r {
-        rfd::MessageDialogResult::Yes => Some(true),
-        rfd::MessageDialogResult::No => Some(false),
-        _ => None,
-    }
-}
-
-/// Uninstall: teardown, trash the app, then exit.
-fn uninstall(app: &AppHandle) {
-    let Some(wipe) = ask_uninstall() else {
-        return; // cancelled
-    };
-    let p = paths_from_app(app);
-    if let Err(e) = uninstall_teardown(&p, wipe) {
-        update::notify("卸载未完成", &e);
-        return;
-    }
-
-    #[cfg(target_os = "macos")]
-    {
-        trash_self();
-        std::thread::sleep(Duration::from_millis(900)); // let the Finder script start
-        // Remove the trashed app from the Dock's "recent applications" so the
-        // dead icon does not linger (and refresh the Dock).
-        clear_dock_recents();
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        // Windows：尝试把安装目录移入回收站。运行中的 exe 可能被占用而失败，
-        // 此时引导用户走系统“设置 → 应用”卸载。
-        if !trash_self() {
-            update::notify(
-                "请通过系统卸载",
-                "应用数据已清理。请到“设置 → 应用 → 已安装的应用”中卸载 DeepSeek Harness。",
-            );
-        }
-    }
-    app.exit(0);
-}
-
 /// Move the running app to the trash / recycle bin. Returns true on success.
 #[cfg(target_os = "macos")]
 fn trash_self() -> bool {
@@ -2317,7 +2394,12 @@ fn main() {
     }
 
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![plugin_op])
+        .invoke_handler(tauri::generate_handler![
+            plugin_op,
+            lan_state,
+            lan_toggle,
+            uninstall_run,
+        ])
         .setup(|app| {
             let show = MenuItem::with_id(app, "show", "显示主窗口", true, None::<&str>)?;
             let open = MenuItem::with_id(app, "open_browser", "在浏览器中打开", true, None::<&str>)?;
@@ -2338,17 +2420,7 @@ fn main() {
             )?;
             LOGIN_ON.store(login_item_enabled(), Ordering::SeqCst);
             *mlock(&LOGIN_ITEM) = Some(login.clone());
-            let lan = CheckMenuItem::with_id(
-                app,
-                "lan_access",
-                "局域网访问",
-                true,
-                load_settings(app.handle()).lan_enabled,
-                None::<&str>,
-            )?;
-            LAN_ON.store(load_settings(app.handle()).lan_enabled, Ordering::SeqCst);
-            *mlock(&LAN_ITEM) = Some(lan.clone());
-            let lan_info = MenuItem::with_id(app, "lan_info", "显示局域网访问信息", true, None::<&str>)?;
+            let lan_panel = MenuItem::with_id(app, "lan_panel", "扫码远程连接…", true, None::<&str>)?;
             let uninstall_item = MenuItem::with_id(app, "uninstall", "卸载 DeepSeek Harness…", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
             let sep1 = tauri::menu::PredefinedMenuItem::separator(app)?;
@@ -2367,10 +2439,9 @@ fn main() {
                     &logs,
                     &restart,
                     &plugins,
+                    &lan_panel,
                     &sep2,
                     &login,
-                    &lan,
-                    &lan_info,
                     &sep3,
                     &uninstall_item,
                     &quit,
@@ -2399,21 +2470,23 @@ fn main() {
                         let p = paths_from_app(app);
                         open_dir(&p.app_data.join("logs"));
                     }
-                    "lan_access" => {
-                        let next = !LAN_ON.load(Ordering::SeqCst);
-                        set_lan_access(app, next);
-                    }
-                    "lan_info" => show_lan_info(app),
+                    "lan_panel" => open_lan_window(app),
                     "restart" => restart_dsh(app),
                     "plugins" => open_plugin_manager(app),
                     "launch_login" => {
                         let next = !LOGIN_ON.load(Ordering::SeqCst);
                         match set_login_item(next) {
                             Ok(()) => {}
-                            Err(e) => update::notify("登录自启设置失败", &e),
+                            Err(e) => {
+                                // Tauri 点击已自动翻转勾选：失败时恢复菜单与 LOGIN_ON 一致
+                                if let Some(item) = mlock(&LOGIN_ITEM).as_ref() {
+                                    let _ = item.set_checked(LOGIN_ON.load(Ordering::SeqCst));
+                                }
+                                update::notify("登录自启设置失败", &e);
+                            }
                         }
                     }
-                    "uninstall" => uninstall(app),
+                    "uninstall" => open_uninstall_window(app),
                     _ => {}
                 })
                 .on_tray_icon_event(|tray, event| {
@@ -2585,6 +2658,15 @@ mod tests {
         let cn = "中".repeat(500);
         let t2 = tail_text(&cn, 100);
         assert!(t2.ends_with("中".repeat(100).as_str()));
+    }
+
+    #[test]
+    fn strip_verbatim_prefix_logic() {
+        assert_eq!(strip_verbatim_prefix(r"\\?\C:\foo\bar"), Some("C:\\foo\\bar".into()));
+        assert_eq!(strip_verbatim_prefix(r"\\?\UNC\host\share\x"), Some(r"\\host\share\x".into()));
+        assert_eq!(strip_verbatim_prefix(r"C:\foo"), None);
+        assert_eq!(strip_verbatim_prefix(r"\\host\share\x"), None);
+        assert_eq!(strip_verbatim_prefix(""), None);
     }
 
     #[test]
