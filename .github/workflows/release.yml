@@ -22,8 +22,6 @@ permissions:
 jobs:
   build-macos:
     runs-on: macos-14 # arm64（产物为 aarch64 DMG）
-    env:
-      DSH_VERSION: 0.1.0-rc.6 # 内置 dsh 闭包版本（上游 dsh 更新时改这里）
     steps:
       - uses: actions/checkout@v7
 
@@ -58,6 +56,9 @@ jobs:
         with:
           node-version: 24
 
+      - name: Resolve latest upstream dsh version (DSH_VERSION)
+        run: echo "DSH_VERSION=$(npm view @deepseek-ai/dsh version)" >> "$GITHUB_ENV"
+
       - name: Prepare bundled resources (node + dsh closure + icons)
         run: |
           NODE_SRC="$(command -v node)"
@@ -81,6 +82,20 @@ jobs:
           cd apps/desktop/src-tauri/target/release/bundle/macos
           ditto -c -k --keepParent "DeepSeek Harness.app" \
             "DeepSeek-Harness-macOS-arm64.zip"
+
+      - name: Track released dsh baseline (dsh.version)
+        run: |
+          # 工作区在 tag checkout 上且被 tauri.conf.json 版本改写 (dirty)：强制切到 main
+          git fetch origin main
+          git checkout -f -B main origin/main
+          echo "$DSH_VERSION" > dsh.version
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add dsh.version
+          git commit -m "chore(ci): track dsh @$DSH_VERSION" || echo "dsh.version 无变更"
+          # 与 upstream-check 并发推 main 时先 rebase 防 non-fast-forward
+          git pull --rebase origin main || true
+          git push origin main
 
       - name: Upload to GitHub Release (${{ steps.ver.outputs.tag }})
         uses: softprops/action-gh-release@v3
@@ -111,8 +126,6 @@ jobs:
 
   build-windows:
     runs-on: windows-latest # x64（产物为 NSIS 安装器 + 便携 zip）
-    env:
-      DSH_VERSION: 0.1.0-rc.6 # 与 macOS job 一致；Windows 会装 win32 原生二进制
     steps:
       - uses: actions/checkout@v7
 
@@ -141,6 +154,10 @@ jobs:
         run: |
           $v = "${{ steps.ver.outputs.app_version }}"
           node -e "const fs=require('fs');const p='apps/desktop/src-tauri/tauri.conf.json';const d=JSON.parse(fs.readFileSync(p));d.version=process.argv[1];fs.writeFileSync(p,JSON.stringify(d,null,2)+'\n')" $v
+
+      - name: Resolve latest upstream dsh version (DSH_VERSION)
+        shell: bash
+        run: echo "DSH_VERSION=$(npm view @deepseek-ai/dsh version)" >> "$GITHUB_ENV"
 
       - name: Prepare bundled resources (node.exe + dsh closure + icons)
         shell: pwsh

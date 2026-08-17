@@ -1,0 +1,81 @@
+# 上游 @deepseek-ai/dsh 新版本检测 + 自动发版
+#
+# 机制：每天（+ 手动触发）检查 npm 上 @deepseek-ai/dsh 的最新稳定版；若高于
+# 本仓库 dsh.version 记录的上次打包版本，则：
+#   1) 更新 dsh.version 基线（提交到 main）
+#   2) 把壳版本 v0.x.y 自增为 v0.x.(y+1)，打 tag 推送 → 触发 release.yml
+#      （release.yml 构建时动态取 npm 最新 dsh，安装包自带最新闭包 →
+#       新用户下载即最新，无需再点"检查更新"）
+#
+# 无新版本时整个 workflow 静默结束，无多余 release。
+name: "Upstream dsh check & auto-release"
+on:
+  schedule:
+    - cron: "0 6 * * *" # 每天 06:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: upstream-release
+  cancel-in-progress: false
+
+jobs:
+  check-and-release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+
+      - name: Resolve upstream dsh version vs baseline
+        id: ver
+        run: |
+          set -euo pipefail
+          LATEST="$(npm view @deepseek-ai/dsh version)"
+          CURRENT="$(cat dsh.version)"
+          echo "latest=$LATEST" >> "$GITHUB_OUTPUT"
+          echo "current=$CURRENT" >> "$GITHUB_OUTPUT"
+
+      - name: Bail if no newer dsh
+        id: bail
+        if: ${{ steps.ver.outputs.latest == steps.ver.outputs.current }}
+        run: echo "dsh 无新版本（${{ steps.ver.outputs.latest }} == ${{ steps.ver.outputs.current }}），无需发版"
+
+      - name: Update baseline, bump tag and release
+        if: ${{ steps.ver.outputs.latest != steps.ver.outputs.current }}
+        run: |
+          set -euo pipefail
+          REPO="${{ github.repository }}"
+          LATEST="${{ steps.ver.outputs.latest }}"
+          CURRENT="${{ steps.ver.outputs.current }}"
+
+          # 确认 LATEST 确实高于 CURRENT（semver，兼容 rc 后缀比较）
+          NEWER="$(npx --yes --silent semver -r ">$CURRENT" "$LATEST" 2>/dev/null || true)"
+          if [ -z "$NEWER" ]; then
+            echo "semver 比较：$LATEST 不高于 $CURRENT，跳过"
+            exit 0
+          fi
+
+          # 壳版本自增：读当前最新 release tag → v0.x.y → v0.x.(y+1)
+          PREV_TAG="$(gh api "repos/$REPO/releases/latest" --jq .tag_name 2>/dev/null || echo v0.0.0)"
+          NEW_VER="$(echo "${PREV_TAG#v}" | awk -F. '{print $1"."$2"."($3+1)}')"
+          NEW_TAG="v$NEW_VER"
+          echo "dsh $CURRENT -> $LATEST | shell $PREV_TAG -> $NEW_TAG"
+
+          # 更新基线 + 打 tag（tag push 触发 release.yml）
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          echo "$LATEST" > dsh.version
+          git add dsh.version
+          git commit -m "chore(ci): track dsh @$LATEST"
+          git remote set-url origin "https://x-access-token:${GITHUB_TOKEN}@github.com/$REPO.git"
+          # 与 release.yml 的 baseline 同步并发推 main 时先 rebase 防 non-fast-forward
+          git pull --rebase origin main || true
+          git push origin HEAD:main
+          git tag "$NEW_TAG"
+          git push origin "$NEW_TAG"
+          echo "已发布 $NEW_TAG（内置 dsh $LATEST）"

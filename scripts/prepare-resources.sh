@@ -26,6 +26,17 @@ mkdir -p "$RES/node/bin"
 cp -f "$NODE_SRC" "$RES/node/bin/node"
 echo "    node: $( "$RES/node/bin/node" --version )"
 
+# --- 1b. npm（内置更新用：update.rs 用内置 node+npm 安装新版 dsh 闭包）-------
+# npm 随 node 安装目录分发：<node-install>/lib/node_modules/npm。
+NPM_SRC="${NPM_SRC:-$(dirname "$(dirname "$NODE_SRC")")/lib/node_modules/npm}"
+if [[ ! -d "$NPM_SRC" || ! -f "$NPM_SRC/bin/npm-cli.js" ]]; then
+  echo "ERROR: 未找到内置 npm（$NPM_SRC）；可设置 NPM_SRC 指向 npm 目录" >&2
+  exit 1
+fi
+rm -rf "$RES/npm"
+cp -R "$NPM_SRC" "$RES/npm"
+echo "    npm: $(wc -c < "$RES/npm/bin/npm-cli.js" | tr -d ' ')B npm-cli.js"
+
 # --- 2. dsh closure ---------------------------------------------------------
 # Source: default to the currently bundled closure (project-local, self-sufficient);
 # override with CLOSURE_SRC=<dir containing node_modules/@deepseek-ai/dsh> for a new version.

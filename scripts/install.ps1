@@ -1,4 +1,4 @@
-﻿# DSh Desktop 一键安装 / 升级脚本（Windows / PowerShell）
+# DSh Desktop 一键安装 / 升级脚本（Windows / PowerShell）
 #
 # 用法（PowerShell，自动安装/升级到最新正式版）：
 #   powershell -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/Jedeiah/dsh-desktop/main/scripts/install.ps1 | iex"

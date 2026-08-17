@@ -1,4 +1,4 @@
-# Prepare bundled resources for DSh Desktop (Windows build).
+﻿# Prepare bundled resources for DSh Desktop (Windows build).
 # Mirrors scripts/prepare-resources.sh for PowerShell:
 #   resources/node/node.exe      — Node x64 runtime (node.exe)
 #   resources/dsh/<ver>/         — full dsh closure (node_modules incl. @deepseek-ai/dsh)
@@ -35,6 +35,19 @@ New-Item -ItemType Directory -Force -Path $NodeDir | Out-Null
 Copy-Item -Force $NodeSrc (Join-Path $NodeDir "node.exe")
 $nodeVer = & (Join-Path $NodeDir "node.exe") --version
 Write-Host "    node: $nodeVer"
+
+# --- 1b. npm (in-app updates: update.rs installs new dsh closure via bundled npm)
+# Windows node ships npm at <node.exe dir>\node_modules\npm (no lib/);
+# source is the *origin* node dir, not the staged $RES\node.
+$NpmSrc = Join-Path (Split-Path -Parent $NodeSrc) "node_modules\npm"
+if (-not (Test-Path (Join-Path $NpmSrc "bin\npm-cli.js"))) {
+    throw "built-in npm not found at $NpmSrc; set NpmSrc to the npm directory"
+}
+$NpmDir = Join-Path $RES "npm"
+if (Test-Path $NpmDir) { Remove-Item -Recurse -Force $NpmDir }
+Copy-Item -Recurse -Force $NpmSrc $NpmDir
+$npmCli = Join-Path $NpmDir "bin\npm-cli.js"
+Write-Host "    npm: $((Get-Item $npmCli).Length) B npm-cli.js"
 
 # --- 2. dsh closure ---------------------------------------------------------
 if (-not $ClosureSrc) {
