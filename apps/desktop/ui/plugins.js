@@ -8,6 +8,13 @@
   const btnRemove = document.getElementById('btnRemove');
   const status = document.getElementById('status');
   const output = document.getElementById('output');
+  const closeBtn = document.getElementById('closeBtn');
+
+  // 无系统标题栏：✕ 与 ESC 关闭（普通弹窗）
+  if (closeBtn) closeBtn.addEventListener('click', () => window.close());
+  window.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') window.close();
+  });
 
   let unlisten = null;
 

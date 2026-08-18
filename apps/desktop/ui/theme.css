@@ -1,0 +1,210 @@
+/* =============================================================================
+ * DSh Desktop — 共享设计系统（壳/弹窗统一 token）
+ * 原则：安静承接 dsh 工作台，不自成一派；深色为主、跟随系统深浅可扩展；
+ *       光斑克制、动画可关（prefers-reduced-motion）。四个页面共用本文件。
+ * ========================================================================= */
+
+/* ---- 设计 token（深色默认） ---- */
+:root {
+  /* 背景与表面 */
+  --bg: #0a0c11;                     /* 页面底色（近黑、带冷调） */
+  --bg-soft: #10131a;                /* 输入/输出区底 */
+  --card-bg: rgba(24, 27, 36, 0.62); /* 玻璃卡片底 */
+  --card-border: rgba(255, 255, 255, 0.10);
+
+  /* 文字与弱化 */
+  --text: #eceef3;
+  --text-dim: rgba(236, 238, 243, 0.6);
+  --text-faint: rgba(236, 238, 243, 0.42);
+
+  /* 品牌/动作色：克制的冷紫蓝，避免粉紫光斑喧宾夺主 */
+  --accent: #7b7fe8;
+  --accent-2: #4f7cf7;
+  --accent-glow: rgba(123, 127, 232, 0.28);
+  --ok: #3fb950;
+  --err: #f85149;
+  --err-soft: rgba(248, 81, 73, 0.14);
+  --warn: #d29922;
+
+  /* 圆角与阴影 */
+  --r-lg: 18px;
+  --r-md: 12px;
+  --r-sm: 8px;
+  --shadow-card: 0 20px 60px rgba(0, 0, 0, 0.5);
+  --ring: 0 0 0 3px rgba(123, 127, 232, 0.22);
+
+  /* 字体：Windows 优先 Segoe UI（观感更佳），中文兜底 */
+  --font: "Segoe UI", -apple-system, system-ui, "PingFang SC",
+          "Microsoft YaHei", "Noto Sans SC", sans-serif;
+  --font-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas,
+               "Cascadia Mono", monospace;
+}
+
+/* ---- 基础重置（各页 body 复用） ---- */
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html, body { height: 100%; }
+body {
+  font-family: var(--font);
+  background: var(--bg);
+  color: var(--text);
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ---- 氛围光斑（克制版：低透明度、慢速、可关） ---- */
+.glow { position: fixed; z-index: 0; border-radius: 50%; filter: blur(90px); pointer-events: none; }
+.glow--a {
+  width: 36vw; height: 36vw; left: -14vw; top: -10vh;
+  background: radial-gradient(circle, rgba(79, 124, 247, 0.16) 0%, rgba(79, 124, 247, 0) 70%);
+  animation: drift 30s ease-in-out infinite alternate;
+}
+.glow--b {
+  width: 40vw; height: 40vw; right: -16vw; bottom: -12vh;
+  background: radial-gradient(circle, rgba(123, 127, 232, 0.14) 0%, rgba(123, 127, 232, 0) 70%);
+  animation: drift 40s ease-in-out infinite alternate;
+  animation-delay: -12s;
+}
+@keyframes drift {
+  from { transform: translate3d(0, 0, 0) scale(1); }
+  to   { transform: translate3d(4vw, -3vh, 0) scale(1.08); }
+}
+
+/* ---- 玻璃卡片（四页共用） ---- */
+.card {
+  position: relative;
+  z-index: 1;
+  width: min(440px, 94vw);
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 24px 26px 20px;
+  border-radius: var(--r-lg);
+  background: var(--card-bg);
+  backdrop-filter: blur(22px);
+  -webkit-backdrop-filter: blur(22px);
+  box-shadow: var(--shadow-card);
+}
+.card::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  padding: 1.5px;
+  background: linear-gradient(180deg,
+    rgba(255, 255, 255, 0.42) 0%, rgba(255, 255, 255, 0.12) 40%,
+    rgba(255, 255, 255, 0.12) 60%, rgba(255, 255, 255, 0.38) 100%);
+  -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+          mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+          mask-composite: exclude;
+  pointer-events: none;
+}
+
+/* ---- 卡片头部：图标 + 标题 ---- */
+.head { display: flex; align-items: center; gap: 14px; }
+.head-text h1 { font-size: 16px; font-weight: 600; }
+.head-text p { font-size: 12px; color: var(--text-dim); line-height: 1.6; margin-top: 3px; }
+.icon-badge {
+  flex: none;
+  width: 46px; height: 46px;
+  border-radius: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(180deg, rgba(79, 124, 247, 0.18), rgba(123, 127, 232, 0.10));
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  box-shadow: inset 0 1px 1px rgba(255, 255, 255, 0.12);
+}
+
+/* ---- 主按钮 / 次按钮 ---- */
+button {
+  position: relative;
+  padding: 9px 16px;
+  border-radius: var(--r-sm);
+  border: none;
+  background: linear-gradient(180deg, rgba(79, 124, 247, 0.18), rgba(123, 127, 232, 0.10));
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 500;
+  font-family: inherit;
+  cursor: pointer;
+  box-shadow: inset 0 1px 1px rgba(255, 255, 255, 0.12);
+  transition: background 0.2s ease, box-shadow 0.2s ease, transform 0.15s ease, opacity 0.2s ease;
+}
+button:hover {
+  background: linear-gradient(180deg, rgba(79, 124, 247, 0.28), rgba(123, 127, 232, 0.16));
+  box-shadow: inset 0 1px 1px rgba(255, 255, 255, 0.16), 0 0 18px var(--accent-glow);
+}
+button:active { transform: scale(0.98); }
+button:disabled { opacity: 0.45; cursor: default; transform: none; box-shadow: none; }
+button.ghost {
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  box-shadow: none;
+}
+button.ghost:hover { background: rgba(255, 255, 255, 0.06); box-shadow: none; }
+button.danger {
+  background: linear-gradient(180deg, rgba(248, 81, 73, 0.18), rgba(248, 81, 73, 0.08));
+}
+button.danger:hover {
+  background: linear-gradient(180deg, rgba(248, 81, 73, 0.30), rgba(248, 81, 73, 0.14));
+  box-shadow: inset 0 1px 1px rgba(255, 255, 255, 0.12), 0 0 18px rgba(248, 81, 73, 0.25);
+}
+
+/* ---- 输入框 ---- */
+input[type="text"] {
+  flex: 1; min-width: 0;
+  padding: 9px 12px;
+  border-radius: var(--r-sm);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--text);
+  font-size: 13px;
+  font-family: inherit;
+  outline: none;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+input[type="text"]::placeholder { color: var(--text-faint); }
+input[type="text"]:focus {
+  border-color: rgba(123, 127, 232, 0.65);
+  box-shadow: var(--ring);
+}
+input[type="text"]:disabled { opacity: 0.55; }
+
+/* ---- 状态行 ---- */
+.status { font-size: 12px; min-height: 16px; line-height: 1.5; }
+.status.ok  { color: var(--ok); }
+.status.err { color: var(--err); }
+.status.run { color: var(--text-dim); }
+
+/* ---- 弱化说明 ---- */
+.hint, .sub { font-size: 12px; color: var(--text-dim); line-height: 1.6; }
+
+/* ---- 入场上浮动画 ---- */
+.anim { opacity: 0; animation: fadeUp 0.4s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
+.anim--d1 { animation-delay: 0.05s; }
+.anim--d2 { animation-delay: 0.1s; }
+@keyframes fadeUp {
+  from { opacity: 0; transform: translateY(10px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* ---- 减少动态效果：关掉全部动画 ---- */
+@media (prefers-reduced-motion: reduce) {
+  .glow, .anim, .spinner, .icon-wrap::before, .dot, .progress::after { animation: none; opacity: 1; }
+}
+
+/* ---- 滚动条（WebView2/WKWebView 深色一致） ---- */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.16); border-radius: 6px; }
+::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, 0.26); }
+::-webkit-scrollbar-track { background: transparent; }
+
+/* ---- 跟随系统浅色模式（可选开启；默认深色壳，保持与暗色标题栏一致） ---- */
+@media (prefers-color-scheme: light) {
+  /* 壳层刻意保持深色（与暗色原生标题栏一致）；如未来标题栏跟随系统浅色，
+     再放开下面的浅色 token 覆盖。 */
+}

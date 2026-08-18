@@ -3,165 +3,48 @@
   <head>
     <meta charset="utf-8" />
     <title>DeepSeek Harness</title>
+    <link rel="stylesheet" href="theme.css" />
     <style>
-      /* ===== 启动页：炫酷高级版（融合模板 05 紫粉光斑 + 03 漂移动画/动态噪点） ===== */
-      * { margin: 0; padding: 0; box-sizing: border-box; }
+      /* 启动页：安静承接（光斑克制、无旋转彩圈），dsh 就绪后立即被导航走 */
+      .center { position: relative; z-index: 1; display: flex; flex-direction: column; align-items: center; gap: 26px; }
 
-      html, body { height: 100%; }
-
-      body {
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        font-family: -apple-system, system-ui, 'PingFang SC', 'Microsoft YaHei', sans-serif;
-        background: #05060a;
-        color: #f0f2f7;
-        overflow: hidden;
-      }
-
-      /* ===== 高饱和氛围光斑（05-glassmorphism 参数）+ 漂移动画（03-modern-agency） ===== */
-      .glow {
-        position: fixed;
-        z-index: 0;
-        border-radius: 50%;
-        filter: blur(100px);
-        pointer-events: none;
-        will-change: transform;
-        animation: drift 20s ease-in-out infinite alternate;
-      }
-      .glow--a {
-        width: 46vw; height: 46vw; left: -12vw; top: -8vh;
-        background: radial-gradient(circle, rgba(250, 147, 250, 0.55) 0%, rgba(250, 147, 250, 0) 70%);
-        animation-duration: 18s;
-      }
-      .glow--b {
-        width: 42vw; height: 42vw; right: -10vw; top: 24vh;
-        background: radial-gradient(circle, rgba(152, 58, 214, 0.55) 0%, rgba(152, 58, 214, 0) 70%);
-        animation-duration: 24s;
-        animation-delay: -6s;
-      }
-      .glow--c {
-        width: 50vw; height: 50vw; left: 22vw; bottom: -22vh;
-        background: radial-gradient(circle, rgba(47, 129, 247, 0.5) 0%, rgba(47, 129, 247, 0) 70%);
-        animation-duration: 28s;
-        animation-delay: -12s;
-      }
-      @keyframes drift {
-        from { transform: translate3d(0, 0, 0) scale(1); }
-        to   { transform: translate3d(6vw, -4vh, 0) scale(1.15); }
-      }
-
-      /* ===== 动态噪点（03 手法：overlay 混合 + 位置跳动） ===== */
-      body::after {
-        content: '';
-        position: fixed;
-        inset: 0;
-        z-index: 0;
-        background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
-        opacity: 0.06;
-        mix-blend-mode: overlay;
-        pointer-events: none;
-        animation: grainShift 0.5s steps(4) infinite;
-      }
-      @keyframes grainShift {
-        0%   { background-position: 0 0; }
-        25%  { background-position: -20px 10px; }
-        50%  { background-position: 10px -20px; }
-        75%  { background-position: -10px 20px; }
-        100% { background-position: 0 0; }
-      }
-
-      .center {
-        position: relative;
-        z-index: 1;
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        gap: 30px;
-      }
-
-      /* 品牌图标 + 紫粉蓝渐变光晕环 */
-      .icon-wrap {
-        position: relative;
-      }
-      .icon-wrap::before {
-        content: '';
-        position: absolute;
-        inset: -28px;
-        border-radius: 50%;
-        background: conic-gradient(from 0deg, #FA93FA, #983AD6, #2f81f7, #00d2ff, #FA93FA);
-        filter: blur(32px);
-        opacity: 0.55;
-        animation: spin 8s linear infinite;
-        z-index: -1;
-      }
-      @keyframes spin {
-        to { transform: rotate(360deg); }
-      }
+      .icon-wrap { position: relative; }
       .icon {
-        width: 96px;
-        height: 96px;
+        width: 84px; height: 84px;
         border-radius: 22px;
         display: block;
-        box-shadow: 0 4px 24px rgba(0, 0, 0, 0.5), 0 0 44px rgba(152, 58, 214, 0.45);
+        box-shadow: 0 6px 30px rgba(0, 0, 0, 0.5), 0 0 30px var(--accent-glow);
       }
 
-      /* 玻璃胶囊状态条（05 手法：深色半透明 + blur + 渐变描边） */
       .pill {
         position: relative;
         display: flex;
         align-items: center;
         gap: 10px;
-        padding: 10px 24px;
+        padding: 10px 22px;
         border-radius: 9999px;
-        background: rgba(28, 27, 36, 0.45);
+        background: rgba(24, 27, 36, 0.5);
         backdrop-filter: blur(16px);
         -webkit-backdrop-filter: blur(16px);
-        box-shadow: 0 0 30px rgba(201, 103, 232, 0.25), inset 0 1px 1px rgba(255, 255, 255, 0.15);
         font-size: 14px;
         line-height: 1;
+        box-shadow: inset 0 1px 1px rgba(255, 255, 255, 0.10);
+        border: 1px solid var(--card-border);
       }
-      .pill::before {
-        content: '';
-        position: absolute;
-        inset: 0;
-        border-radius: inherit;
-        padding: 1.5px;
-        background: linear-gradient(180deg,
-          rgba(255,255,255,0.55) 0%,
-          rgba(255,255,255,0.15) 40%,
-          rgba(255,255,255,0.15) 60%,
-          rgba(255,255,255,0.55) 100%);
-        -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
-        -webkit-mask-composite: xor;
-                mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
-                mask-composite: exclude;
-        pointer-events: none;
-      }
-
-      /* 渐变脉冲点 */
       .dot {
-        width: 9px;
-        height: 9px;
+        width: 8px; height: 8px;
         border-radius: 50%;
-        background: linear-gradient(135deg, #FA93FA, #983AD6);
-        box-shadow: 0 0 12px rgba(201, 103, 232, 0.9);
-        animation: pulse 1.2s infinite;
+        background: var(--accent-2);
+        box-shadow: 0 0 10px var(--accent-glow);
+        animation: pulse 1.4s ease-in-out infinite;
       }
       @keyframes pulse {
         0%, 100% { opacity: 0.35; transform: scale(0.9); }
-        50% { opacity: 1; transform: scale(1.08); }
+        50% { opacity: 1; transform: scale(1.06); }
       }
 
-      .hint {
-        font-size: 12px;
-        color: rgba(240, 242, 247, 0.55);
-      }
-
-      /* 渐变流光进度条 */
       .progress {
-        width: 180px;
-        height: 3px;
+        width: 180px; height: 3px;
         border-radius: 3px;
         background: rgba(255, 255, 255, 0.08);
         overflow: hidden;
@@ -169,43 +52,31 @@
       .progress::after {
         content: '';
         display: block;
-        width: 45%;
+        width: 40%;
         height: 100%;
         border-radius: 3px;
-        background: linear-gradient(90deg, #2f81f7, #983AD6, #FA93FA);
-        box-shadow: 0 0 12px rgba(152, 58, 214, 0.7);
-        animation: load 1.5s ease-in-out infinite;
+        background: linear-gradient(90deg, var(--accent-2), var(--accent));
+        animation: load 1.8s ease-in-out infinite;
       }
       @keyframes load {
         0%   { transform: translateX(-110%); }
         100% { transform: translateX(330%); }
       }
-
-      /* 系统开启"减少动态效果"时停用全部动画 */
-      @media (prefers-reduced-motion: reduce) {
-        .glow, .icon-wrap::before, .dot, .progress::after, body::after { animation: none; }
-      }
     </style>
   </head>
   <body>
-    <!-- 高饱和氛围光斑（漂移动画） -->
     <div class="glow glow--a" aria-hidden="true"></div>
     <div class="glow glow--b" aria-hidden="true"></div>
-    <div class="glow glow--c" aria-hidden="true"></div>
 
     <div class="center">
-      <!-- 品牌图标 + 旋转渐变光晕 -->
       <div class="icon-wrap">
         <img class="icon" src="icon.png" alt="DeepSeek Harness" />
       </div>
-
       <div class="pill" role="status" aria-live="polite">
         <span class="dot"></span>
         正在启动 DeepSeek Harness…
       </div>
-
       <div class="hint">启动 dsh web 后自动进入工作台</div>
-
       <div class="progress" aria-hidden="true"></div>
     </div>
   </body>

@@ -25,6 +25,8 @@
   }
 
   document.getElementById('cancel').addEventListener('click', () => window.close());
+  const closeBtn = document.getElementById('closeBtn');
+  if (closeBtn) closeBtn.addEventListener('click', () => window.close()); // 等于取消，不触发卸载
   document.getElementById('keep').addEventListener('click', () => run(false));
   document.getElementById('wipe').addEventListener('click', () => run(true));
 })();

@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>DeepSeek Harness</title>
+    <link rel="stylesheet" href="theme.css" />
+    <style>
+      /* 弹窗内嵌：消息可滚动区 */
+      .msg {
+        max-height: 220px;
+        overflow-y: auto;
+        font-size: 13px;
+        line-height: 1.7;
+        color: var(--text-dim);
+        white-space: pre-wrap;
+        word-break: break-word;
+        user-select: text;
+      }
+      .foot { display: flex; justify-content: flex-end; gap: 10px; margin-top: 2px; }
+      /* 右上角 ✕ 关闭（无系统标题栏后的替代） */
+      .close-x {
+        position: absolute;
+        top: 12px; right: 14px;
+        width: 26px; height: 26px;
+        border: none;
+        border-radius: 8px;
+        background: transparent;
+        color: var(--text-faint);
+        font-size: 15px;
+        line-height: 1;
+        cursor: pointer;
+        padding: 0;
+        box-shadow: none;
+      }
+      .close-x:hover { background: rgba(255, 255, 255, 0.08); color: var(--text); box-shadow: none; }
+      .card { padding-top: 30px; }
+      .icon-badge.neutral {
+        background: linear-gradient(180deg, rgba(79, 124, 247, 0.20), rgba(123, 127, 232, 0.10));
+      }
+    </style>
+  </head>
+  <body>
+    <div class="glow glow--a" aria-hidden="true"></div>
+    <div class="glow glow--b" aria-hidden="true"></div>
+
+    <div class="card anim">
+      <button class="close-x" id="closeX" aria-label="关闭" title="关闭">✕</button>
+      <div class="head anim" id="head" data-tauri-drag-region>
+        <div class="icon-badge neutral">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#7b7fe8" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="9"/>
+            <path d="M12 8v4l2.5 2.5"/>
+          </svg>
+        </div>
+        <div class="head-text">
+          <h1 id="title"></h1>
+        </div>
+      </div>
+      <div class="msg anim anim--d1" id="message"></div>
+      <div class="foot anim anim--d1">
+        <button class="ghost" id="btnNo" hidden>稍后</button>
+        <button id="btnOk">确定</button>
+      </div>
+    </div>
+
+    <script src="modal.js"></script>
+  </body>
+</html>

@@ -11,6 +11,13 @@
   const copyAddr = document.getElementById('copyAddr');
   const copyToken = document.getElementById('copyToken');
   const toggle = document.getElementById('toggle');
+  const closeBtn = document.getElementById('closeBtn');
+
+  // 无系统标题栏：✕ 与 ESC 关闭（普通弹窗）
+  if (closeBtn) closeBtn.addEventListener('click', () => window.close());
+  window.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') window.close();
+  });
 
   let busy = false;
 

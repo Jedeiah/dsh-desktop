@@ -37,7 +37,7 @@
 - **跟随上游**：dsh 发新版，App 里一键更新，内置 npm 装新闭包 → 自检 → 原子切换 → 自动重启，失败不动当前版本。
 - **标准 Mac 体验**：关窗口隐藏进托盘、Cmd+Q 连带结束 dsh 无孤儿、崩溃自动重启（退避 5 次后给日志）。
 - **手机也能用**：家里 WiFi 下，手机相机扫登录页二维码即可连上同一个工作台（对话/会话/文件，执行仍在 Mac 上）；无法扫码时也可输令牌。
-- **干净利落**：单实例（不会开双托盘）、卸载一步到位（含 WebView 缓存与 Dock 最近使用）。
+- **干净利落**：单实例（不会开双托盘）、卸载一步到位（含 WebView 缓存与 Dock 最近使用；Windows 自系统「设置/右键」触发同样彻底卸载）。
 
 ---
 
@@ -76,6 +76,7 @@ powershell -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.c
 |---|---|---|
 | 显示/隐藏主窗口 | 左键点托盘图标，或点 Dock 图标 | 双击/单击托盘图标，或点任务栏图标 |
 | 关闭窗口 | 隐藏到托盘 | 隐藏到托盘（App 与 dsh 继续后台运行） |
+| 窗口位置 | 主窗每次打开/显示都居中于当前屏幕；lan/插件/卸载等弹窗相对主窗中心显示（无系统标题栏按钮，✕/Esc 关闭） | 同左（弹窗在多显示器下自动避让到工作区） |
 | 用系统浏览器打开 | 托盘 *在浏览器中打开* | 同左 |
 | 打开外链 | 工作台内点击外链（https 等）自动在系统浏览器打开 | 同左 |
 | 退出 | `Cmd+Q` 或托盘 *退出* | 托盘 *退出*（连带结束 dsh，无残留） |
@@ -132,7 +133,7 @@ dsh 支持通过 profile 安装第三方插件（UI 皮肤、功能插件等）�
 | 卸载（保留 ~/.dsh） | 卸载，保留会话/凭据（推荐） |
 | 卸载并删除 ~/.dsh | 卸载，连会话/凭据一起删（不可恢复） |
 
-卸载会：结束 dsh 与转发器 → 删除登录自启项、应用数据、WebView 缓存 → 把 App 移入废纸篓 / 回收站（可恢复）→ 退出。Windows 上若运行中的程序被占用无法移入回收站，会引导你到「设置 → 应用」里卸载；个别被占用的数据目录会自动重试，仍失败会提示重启电脑后清理，卸载本身不被阻塞。
+卸载会：结束 dsh 与转发器 → 删除登录自启项、应用数据、WebView 缓存 → 把 App 移入废纸篓 / 回收站（可恢复）→ 退出。Windows 上走「**唯一卸载链**」：数据侧在本 App 内完成清理后，自动唤起系统卸载器（`uninstall.exe`）删除程序文件——`uninstall.exe` 内置了同款完整清理（先结束运行中的 dsh 进程树释放文件锁，再清数据与自启项），因此**从「设置 → 应用」或开始菜单右键触发的卸载一样是彻底卸载**，不再有"点了没反应/删不干净"的情况。个别被占用的数据目录会自动重试，仍失败会提示重启电脑后清理，卸载本身不被阻塞。
 
 ### 3.9 日志与故障排查
 
@@ -203,14 +204,17 @@ dsh-desktop/
 │   └── install.ps1              # Windows 一键安装
 └── apps/desktop/
     ├── ui/                      # 内置资产页（tauri://localhost）
-    │   ├── index.html           # 启动页（玻璃拟态：光斑 + 胶囊 + 流光进度）
-    │   ├── plugins.html/.js     # 插件管理窗口（玻璃拟态 + 实时输出流）
+    │   ├── theme.css            # 共享设计系统（颜色/圆角/字体/按钮/弹窗 token）
+    │   ├── index.html           # 启动页（玻璃拟态 + 流光进度，暗色统一）
+    │   ├── plugins.html/.js     # 插件管理窗口（共享 CSS + 实时输出流）
     │   ├── lan.html/.js         # 扫码远程连接窗口（二维码 + 开关 + 地址令牌）
+    │   ├── modal.html/.js       # 自绘弹窗（替代 rfd 系统对话框：启动失败/崩溃/更新确认）
     │   ├── uninstall.html/.js   # 卸载确认窗口（选项卡片式，mac/win 一致）
     │   └── qrcode.js            # 二维码生成库（扫码窗口用，MIT 单文件）
     └── src-tauri/
         ├── Cargo.toml           # tauri2(tray-icon,image-png) + serde + rfd + ureq + dirs + getrandom（unix: libc；windows: arboard/trash/windows）
-        ├── tauri.conf.json      # identifier / bundle.resources / CSP / withGlobalTauri / nsis / dmg
+        ├── tauri.conf.json      # identifier / bundle.resources / CSP / withGlobalTauri / nsis(installerHooks) / dmg
+        ├── installer-hooks.nsh  # NSIS 卸载钩子：PREUNINSTALL 调 --self-uninstall-full（完全卸载），POSTUNINSTALL 清自启项
         ├── icons/               # icon.png(RGBA 1024) + icon.icns(macOS) + icon.ico(Windows)
         ├── resources/           # 内置 node + npm + lan-proxy + mdns-advertise + qrcode + pnpm + dsh 闭包（只读基线，gitignore）
         ├── lan-proxy.js         # 局域网转发器（扫码配对 + 设备凭据 + HTTP/WebSocket 透传）
@@ -278,6 +282,7 @@ dsh-desktop --self-update-check            # UP_TO_DATE / UPDATE_AVAILABLE
 dsh-desktop --self-apply-update <ver>      # 安装+自检+切换 → APPLIED / APPLY_ERROR
 dsh-desktop --self-login-item on|off       # 登录自启开关（macOS plist / Windows 注册表）
 dsh-desktop --self-uninstall-test          # 卸载 teardown（删数据/登录项，不删自身）
+dsh-desktop --self-uninstall-full [--wipe] # 完全卸载 sidecar（结束实例+子进程、清数据；供 NSIS 钩子调用，不删程序文件）
 dsh-desktop --self-trash-test              # 把自身移入废纸篓/回收站（打包态运行）
 ```
 

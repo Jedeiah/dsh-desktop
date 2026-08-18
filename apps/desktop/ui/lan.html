@@ -4,87 +4,26 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
     <title>扫码远程连接</title>
+    <link rel="stylesheet" href="theme.css" />
     <style>
-      /* ===== 扫码远程连接：与启动页/插件管理同一玻璃拟态设计语言 ===== */
-      * { margin: 0; padding: 0; box-sizing: border-box; }
-      html, body { height: 100%; }
-      body {
-        font-family: -apple-system, system-ui, 'PingFang SC', 'Microsoft YaHei', sans-serif;
-        background: #05060a;
-        color: #f0f2f7;
-        overflow: hidden;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        padding: 16px;
-      }
-      .glow {
-        position: fixed;
-        z-index: 0;
-        border-radius: 50%;
-        filter: blur(70px);
-        pointer-events: none;
-        will-change: transform;
-        animation: drift 24s ease-in-out infinite alternate;
-      }
-      .glow--a {
-        width: 40vw; height: 40vw; left: -16vw; top: -14vh;
-        background: radial-gradient(circle, rgba(250, 147, 250, 0.4) 0%, rgba(250, 147, 250, 0) 70%);
-      }
-      .glow--b {
-        width: 44vw; height: 44vw; right: -18vw; bottom: -16vh;
-        background: radial-gradient(circle, rgba(47, 129, 247, 0.38) 0%, rgba(47, 129, 247, 0) 70%);
-        animation-duration: 28s;
-        animation-delay: -8s;
-      }
-      @keyframes drift {
-        from { transform: translate3d(0, 0, 0) scale(1); }
-        to   { transform: translate3d(5vw, -3vh, 0) scale(1.12); }
-      }
-
-      .card {
-        position: relative;
-        z-index: 1;
-        width: 100%;
-        max-width: 440px;
-        max-height: calc(100vh - 32px);
-        overflow-y: auto;
-        display: flex;
-        flex-direction: column;
-        gap: 12px;
-        padding: 22px 24px 20px;
-        border-radius: 20px;
-        background: rgba(28, 27, 36, 0.45);
-        backdrop-filter: blur(20px);
-        -webkit-backdrop-filter: blur(20px);
-        box-shadow:
-          0 0 34px rgba(201, 103, 232, 0.16),
-          inset 0 1px 1px rgba(255, 255, 255, 0.15),
-          0 20px 60px rgba(0, 0, 0, 0.45);
-      }
-      .card::before {
-        content: '';
+      /* 弹窗内嵌（无系统标题栏）的 ✕ 关闭按钮 */
+      .close-x {
         position: absolute;
-        inset: 0;
-        border-radius: inherit;
-        padding: 1.5px;
-        background: linear-gradient(180deg,
-          rgba(255,255,255,0.55) 0%, rgba(255,255,255,0.15) 40%,
-          rgba(255,255,255,0.15) 60%, rgba(255,255,255,0.55) 100%);
-        -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
-        -webkit-mask-composite: xor;
-                mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
-                mask-composite: exclude;
-        pointer-events: none;
+        top: 12px; right: 14px;
+        width: 26px; height: 26px;
+        border: none;
+        border-radius: 8px;
+        background: transparent;
+        color: var(--text-faint);
+        font-size: 15px;
+        cursor: pointer;
+        padding: 0;
+        box-shadow: none;
       }
+      .close-x:hover { background: rgba(255,255,255,0.08); color: var(--text); box-shadow: none; }
 
-      h1 { font-size: 16px; font-weight: 600; }
-      .sub { font-size: 12px; color: rgba(240, 242, 247, 0.55); line-height: 1.6; margin-top: -6px; }
-
-      .status-line { font-size: 12px; line-height: 1.5; min-height: 16px; }
-      .status-line.on { color: #3fb950; }
-      .status-line.off { color: rgba(240, 242, 247, 0.6); }
-      .status-line.err { color: #f85149; }
+      .card { max-width: 440px; max-height: calc(100vh - 32px); overflow-y: auto; padding-top: 30px; }
+      .sub { margin-top: -6px; }
 
       .qr-box {
         display: flex;
@@ -92,85 +31,39 @@
         align-items: center;
         gap: 10px;
         padding: 14px;
-        border-radius: 14px;
+        border-radius: var(--r-md);
         background: rgba(255, 255, 255, 0.05);
-        border: 1px solid rgba(255, 255, 255, 0.12);
+        border: 1px solid rgba(255, 255, 255, 0.10);
       }
       .qr-box img { display: block; border-radius: 6px; background: #fff; }
-      .qr-box .qr-hint { font-size: 11px; color: rgba(240, 242, 247, 0.45); text-align: center; line-height: 1.5; }
+      .qr-box .qr-hint { font-size: 11px; color: var(--text-faint); text-align: center; line-height: 1.5; }
 
       .info-row { display: flex; align-items: center; gap: 8px; font-size: 12px; }
-      .info-row .label { color: rgba(240, 242, 247, 0.5); flex: none; }
+      .info-row .label { color: var(--text-dim); flex: none; }
       .info-row .val {
         flex: 1; min-width: 0;
-        background: rgba(255, 255, 255, 0.05);
-        border: 1px solid rgba(255,255,255,0.1);
-        border-radius: 8px;
+        background: rgba(255,255,255,0.05);
+        border: 1px solid rgba(255,255,255,0.10);
+        border-radius: var(--r-sm);
         padding: 6px 10px;
-        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-family: var(--font-mono);
         font-size: 11px;
         overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
         user-select: all;
       }
 
-      button {
-        position: relative;
-        padding: 9px 16px;
-        border-radius: 10px;
-        border: none;
-        background: linear-gradient(180deg, rgba(201, 103, 232, 0.16), rgba(122, 90, 248, 0.10));
-        backdrop-filter: blur(16px);
-        -webkit-backdrop-filter: blur(16px);
-        color: #f0f2f7;
-        font-size: 13px;
-        font-weight: 500;
-        cursor: pointer;
-        box-shadow: inset 0 1px 1px rgba(255,255,255,0.15), 0 0 18px rgba(201,103,232,0.18);
-        transition: background 0.2s ease, box-shadow 0.2s ease, transform 0.15s ease;
-      }
-      button::before {
-        content: '';
-        position: absolute;
-        inset: 0;
-        border-radius: inherit;
-        padding: 1.3px;
-        background: linear-gradient(180deg,
-          rgba(255,255,255,0.5) 0%, rgba(255,255,255,0.14) 40%,
-          rgba(255,255,255,0.14) 60%, rgba(255,255,255,0.5) 100%);
-        -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
-        -webkit-mask-composite: xor;
-                mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
-                mask-composite: exclude;
-        pointer-events: none;
-      }
-      button:hover {
-        background: linear-gradient(180deg, rgba(201,103,232,0.26), rgba(122,90,248,0.16));
-        box-shadow: inset 0 1px 1px rgba(255,255,255,0.2), 0 0 28px rgba(201,103,232,0.4);
-      }
-      button:active { transform: scale(0.98); }
-      button:disabled { opacity: 0.5; cursor: default; }
-      #toggle {
-        width: 100%;
-        padding: 10px;
-        font-size: 14px;
-      }
-      #toggle.off { background: linear-gradient(180deg, rgba(63, 185, 80, 0.18), rgba(47, 129, 247, 0.10)); }
-
-      .actions { display: flex; gap: 8px; margin-top: -2px; }
+      .actions { display: flex; gap: 8px; }
       .actions button { flex: 1; font-size: 12px; }
-
-      .hint { font-size: 11px; color: rgba(240, 242, 247, 0.45); line-height: 1.6; }
-
-      .anim { opacity: 0; animation: fadeUp 0.45s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
-      .anim--d1 { animation-delay: 0.06s; }
-      .anim--d2 { animation-delay: 0.12s; }
-      @keyframes fadeUp {
-        from { opacity: 0; transform: translateY(12px); }
-        to   { opacity: 1; transform: translateY(0); }
+      #toggle { width: 100%; padding: 10px; font-size: 14px; }
+      #toggle.off {
+        background: linear-gradient(180deg, rgba(63,185,80,0.18), rgba(79,124,247,0.10));
       }
-      @media (prefers-reduced-motion: reduce) {
-        .glow, .anim { animation: none; opacity: 1; }
-      }
+
+      /* 状态行：lan.js 使用 status-line on/off/err（接入共享 token） */
+      .status-line { font-size: 12px; line-height: 1.5; min-height: 16px; }
+      .status-line.on { color: var(--ok); }
+      .status-line.off { color: var(--text-dim); }
+      .status-line.err { color: var(--err); }
     </style>
   </head>
   <body>
@@ -178,9 +71,10 @@
     <div class="glow glow--b" aria-hidden="true"></div>
 
     <div class="card">
-      <h1 class="anim">扫码远程连接</h1>
+      <button class="close-x" id="closeBtn" aria-label="关闭" title="关闭">✕</button>
+      <h1 class="anim" data-tauri-drag-region>扫码远程连接</h1>
       <div class="sub anim anim--d1">手机连同一 Wi-Fi，扫码或打开链接即可在手机上使用工作台（执行仍在电脑上）</div>
-      <div class="status-line anim anim--d1" id="status"></div>
+      <div class="status anim anim--d1" id="status"></div>
       <div class="qr-box anim anim--d1" id="qrBox" hidden>
         <div id="qr" data-url=""></div>
         <div class="qr-hint">手机相机扫码（iOS 需点横幅在 Safari 打开），无需输入令牌</div>

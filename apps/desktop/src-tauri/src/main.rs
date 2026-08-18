@@ -32,7 +32,8 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::sync::{Mutex, MutexGuard};
+use std::sync::mpsc;
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
@@ -98,6 +99,14 @@ static LAN_IP_WATCH_GEN: AtomicU32 = AtomicU32::new(0);
 static POWER_GUARD_GEN: AtomicU32 = AtomicU32::new(0);
 /// Launcher log file (packaged mode). Empty in dev (stderr goes to terminal).
 static LOG_FILE: Mutex<Option<std::fs::File>> = Mutex::new(None);
+/// 自绘弹窗（modal.html）：当前待显示的弹窗内容。替代 rfd 系统对话框，
+/// 统一玻璃卡片风格、可居中、可选按钮。
+static MODAL_SPEC: Mutex<Option<ModalSpec>> = Mutex::new(None);
+/// 自绘弹窗：等待用户按钮结果的通道发送端（show_modal 阻塞等待）。
+static MODAL_RESULT: Mutex<Option<mpsc::Sender<bool>>> = Mutex::new(None);
+/// 自绘弹窗互斥锁：串行化"设置内容 → 开窗 → 等待结果"，防止并发 show_modal
+/// （托盘更新检查 vs boot 崩溃线程）导致内容与结果错配。
+static MODAL_LOCK: Mutex<()> = Mutex::new(());
 
 /// App 标识（与 tauri.conf.json identifier 一致；决定 app 数据目录名）。
 pub const APP_ID: &str = "com.dsh-desktop.app";
@@ -107,6 +116,7 @@ const WINDOW_LABEL: &str = "main";
 const PLUGIN_LABEL: &str = "plugins";
 const LAN_LABEL: &str = "lan";
 const UNINSTALL_LABEL: &str = "uninstall";
+const MODAL_LABEL: &str = "modal";
 
 /// 用户主目录：优先平台主目录环境变量（unix: HOME，Windows: USERPROFILE），
 /// 回退到系统用户目录（跨平台，不写死用户名）。
@@ -641,11 +651,12 @@ fn boot(app: AppHandle) {
                 "无法启动内置 dsh：\n{e}\n\n日志位置：\n{}\n（托盘菜单 Open Logs 可直接打开）",
                 logs.display()
             );
-            let _ = rfd::MessageDialog::new()
-                .set_title("DeepSeek Harness 启动失败")
-                .set_description(&msg)
-                .set_buttons(rfd::MessageButtons::Ok)
-                .show();
+            show_modal(
+                &app,
+                "DeepSeek Harness 启动失败",
+                &msg,
+                "ok",
+            );
             return;
         }
     };
@@ -695,11 +706,12 @@ fn boot(app: AppHandle) {
                 "dsh 连续崩溃 {n} 次，已停止自动重启。\n\n日志位置：\n{}\n\n可点托盘菜单 Open Logs 查看 dsh.log 的异常信息。",
                 logs.display()
             );
-            let _ = rfd::MessageDialog::new()
-                .set_title("DeepSeek Harness 运行异常")
-                .set_description(&msg)
-                .set_buttons(rfd::MessageButtons::Ok)
-                .show();
+            show_modal(
+                &app,
+                "DeepSeek Harness 运行异常",
+                &msg,
+                "ok",
+            );
             return;
         }
         let delay_ms = (RESTART_BASE_MS * 2_u64.pow(n.min(6))).min(RESTART_MAX_MS);
@@ -734,6 +746,7 @@ fn show_window(app: &AppHandle, url: &str) {
         if need_navigate {
             let _ = w.navigate(parsed);
         }
+        let _ = w.center(); // 每次打开/显示都居中于当前屏幕
         let _ = w.show();
         let _ = w.set_focus();
         return;
@@ -743,6 +756,8 @@ fn show_window(app: &AppHandle, url: &str) {
         .title("DeepSeek Harness")
         .inner_size(1280.0, 820.0)
         .min_inner_size(800.0, 560.0)
+        .center()
+        .theme(Some(tauri::Theme::Dark))
         .on_navigation(webview_navigation_policy)
         .on_new_window(webview_new_window_policy)
         .build();
@@ -1267,16 +1282,20 @@ fn open_plugin_manager(app: &AppHandle) {
         return;
     }
     match WebviewWindowBuilder::new(app, PLUGIN_LABEL, WebviewUrl::App("plugins.html".into()))
-        .title("插件管理")
+        .decorations(false) // 无系统标题栏/放大缩小关闭按钮
+        .resizable(false)
+        .visible(false) // 定位后再显示，避免原始位置闪烁
+        .center() // 兜底：主窗口中心定位前先居中
         .inner_size(560.0, 480.0)
-        .min_inner_size(400.0, 320.0)
         .on_navigation(webview_navigation_policy)
         .on_new_window(webview_new_window_policy)
         .build()
     {
         Ok(w) => {
+            center_child_on_main(app, &w, 560.0, 480.0);
+            let _ = w.show();
+            let _ = w.set_focus();
             logln!("[plugins] window opened");
-            let _ = w;
         }
         Err(e) => logln!("[plugins] failed to open window: {e}"),
     }
@@ -1290,16 +1309,20 @@ fn open_lan_window(app: &AppHandle) {
         return;
     }
     match WebviewWindowBuilder::new(app, LAN_LABEL, WebviewUrl::App("lan.html".into()))
-        .title("扫码远程连接")
+        .decorations(false) // 无系统标题栏/放大缩小关闭按钮
+        .resizable(false)
+        .visible(false) // 定位后再显示，避免原始位置闪烁
+        .center() // 兜底
         .inner_size(480.0, 560.0)
-        .min_inner_size(400.0, 480.0)
         .on_navigation(webview_navigation_policy)
         .on_new_window(webview_new_window_policy)
         .build()
     {
         Ok(w) => {
+            center_child_on_main(app, &w, 480.0, 560.0);
+            let _ = w.show();
+            let _ = w.set_focus();
             logln!("[lan] window opened");
-            let _ = w;
         }
         Err(e) => logln!("[lan] failed to open window: {e}"),
     }
@@ -1313,19 +1336,182 @@ fn open_uninstall_window(app: &AppHandle) {
         return;
     }
     match WebviewWindowBuilder::new(app, UNINSTALL_LABEL, WebviewUrl::App("uninstall.html".into()))
-        .title("卸载 DeepSeek Harness？")
-        .inner_size(460.0, 320.0)
+        .decorations(false) // 无系统标题栏/放大缩小关闭按钮
         .resizable(false)
+        .visible(false) // 定位后再显示，避免原始位置闪烁
+        .center() // 兜底
+        .inner_size(460.0, 320.0)
         .on_navigation(webview_navigation_policy)
         .on_new_window(webview_new_window_policy)
         .build()
     {
         Ok(w) => {
+            center_child_on_main(app, &w, 460.0, 320.0);
+            let _ = w.show();
+            let _ = w.set_focus();
             logln!("[uninstall] window opened");
-            let _ = w;
         }
         Err(e) => logln!("[uninstall] failed to open window: {e}"),
     }
+}
+
+// ---------------------------------------------------------------------------
+// 自绘弹窗（modal.html）：替代 rfd 系统对话框，统一玻璃卡片风格、可居中。
+// ---------------------------------------------------------------------------
+
+/// 自绘弹窗内容。kind: "ok"（单按钮确定）| "yesno"（稍后/确定）。
+#[derive(Clone, Serialize)]
+struct ModalSpec {
+    title: String,
+    message: String,
+    kind: String,
+}
+
+/// 把弹窗窗口定位到主窗口中心（用逻辑尺寸 × 主窗口缩放因子换算物理坐标，
+/// 避免刚 build 完 outer_size 尚为 0 时无法计算）。若主窗口不存在/不可见则回退
+/// 屏幕中心（builder 的 .center() 兜底）。clamp 到主窗口所在显示器的工作区，
+/// 避免副屏边缘或贴边时弹窗跑出可视区域。
+fn center_child_on_main(app: &AppHandle, w: &tauri::WebviewWindow, log_w: f64, log_h: f64) {
+    let Some(main) = app.get_webview_window(WINDOW_LABEL) else {
+        let _ = w.center();
+        return;
+    };
+    let (Ok(mpos), Ok(msize)) = (main.outer_position(), main.outer_size()) else {
+        let _ = w.center();
+        return;
+    };
+    let sf = main.scale_factor().unwrap_or(1.0);
+    let dw = (log_w * sf) as i32;
+    let dh = (log_h * sf) as i32;
+    let tx = mpos.x + (msize.width as i32) / 2 - dw / 2;
+    let ty = mpos.y + (msize.height as i32) / 2 - dh / 2;
+    let mon = main.current_monitor().ok().flatten();
+    let (x, y) = if let Some(m) = mon {
+        let wa = *m.work_area();
+        let wx = wa.position.x;
+        let wy = wa.position.y;
+        let ww = wa.size.width as i32;
+        let wh = wa.size.height as i32;
+        // 饱和 clamp：弹窗大于工作区时（极小分辨率/高分屏）min>max 会 panic，
+        // 这里先取 max 门槛，保证 max>=min，落在合理位置即可。
+        let x = tx.clamp(wx, (wx + ww - dw).max(wx));
+        let y = ty.clamp(wy, (wy + wh - dh).max(wy));
+        (x, y)
+    } else {
+        (tx, ty)
+    };
+    let _ = w.set_position(tauri::PhysicalPosition::new(x, y));
+}
+
+/// 打开（或聚焦）自绘弹窗窗口（无系统标题栏、固定尺寸、相对主窗口中心）。
+/// 返回 false 表示无法打开（调用方应尽快结束等待）。
+fn open_modal_window(app: &AppHandle) -> bool {
+    if let Some(w) = app.get_webview_window(MODAL_LABEL) {
+        // 复用分支：强制重新加载以获得最新 spec（理论上 MODAL_LOCK 已串行化，
+        // 一般不会走到这；防御性处理，避免残留旧内容）。
+        let _ = w.eval("location.reload()");
+        let _ = w.show();
+        let _ = w.set_focus();
+        return true;
+    }
+    match WebviewWindowBuilder::new(app, MODAL_LABEL, WebviewUrl::App("modal.html".into()))
+        .decorations(false)
+        .resizable(false)
+        .visible(false) // 定位后再显示，避免闪烁
+        .inner_size(460.0, 300.0)
+        .center() // 兜底
+        .on_navigation(webview_navigation_policy)
+        .on_new_window(webview_new_window_policy)
+        .build()
+    {
+        Ok(w) => {
+            // Alt+F4 / 系统关窗：在用户没点按钮就关闭弹窗时，解除 show_modal 的
+            // 24h 阻塞等待（等价 rfd 对话框被关闭即返回）。发送端已被 take 时
+            // 说明是 modal_respond 正常关闭，此处为 no-op。
+            w.on_window_event(move |ev| {
+                if let tauri::WindowEvent::CloseRequested { .. } = ev {
+                    if let Some(tx) = mlock(&MODAL_RESULT).take() {
+                        let _ = tx.send(false);
+                    }
+                }
+            });
+            center_child_on_main(app, &w, 460.0, 300.0);
+            let _ = w.show();
+            let _ = w.set_focus();
+            true
+        }
+        Err(e) => {
+            logln!("[modal] failed to open window: {e}");
+            false
+        }
+    }
+}
+
+/// 自绘弹窗：读取待显示内容（modal.html 加载时调用）。
+#[tauri::command]
+fn modal_spec(window: tauri::WebviewWindow) -> Result<ModalSpec, String> {
+    if window.label() != MODAL_LABEL {
+        return Err("该操作仅限弹窗窗口使用".to_string());
+    }
+    mlock(&MODAL_SPEC)
+        .clone()
+        .ok_or_else(|| "无待显示内容".to_string())
+}
+
+/// 自绘弹窗：用户点击按钮后回传结果并关闭窗口（accept = 用户选择确定）。
+#[tauri::command]
+fn modal_respond(window: tauri::WebviewWindow, accept: bool) -> Result<(), String> {
+    if window.label() != MODAL_LABEL {
+        return Err("该操作仅限弹窗窗口使用".to_string());
+    }
+    if let Some(tx) = mlock(&MODAL_RESULT).take() {
+        let _ = tx.send(accept);
+    }
+    mlock(&MODAL_SPEC).take();
+    let _ = window.close();
+    Ok(())
+}
+
+/// 显示自绘弹窗并阻塞等待用户按钮结果（替代 rfd 同步对话框）。
+/// 在后台线程调用（boot 线程 / 更新检查线程）：窗口在主线程打开，本线程阻塞等结果。
+/// kind="ok" 忽略按钮值；kind="yesno" 返回用户是否选择"确定"。
+fn show_modal(app: &AppHandle, title: &str, message: &str, kind: &str) -> bool {
+    // 串行化弹窗生命周期：并发 show_modal（如托盘更新检查 vs boot 崩溃线程）会
+    // 造成「窗口显示旧内容、但点击结果发给新线程」的错配。锁覆盖 设置→开窗→等待，
+    // 保证同时只有一个弹窗在途；第二个调用排队至前一个结束。
+    let _lock = mlock(&MODAL_LOCK);
+    let (tx, rx) = mpsc::channel();
+    *mlock(&MODAL_RESULT) = Some(tx);
+    *mlock(&MODAL_SPEC) = Some(ModalSpec {
+        title: title.to_string(),
+        message: message.to_string(),
+        kind: kind.to_string(),
+    });
+    let app2 = app.clone();
+    let opened = Arc::new(AtomicBool::new(false));
+    let opened2 = opened.clone();
+    let app3 = app2.clone();
+    let _ = app2
+        .clone()
+        .run_on_main_thread(move || opened2.store(open_modal_window(&app3), Ordering::SeqCst));
+    // 等待主线程完成窗口创建（主线程忙碌时放宽到 10s；创建失败立即返回避免 24h 假阻塞）
+    for _ in 0..500 {
+        if opened.load(Ordering::SeqCst) {
+            break;
+        }
+        if app2.get_webview_window(MODAL_LABEL).is_some() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    if !opened.load(Ordering::SeqCst) && app2.get_webview_window(MODAL_LABEL).is_none() {
+        // 无法打开弹窗：解除发送端与内容，避免残留
+        mlock(&MODAL_RESULT).take();
+        mlock(&MODAL_SPEC).take();
+        return false;
+    }
+    // 阻塞等待用户点击（24h 超时防死锁，兜底返回 false）
+    rx.recv_timeout(Duration::from_secs(24 * 3600)).unwrap_or(false)
 }
 
 /// 卸载确认窗口返回的状态。
@@ -1408,12 +1594,35 @@ async fn uninstall_run(app: AppHandle, wipe: bool) -> Result<(), String> {
         std::thread::sleep(Duration::from_millis(900));
         clear_dock_recents();
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "windows")]
+    {
+        // 唯一卸载链：调用系统卸载器（uninstall.exe）完成程序文件删除（含 NSIS
+        // PREUNINSTALL 钩子 → --self-uninstall-full 兜底清理数据）。数据侧已在
+        // teardown 完成；这里退出自身并唤起卸载器，交给 NSIS 删 $INSTDIR。
+        // 不再出现"请到设置里卸载"的割裂兜底。
+        let exe = std::env::current_exe().unwrap_or_default();
+        let uninstaller = exe.parent().unwrap_or(Path::new(".")).join("uninstall.exe");
+        let mut spawned = false;
+        if uninstaller.is_file() {
+            let ok = no_console(Command::new(&uninstaller)).spawn().is_ok();
+            if ok {
+                spawned = true;
+                logln!("[uninstall] spawned system uninstaller: {}", uninstaller.display());
+            }
+        }
+        if !spawned {
+            update::notify(
+                "请通过系统卸载",
+                "应用数据已清理。请到“设置 → 应用 → 已安装的应用”中卸载 DeepSeek Harness。",
+            );
+        }
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
         if !trash_self() {
             update::notify(
                 "请通过系统卸载",
-                "应用数据已清理。请到“设置 → 应用 → 已安装的应用”中卸载 DeepSeek Harness。",
+                "应用数据已清理。请通过系统卸载 DeepSeek Harness。",
             );
         }
     }
@@ -1434,12 +1643,8 @@ fn check_for_updates(app: &AppHandle) {
         match update::check_update(&p, settings.registry.as_deref()) {
             Ok(Some((cur, latest))) => {
                 let msg = format!("当前 v{cur}，发现新版本 v{latest}。是否现在更新？");
-                let yes = rfd::MessageDialog::new()
-                    .set_title("DeepSeek Harness 更新")
-                    .set_description(&msg)
-                    .set_buttons(rfd::MessageButtons::YesNo)
-                    .show();
-                if yes == rfd::MessageDialogResult::Yes {
+                let yes = show_modal(&app2, "DeepSeek Harness 更新", &msg, "yesno");
+                if yes {
                     let app3 = app2.clone();
                     let p2 = p.clone();
                     let reg = settings.registry.clone();
@@ -2314,6 +2519,42 @@ fn trash_self() -> bool {
 // CLI test hooks
 // ---------------------------------------------------------------------------
 
+#[cfg(target_os = "windows")]
+/// 结束其它运行中的本应用实例及其子进程树（`--self-uninstall-full` 卸载 sidecar 用）。
+/// 目的：释放 `$INSTDIR` 程序文件 / app 数据 / WebView2 缓存的文件锁 —— 否则
+/// NSIS 删文件时因占用而失败（"右键→卸载 无反应"根因之一）。全程无 GUI/无窗口。
+/// 只按「本应用进程名 / 本项目 node 脚本命令行特征」匹配，避免误杀用户其它 node。
+fn kill_other_app_instances() {
+    let self_pid = std::process::id();
+    let script = format!(
+        r#"$self={self_pid};
+Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {{
+  ($_.ProcessId -ne $self) -and (
+    $_.Name -eq 'dsh-desktop.exe' -or
+    ($_.Name -eq 'node.exe' -and $_.CommandLine -match 'bin\.js.*--profile web') -or
+    ($_.Name -eq 'node.exe' -and $_.CommandLine -match 'lan-proxy\.js') -or
+    ($_.Name -eq 'node.exe' -and $_.CommandLine -match 'mdns-advertise\.js')
+  )
+}} | ForEach-Object {{
+  taskkill /PID $_.ProcessId /T /F 2>$null | Out-Null
+}}"#,
+        self_pid = self_pid
+    );
+    let status = no_console(Command::new("powershell"))
+        .arg("-NoProfile")
+        .arg("-NonInteractive")
+        .arg("-Command")
+        .arg(&script)
+        .status();
+    match status {
+        Ok(s) if s.success() => logln!("[uninstall-full] killed other instances ok"),
+        Ok(s) => logln!("[uninstall-full] kill other instances exit={:?}", s.code()),
+        Err(e) => logln!("[uninstall-full] kill other instances failed to run: {e}"),
+    }
+    // 给文件句柄释放留一点时间
+    std::thread::sleep(Duration::from_millis(600));
+}
+
 fn run_cli_hooks(args: &[String]) -> bool {
     if args.iter().any(|a| a == "--self-update-check") {
         let p = paths_from_cli();
@@ -2370,6 +2611,29 @@ fn run_cli_hooks(args: &[String]) -> bool {
             }
         }
     }
+    if args.iter().any(|a| a == "--self-uninstall-full") {
+        // 唯一卸载链（Windows NSIS PREUNINSTALL 调用，无 GUI/无窗口）：
+        //   1) 结束可能仍在运行的其它 App 实例（含其 node/dsh/lan 子进程，树杀），
+        //      释放程序目录 / 日志 / WebView2 数据文件锁 → 否则 NSIS 删文件必然失败
+        //      （这正是"右键→卸载 无反应"的根因之一）。
+        //   2) 复用 uninstall_teardown 做数据清理（登录自启、app 数据、WebView2 缓存、
+        //      可选 ~/.dsh）。
+        //   3) **不删程序文件**（$INSTDIR 由 NSIS 负责删除），失败也不阻断 NSIS。
+        let wipe = args.iter().any(|a| a == "--wipe");
+        #[cfg(target_os = "windows")]
+        kill_other_app_instances();
+        let p = paths_from_cli();
+        match uninstall_teardown(&p, wipe) {
+            Ok(()) => {
+                println!("UNINSTALL_DONE");
+                std::process::exit(0);
+            }
+            Err(e) => {
+                eprintln!("UNINSTALL_ERROR {e}");
+                std::process::exit(1);
+            }
+        }
+    }
     if args.iter().any(|a| a == "--self-trash-test") {
         println!("TRASHED {}", trash_self());
         std::process::exit(0);
@@ -2399,6 +2663,8 @@ fn main() {
             lan_state,
             lan_toggle,
             uninstall_run,
+            modal_spec,
+            modal_respond,
         ])
         .setup(|app| {
             let show = MenuItem::with_id(app, "show", "显示主窗口", true, None::<&str>)?;
@@ -2516,6 +2782,8 @@ fn main() {
             .title("DeepSeek Harness")
             .inner_size(1280.0, 820.0)
             .min_inner_size(800.0, 560.0)
+            .center() // 主窗启动即居中于当前屏幕
+            .theme(Some(tauri::Theme::Dark)) // B1：暗色原生标题栏一致化
             .on_page_load(|webview, payload| {
                 // 所有页面加载记一行日志；DOM 探针只针对 dsh 工作台页面
                 let url = payload.url().to_string();
@@ -2671,7 +2939,6 @@ mod tests {
 
     #[test]
     fn clean_empty_dirs_removes_only_empty() {
-        use std::path::PathBuf;
         let root = std::env::temp_dir().join(format!("dsh-clean-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         let scoped = root.join("node_modules/@linxin666/dsh-web-ui-all");
