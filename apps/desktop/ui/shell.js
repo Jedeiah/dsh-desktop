@@ -65,17 +65,20 @@
   }
 
   // 先注册事件监听（避免 get_dsh_url 与 dsh 就绪 emit 之间的竞态漏收），
-  // 再按需轮询兜底。
-  try {
-    await T.event.listen('dsh:url', (ev) => loadWorkbench(ev.payload));
-  } catch (e) { /* 能力缺失 */ }
-  try {
-    const url = await invoke('get_dsh_url');
-    if (url) loadWorkbench(url);
-    else $('wbPlaceholder').hidden = false;
-  } catch (e) {
-    $('wbPlaceholder').hidden = false;
-  }
+  // 再按需轮询兜底。注意：这是普通 <script>（非 module），不能顶层 await，
+  // 必须包在 async 自执行函数里，否则 WKWebView/WebView2 直接 SyntaxError。
+  (async () => {
+    try {
+      await T.event.listen('dsh:url', (ev) => loadWorkbench(ev.payload));
+    } catch (e) { /* 能力缺失 */ }
+    try {
+      const url = await invoke('get_dsh_url');
+      if (url) loadWorkbench(url);
+      else $('wbPlaceholder').hidden = false;
+    } catch (e) {
+      $('wbPlaceholder').hidden = false;
+    }
+  })();
 
   // ---------------- 常规 ----------------
   const cwdEl = $('cwd');
