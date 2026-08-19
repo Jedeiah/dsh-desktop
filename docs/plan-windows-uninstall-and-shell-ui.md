@@ -20,6 +20,7 @@
   - CSP 增 `frame-src http://127.0.0.1:* http://localhost:*`（Spike §D）。
   - **P3 残留风险（Spike §C，需 macOS/Windows 真机回归）**：iframe 内键盘焦点/快捷键直达、剪贴板、`target=_blank`/新窗口承接、目录选择器、嵌套弹层布局等——见 §6 P3 验收矩阵；本环境无法跑 GUI，仅能编译期+DOM 层验证。
   - **P3 已评审（docs/review-p3-shell.md，Ship-with-minor-fixes，4 项必改已修）**：① `check_update_cmd` 改 async+spawn_blocking（原同步主线程会卡死弹窗/更新）；② 插件实时输出 `dsh:plugin-output` 改向 `WINDOW_LABEL`（壳页）+PLUGIN_LABEL 双 emit；③ `choose_workspace_cmd` 保存后自动重启工作台（与文案一致）+ async+rfd 入 spawn_blocking；④ `show_window` 重建兜底改用 Tauri 事件总线 `w.emit`（去掉无效裸 CustomEvent），另 shell.js 先 listen 再轮询 get_dsh_url 消除竞态。
+  - **⚠ v0.2.0 真机回归发现 + 修复（2026-08-19）**：壳页 `shell.js` 的 `loadWorkbench` 初始化误写成**顶层 await**（普通 `<script>` 非 module，顶层 await 非法）→ WKWebView 解析报 `SyntaxError: Unexpected identifier 'T'`，整个 JS 不执行 → `get_dsh_url`/`listen('dsh:url')` 未运行 → iframe src 永不设置，界面卡在「正在启动 dsh 工作台…」（dsh 本身正常，见 launcher.log）。修复：把事件监听 + URL 轮询包进 async 自执行函数（与 lan/plugins 同模式）。**教训**：ego-browser/静态检查只验证 DOM 结构，不触发经典脚本顶层 await 的语法错误——后续改动任一 ui/*.js 需用 `vm.Script`（经典 script 语义）编译验证 + 真机回归。
 
 ---
 
