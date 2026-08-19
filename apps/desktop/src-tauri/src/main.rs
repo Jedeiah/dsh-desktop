@@ -753,9 +753,16 @@ fn show_window(app: &AppHandle, url: &str) {
         .on_new_window(webview_new_window_policy)
         .build()
     {
-        // 重建后才拿到窗口：等页面就绪后推送地址（重建极罕见，尽力而为）
-        let js = format!("setTimeout(()=>{{ window.dispatchEvent(new CustomEvent('dsh:url', {{detail:'{url}'}})) }}, 500)");
-        let _ = w.eval(js);
+        // 重建后才拿到窗口：走 Tauri 事件总线推送地址（shell.js 用 event.listen
+        // 监听，不用裸 CustomEvent）。页面加载后名 PROBE：页面 load 后再 emit，
+        // 且 shell.js 初始化有 get_dsh_url 兜底，双保险。
+        let w2 = w.clone();
+        let url = url.to_string();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(800));
+            let _ = w2.emit("dsh:url", &url);
+        });
+        let _ = w.show();
     }
 }
 
@@ -1151,9 +1158,12 @@ fn run_dsh_plugin(
             let l = l.trim_end_matches('\r').to_string();
             buf.push_str(&l);
             buf.push('\n');
-            // 收敛到插件管理窗口（避免广播到全部窗口；窗口已销毁则仅收集）
-            if let Some(w) = emit_app.get_webview_window(PLUGIN_LABEL) {
-                let _ = w.emit("dsh:plugin-output", &l);
+            // 收敛到插件管理目标：壳页主窗（P3）+ 遗留独立插件窗口（兼容）。
+            // 窗口已销毁则仅收集全文。
+            for label in [WINDOW_LABEL, PLUGIN_LABEL] {
+                if let Some(w) = emit_app.get_webview_window(label) {
+                    let _ = w.emit("dsh:plugin-output", &l);
+                }
             }
         }
         buf
@@ -1167,8 +1177,10 @@ fn run_dsh_plugin(
             let l = l.trim_end_matches('\r').to_string();
             buf.push_str(&l);
             buf.push('\n');
-            if let Some(w) = emit_app2.get_webview_window(PLUGIN_LABEL) {
-                let _ = w.emit("dsh:plugin-output", &l);
+            for label in [WINDOW_LABEL, PLUGIN_LABEL] {
+                if let Some(w) = emit_app2.get_webview_window(label) {
+                    let _ = w.emit("dsh:plugin-output", &l);
+                }
             }
         }
         buf
@@ -1455,21 +1467,29 @@ fn get_shell_state(app: AppHandle) -> ShellState {
 }
 
 /// 选择默认工作目录（复用 rfd 目录选择器）；返回新目录，取消返回 None。
-/// 选择后立即写入 settings（保持与托盘「设置默认工作目录…」一致）。
+/// 选择后立即写入 settings，并重启工作台（与新目录生效、与旧托盘行为一致）。
+/// rfd pick 会阻塞：命令为 async，放到 spawn_blocking，避免占用主线程。
 #[tauri::command]
-fn choose_workspace_cmd(app: AppHandle) -> Option<String> {
-    let p = paths_from_app(&app);
-    let current = load_settings_at(&p.app_data)
-        .default_cwd
-        .unwrap_or_else(home_dir);
-    let dir = rfd::FileDialog::new()
-        .set_title("选择 DSh 工作文件夹")
-        .set_directory(&current)
-        .pick_folder()?;
-    let mut s = load_settings_at(&p.app_data);
-    s.default_cwd = Some(dir.clone());
-    save_settings_at(&p.app_data, &s);
-    Some(dir.to_string_lossy().into_owned())
+async fn choose_workspace_cmd(app: AppHandle) -> Option<String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let p = paths_from_app(&app);
+        let current = load_settings_at(&p.app_data)
+            .default_cwd
+            .unwrap_or_else(home_dir);
+        let dir = rfd::FileDialog::new()
+            .set_title("选择 DSh 工作文件夹")
+            .set_directory(&current)
+            .pick_folder()?;
+        let mut s = load_settings_at(&p.app_data);
+        s.default_cwd = Some(dir.clone());
+        save_settings_at(&p.app_data, &s);
+        logln!("workspace set to {}", dir.display());
+        // 改后自动重启工作台（与 shell.html 文案一致）
+        restart_dsh(&app);
+        Some(dir.to_string_lossy().into_owned())
+    })
+    .await
+    .unwrap_or(None)
 }
 
 /// 打开默认工作目录（系统文件管理器）。
@@ -1519,36 +1539,42 @@ fn set_login_cmd(enable: bool) -> Result<(), String> {
 
 /// 检查更新：发现新版 → 自绘确认框 → 后台应用。
 /// 返回状态串：latest（已是最新）| updating（正开始更新）| cancelled（用户取消）。
+/// 必须 async + spawn_blocking：show_modal 要求后台线程（会阻塞等用户点击），
+/// 同步 command 走主线程会卡死主事件循环（弹窗开不出来、GUI 冻结）。
 #[tauri::command]
-fn check_update_cmd(app: AppHandle) -> Result<String, String> {
-    let p = paths_from_app(&app);
-    let settings = load_settings_at(&p.app_data);
-    match update::check_update(&p, settings.registry.as_deref()) {
-        Ok(Some((_, latest))) => {
-            let msg = format!("发现新版本 v{latest}。是否现在更新？");
-            let yes = show_modal(&app, "DeepSeek Harness 更新", &msg, "yesno");
-            if yes {
-                let app3 = app.clone();
-                let p2 = p.clone();
-                let reg = settings.registry.clone();
-                std::thread::spawn(move || {
-                    let reg_url = update::registry_url(reg.as_deref());
-                    match update::apply_update(&p2, &latest, &reg_url) {
-                        Ok(()) => {
-                            update::notify("更新完成", &format!("已升级到 v{latest}，正在重启 dsh"));
-                            restart_dsh(&app3);
+async fn check_update_cmd(app: AppHandle) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let p = paths_from_app(&app);
+        let settings = load_settings_at(&p.app_data);
+        match update::check_update(&p, settings.registry.as_deref()) {
+            Ok(Some((_, latest))) => {
+                let msg = format!("发现新版本 v{latest}。是否现在更新？");
+                let yes = show_modal(&app, "DeepSeek Harness 更新", &msg, "yesno");
+                if yes {
+                    let app3 = app.clone();
+                    let p2 = p.clone();
+                    let reg = settings.registry.clone();
+                    std::thread::spawn(move || {
+                        let reg_url = update::registry_url(reg.as_deref());
+                        match update::apply_update(&p2, &latest, &reg_url) {
+                            Ok(()) => {
+                                update::notify("更新完成", &format!("已升级到 v{latest}，正在重启 dsh"));
+                                restart_dsh(&app3);
+                            }
+                            Err(e) => update::notify("更新失败", &e),
                         }
-                        Err(e) => update::notify("更新失败", &e),
-                    }
-                });
-                Ok("updating".into())
-            } else {
-                Ok("cancelled".into())
+                    });
+                    Ok("updating".into())
+                } else {
+                    Ok("cancelled".into())
+                }
             }
+            Ok(None) => Ok("latest".into()),
+            Err(e) => Err(e),
         }
-        Ok(None) => Ok("latest".into()),
-        Err(e) => Err(e),
-    }
+    })
+    .await
+    .map_err(|e| format!("检查更新线程异常：{e}"))?
 }
 
 /// 卸载确认窗口返回的状态。

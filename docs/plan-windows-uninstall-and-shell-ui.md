@@ -19,6 +19,7 @@
   - 新增壳页 command：`get_dsh_url`、`get_shell_state`、`choose_workspace_cmd`、`open_workspace_cmd`、`open_logs_cmd`、`restart_dsh_cmd`、`open_browser_cmd`、`set_login_cmd`、`check_update_cmd`；`plugin_op`/`lan_state`/`lan_toggle` 白名单扩到 `WINDOW_LABEL | PLUGIN_LABEL | LAN_LABEL`。
   - CSP 增 `frame-src http://127.0.0.1:* http://localhost:*`（Spike §D）。
   - **P3 残留风险（Spike §C，需 macOS/Windows 真机回归）**：iframe 内键盘焦点/快捷键直达、剪贴板、`target=_blank`/新窗口承接、目录选择器、嵌套弹层布局等——见 §6 P3 验收矩阵；本环境无法跑 GUI，仅能编译期+DOM 层验证。
+  - **P3 已评审（docs/review-p3-shell.md，Ship-with-minor-fixes，4 项必改已修）**：① `check_update_cmd` 改 async+spawn_blocking（原同步主线程会卡死弹窗/更新）；② 插件实时输出 `dsh:plugin-output` 改向 `WINDOW_LABEL`（壳页）+PLUGIN_LABEL 双 emit；③ `choose_workspace_cmd` 保存后自动重启工作台（与文案一致）+ async+rfd 入 spawn_blocking；④ `show_window` 重建兜底改用 Tauri 事件总线 `w.emit`（去掉无效裸 CustomEvent），另 shell.js 先 listen 再轮询 get_dsh_url 消除竞态。
 
 ---
 

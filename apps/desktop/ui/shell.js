@@ -64,19 +64,18 @@
     wb.focus();
   }
 
-  (async () => {
-    try {
-      const url = await invoke('get_dsh_url');
-      if (url) loadWorkbench(url);
-      else $('wbPlaceholder').hidden = false;
-    } catch (e) {
-      $('wbPlaceholder').hidden = false;
-    }
-    // 主进程 dsh 就绪/换端口时推送
-    try {
-      await T.event.listen('dsh:url', (ev) => loadWorkbench(ev.payload));
-    } catch (e) { /* 能力缺失 */ }
-  })();
+  // 先注册事件监听（避免 get_dsh_url 与 dsh 就绪 emit 之间的竞态漏收），
+  // 再按需轮询兜底。
+  try {
+    await T.event.listen('dsh:url', (ev) => loadWorkbench(ev.payload));
+  } catch (e) { /* 能力缺失 */ }
+  try {
+    const url = await invoke('get_dsh_url');
+    if (url) loadWorkbench(url);
+    else $('wbPlaceholder').hidden = false;
+  } catch (e) {
+    $('wbPlaceholder').hidden = false;
+  }
 
   // ---------------- 常规 ----------------
   const cwdEl = $('cwd');
