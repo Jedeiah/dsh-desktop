@@ -1,4 +1,4 @@
-﻿# Prepare bundled resources for DSh Desktop (Windows build).
+# Prepare bundled resources for DSh Desktop (Windows build).
 # Mirrors scripts/prepare-resources.sh for PowerShell:
 #   resources/node/node.exe      — Node x64 runtime (node.exe)
 #   resources/dsh/<ver>/         — full dsh closure (node_modules incl. @deepseek-ai/dsh)
@@ -18,6 +18,10 @@ param(
     [string]$ClosureSrc = ""
 )
 $ErrorActionPreference = "Stop"
+
+# 大闭包用 npm 安装（CI 上 npm/arborist 易触发 V8 默认堆上限 OOM）→ 抬高堆上限。
+# 本脚本内的 npm install 都走这个 NODE_OPTIONS。
+$env:NODE_OPTIONS = "$env:NODE_OPTIONS --max-old-space-size=6144"
 
 $ROOT = Split-Path -Parent $PSScriptRoot
 $SRC_TAURI = Join-Path $ROOT "apps\desktop\src-tauri"

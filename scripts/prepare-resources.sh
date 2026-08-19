@@ -9,6 +9,11 @@
 # result is what matters at runtime (no system bun/npm/node needed there).
 set -euo pipefail
 
+# 大闭包用 npm 安装（CI 低内存/并发下 npm/arborist 极易触发 V8 默认堆上限，
+# 表现为 "JavaScript heap out of memory" 直接 Abort）→ 显式抬高堆上限。
+# 本脚本内的 npm install（pnpm 等）与后续 dsh --version 自检都走这个 NODE_OPTIONS。
+export NODE_OPTIONS="${NODE_OPTIONS:+$NODE_OPTIONS }--max-old-space-size=6144"
+
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SRC_TAURI="$ROOT/apps/desktop/src-tauri"
 RES="$SRC_TAURI/resources"

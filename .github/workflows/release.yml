@@ -62,6 +62,9 @@ jobs:
       - name: Prepare bundled resources (node + dsh closure + icons)
         run: |
           NODE_SRC="$(command -v node)"
+          # 大闭包 npm install：显式抬高 V8 堆，避免 CI 低内存/并发下
+          # "JavaScript heap out of memory"（prepare 脚本内亦已设置 NODE_OPTIONS）。
+          NODE_OPTIONS=--max-old-space-size=6144 \
           npm install --prefix "$RUNNER_TEMP/closure" "@deepseek-ai/dsh@${DSH_VERSION}" \
             --ignore-scripts --no-audit --no-fund
           CLOSURE_SRC="$RUNNER_TEMP/closure/node_modules" \
@@ -162,6 +165,8 @@ jobs:
       - name: Prepare bundled resources (node.exe + dsh closure + icons)
         shell: pwsh
         run: |
+          # 大闭包 npm install：显式抬高 V8 堆，避免 CI 低内存/并发下 OOM。
+          $env:NODE_OPTIONS = "--max-old-space-size=6144"
           npm install --prefix "$env:RUNNER_TEMP\closure" "@deepseek-ai/dsh@$env:DSH_VERSION" --ignore-scripts --no-audit --no-fund
           ./scripts/prepare-resources.ps1 `
             -DshVersion $env:DSH_VERSION `

@@ -140,6 +140,9 @@ fn install_and_verify(p: &Paths, target: &Path, ver: &str, registry: &str) -> Re
         // keep npm cache/logs inside the app data dir (nothing leaks to ~/.npm)
         .arg("--cache")
         .arg(p.app_data.join("dsh/npm-cache"))
+        // 大闭包 npm install：显式抬高 V8 堆，避免低内存/并发下
+        // "JavaScript heap out of memory" 导致更新半途 Abort。
+        .env("NODE_OPTIONS", "--max-old-space-size=6144")
         .current_dir(target)
         .stdout(Stdio::null())
         .stderr(Stdio::inherit())
