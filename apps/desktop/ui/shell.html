@@ -59,6 +59,9 @@
         border: none;
         background: var(--bg);
       }
+      /* .placeholder/.panel 的显式 display 会覆盖 hidden 属性（hidden 默认
+         display:none），导致设了 hidden=true 仍显示并挡住下层——补一条强制隐藏。 */
+      [hidden] { display: none !important; }
       .placeholder {
         position: absolute;
         inset: 0;
@@ -166,9 +169,11 @@
 
     <div class="workarea">
       <!-- ============ 工作台（dsh iframe） ============ -->
+      <!-- 占位层默认可见（"正在启动…"），首个 iframe load 后由 shell.js 隐藏；
+           之后换端口重载时会再次盖住，避免白屏闪烁。 -->
       <div class="activity" id="activity-workbench">
         <iframe id="workbenchFrame" title="DeepSeek Harness 工作台"></iframe>
-        <div class="placeholder" id="wbPlaceholder" hidden>
+        <div class="placeholder" id="wbPlaceholder">
           <div class="spinner"></div>
           <span>正在启动 dsh 工作台…</span>
         </div>

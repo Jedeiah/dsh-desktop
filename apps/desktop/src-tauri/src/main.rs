@@ -686,7 +686,7 @@ fn boot(app: AppHandle) {
                         let app2 = app.clone();
                         let u = url.clone();
                         let _ = app2.clone().run_on_main_thread(move || {
-                            show_window(&app2, &u);
+                            reveal_main_window(&app2, Some(&u));
                         });
                     }
                 }
@@ -734,49 +734,42 @@ fn boot(app: AppHandle) {
 // P3：主窗口是壳页，dsh 工作台在壳页的 <iframe> 里。这里把当前 dsh 地址
 // 通过 dsh:url 事件推给壳页，让 shell.js 更新 iframe src；主窗自身始终停在
 // shell.html（不整窗导航，避免壳页/顶层丢失）。
-fn show_window(app: &AppHandle, url: &str) {
-    if let Some(w) = app.get_webview_window(WINDOW_LABEL) {
-        let _ = w.emit("dsh:url", url);
-        let _ = w.center(); // 每次打开/显示都居中于当前屏幕
-        let _ = w.show();
-        let _ = w.set_focus();
+//
+// 显示主窗口的**唯一通道**（启动 / dsh 就绪 / 托盘 / Dock / 重启后共用）：
+//  - dsh:url 事件任何情况下都发（壳页 iframe 换端口 / 工作台重启才需要更新）；
+//  - 只在窗口「当前不可见」时才 center + show —— 首次出现即居中，已可见时
+//    不再重定位。这是启动"往上闪一下"的根因修复：此前窗口创建即 show、
+//    dsh 就绪又 center+show 一次，macOS 会对已显示窗口再次定位，产生跳动。
+fn reveal_main_window(app: &AppHandle, url: Option<&str>) {
+    let Some(w) = app.get_webview_window(WINDOW_LABEL) else {
+        // 兜底：主窗不存在（极罕见）时重建壳页。shell.js 自带 get_dsh_url
+        // 轮询兜底，重建后无需再补发地址事件。
+        if let Ok(w) = WebviewWindowBuilder::new(app, WINDOW_LABEL, WebviewUrl::App("shell.html".into()))
+            .title("DeepSeek Harness")
+            .inner_size(1280.0, 820.0)
+            .min_inner_size(800.0, 560.0)
+            .visible(false)
+            .center()
+            .theme(Some(tauri::Theme::Dark))
+            .on_navigation(webview_navigation_policy)
+            .on_new_window(webview_new_window_policy)
+            .build()
+        {
+            let _ = w.center();
+            let _ = w.show();
+            let _ = w.set_focus();
+        }
         return;
+    };
+    if let Some(u) = url {
+        let _ = w.emit("dsh:url", u);
     }
-    // 兜底：主窗不存在（极罕见）时重建壳页
-    if let Ok(w) = WebviewWindowBuilder::new(app, WINDOW_LABEL, WebviewUrl::App("shell.html".into()))
-        .title("DeepSeek Harness")
-        .inner_size(1280.0, 820.0)
-        .min_inner_size(800.0, 560.0)
-        .center()
-        .theme(Some(tauri::Theme::Dark))
-        .on_navigation(webview_navigation_policy)
-        .on_new_window(webview_new_window_policy)
-        .build()
-    {
-        // 重建后才拿到窗口：走 Tauri 事件总线推送地址（shell.js 用 event.listen
-        // 监听，不用裸 CustomEvent）。页面加载后名 PROBE：页面 load 后再 emit，
-        // 且 shell.js 初始化有 get_dsh_url 兜底，双保险。
-        let w2 = w.clone();
-        let url = url.to_string();
-        std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_millis(800));
-            let _ = w2.emit("dsh:url", &url);
-        });
+    let visible = w.is_visible().unwrap_or(false);
+    if !visible {
+        let _ = w.center();
         let _ = w.show();
     }
-}
-
-/// Inject a one-shot error trap + probe into the webview and log the result.
-fn probe_webview(w: &tauri::WebviewWindow, label: String, tag: String) {
-    // trap JS errors into document.title so a later probe can read them
-    let _ = w.eval(
-        r#"window.addEventListener('error', e => { try { document.title = 'JSERR:' + String(e.message||e.error||'').slice(0,200); } catch(_){} });"#,
-    );
-    let label2 = label.clone();
-    let _ = w.eval_with_callback(
-        r#"JSON.stringify({ready:document.readyState,title:document.title,bodyLen:document.body?document.body.innerText.length:-1,bodyHead:document.body?document.body.innerText.slice(0,160):''})"#,
-        move |res| logln!("[webview:{label2}] probe({tag}): {res}"),
-    );
+    let _ = w.set_focus();
 }
 
 /// Open a URL in the system default browser.
@@ -2718,11 +2711,9 @@ fn main() {
                         app.exit(0);
                     }
                     // 显示主窗口 / 管理台：都唤起壳页；管理台额外切到「常规」Tab。
+                    // 不虚构 URL（dsh 未就绪时壳页保持占位，而不是塞一个假地址）。
                     "show" | "manage" => {
-                        let url = mlock(&DSH_URL)
-                            .clone()
-                            .unwrap_or_else(|| "http://127.0.0.1:3080".into());
-                        show_window(app, &url);
+                        reveal_main_window(app, mlock(&DSH_URL).as_deref());
                         if event.id.as_ref() == "manage" {
                             if let Some(w) = app.get_webview_window(WINDOW_LABEL) {
                                 let _ = w.emit("shell:tab", "general");
@@ -2738,10 +2729,7 @@ fn main() {
                     } = event
                     {
                         let app = tray.app_handle();
-                        let url = mlock(&DSH_URL)
-                            .clone()
-                            .unwrap_or_else(|| "http://127.0.0.1:3080".into());
-                        show_window(app, &url);
+                        reveal_main_window(app, mlock(&DSH_URL).as_deref());
                     }
                 })
                 .build(app)?;
@@ -2751,8 +2739,12 @@ fn main() {
             // P3：主窗口 = 壳页（ui/shell.html）。壳页顶部是 Tab 栏（工作台/常规/
             // 网络/插件/更新/卸载），工作台 Tab 内用 <iframe> 内嵌 dsh 工作台；
             // 其余管理能力内嵌为面板（window.__TAURI__ 只注入主 frame → 远程 iframe
-            // 拿不到 IPC，安全面收窄）。dsh 就绪后 show_window 用 dsh:url 事件告诉
-            // 壳页把 iframe src 指向工作台地址，而不是整窗导航。
+            // 拿不到 IPC，安全面收窄）。dsh 就绪后 reveal_main_window 用 dsh:url
+            // 事件告诉壳页把 iframe src 指向工作台地址，而不是整窗导航。
+            //
+            // 启动顺序（消除"首帧默认位置跳变 / 再次居中上跳"）：
+            //   visible(false)+center 隐藏创建 → dsh 就绪或开机 1.2s 宽限后，
+            //   统一走 reveal_main_window 显示（其内部仅在不可见时 center+show）。
             let _ = WebviewWindowBuilder::new(
                 app,
                 WINDOW_LABEL,
@@ -2761,19 +2753,24 @@ fn main() {
             .title("DeepSeek Harness")
             .inner_size(1280.0, 820.0)
             .min_inner_size(800.0, 560.0)
+            .visible(false) // 隐藏创建 → 定位后由 reveal 显示，避免首帧位置跳变
             .center() // 主窗启动即居中于当前屏幕
             .theme(Some(tauri::Theme::Dark)) // B1：暗色原生标题栏一致化
-            .on_page_load(|webview, payload| {
-                // 所有页面加载记一行日志（壳页自身；dsh 在 iframe 内不在此触发）
+            .on_page_load(|_webview, payload| {
+                // 顶部帧页面加载记一行日志（壳页自身；dsh 在 iframe 内不在此触发）
                 let url = payload.url().to_string();
                 logln!("[webview] page loaded: {url}");
-                if url.contains("/shell.html") {
-                    probe_webview(&webview, webview.label().to_string(), "load".to_string());
-                }
             })
             .on_navigation(webview_navigation_policy)
             .on_new_window(webview_new_window_policy)
             .build();
+            // 开机宽限：dsh 就绪前先把带占位提示的窗口显示出来（约 1.2s），
+            // dsh 就绪后再由 boot 用同一通道更新 iframe —— 两次只显示一次。
+            let reveal_app = app.handle().clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(1200));
+                reveal_main_window(&reveal_app, mlock(&DSH_URL).as_deref());
+            });
             std::thread::spawn(move || boot(handle));
             periodic_check(app.handle().clone());
             Ok(())
@@ -2794,10 +2791,7 @@ fn main() {
             // macOS: clicking the dock icon re-opens a hidden window.
             #[cfg(target_os = "macos")]
             RunEvent::Reopen { .. } => {
-                let url = mlock(&DSH_URL)
-                    .clone()
-                    .unwrap_or_else(|| "http://127.0.0.1:3080".into());
-                show_window(_app_handle, &url);
+                reveal_main_window(_app_handle, mlock(&DSH_URL).as_deref());
             }
             RunEvent::ExitRequested { .. } | RunEvent::Exit => kill_dsh(),
             _ => {}

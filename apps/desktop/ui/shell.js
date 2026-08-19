@@ -54,30 +54,56 @@
 
   // ---------------- 工作台 iframe ----------------
   const wb = $('workbenchFrame');
+  const wbPlaceholder = $('wbPlaceholder');
   let lastUrl = '';
+
+  function showPlaceholder() {
+    // 先清内联 display 再取消 hidden（hidden=false 但残留 inline display:none
+    // 时仍会隐藏；反之先 hidden=false 再清 display 会出现一帧闪变）
+    wbPlaceholder.style.display = '';
+    wbPlaceholder.hidden = false;
+  }
+  function hidePlaceholder() {
+    // hidden 属性 + 显式 display 双保险（.placeholder 的 display:flex 会覆盖
+    // hidden 的默认 display:none；shell.html 已补 [hidden]{display:none!important}）
+    wbPlaceholder.hidden = true;
+    wbPlaceholder.style.display = 'none';
+  }
+
+  // 占位层是绝对定位覆盖在 iframe 之上：在 iframe 真正绘制完成（onload）前
+  // 一直盖住，把"白屏/空白 iframe"阶段用 spinner 遮住，直到 onload 才撤。
+  // 这修复了"loding 没了 → 白屏 → 又 loding"的闪烁根因：不再 src 一赋值就
+  // 立刻撤占位（此时 iframe 尚未来得及绘制，露出白底）。
+  wb.addEventListener('load', () => hidePlaceholder());
+  wb.addEventListener('error', () => showPlaceholder());
 
   function loadWorkbench(url) {
     if (!url || url === lastUrl) return;
     lastUrl = url;
+    showPlaceholder(); // 换端口/重载路径：先盖住，onload 后撤
     wb.src = url;
-    $('wbPlaceholder').hidden = true;
     wb.focus();
   }
 
-  // 先注册事件监听（避免 get_dsh_url 与 dsh 就绪 emit 之间的竞态漏收），
-  // 再按需轮询兜底。注意：这是普通 <script>（非 module），不能顶层 await，
-  // 必须包在 async 自执行函数里，否则 WKWebView/WebView2 直接 SyntaxError。
+  // 加载 dsh 工作台：以「轮询 get_dsh_url」为主通道（普通 invoke，必通），
+  // 事件监听仅作增量/次选（且必须带超时，避免 T.event.listen 在此路径挂起而
+  // 把后续逻辑全部堵死——此前实测该调用在本页面会挂起）。
   (async () => {
-    try {
-      await T.event.listen('dsh:url', (ev) => loadWorkbench(ev.payload));
-    } catch (e) { /* 能力缺失 */ }
-    try {
-      const url = await invoke('get_dsh_url');
-      if (url) loadWorkbench(url);
-      else $('wbPlaceholder').hidden = false;
-    } catch (e) {
-      $('wbPlaceholder').hidden = false;
+    // 1) 先轮询：每 800ms 拉一次，最多 15 次（约 12s），dsh 就绪即有值。
+    for (let i = 0; i < 15; i++) {
+      try {
+        const url = await invoke('get_dsh_url');
+        if (url) { loadWorkbench(url); break; }
+      } catch (e) { break; }
+      await new Promise(r => setTimeout(r, 800));
     }
+    // 2) 事件监听（增量/换端口用）：3s 超时，不再阻塞主流程。
+    try {
+      await Promise.race([
+        T.event.listen('dsh:url', (ev) => loadWorkbench(ev.payload)),
+        new Promise((_, rej) => setTimeout(() => rej(new Error('listen-timeout')), 3000)),
+      ]);
+    } catch (e) { /* 能力缺失/超时：轮询已兜底 */ }
   })();
 
   // ---------------- 常规 ----------------
@@ -299,7 +325,7 @@
   window.__openShellTab = selectTab;
   try {
     T.event.listen('shell:tab', (ev) => {
-      const n = ev.payload && typeof ev.payload === 'string' ? ev.payload : ev.payload;
+      const n = ev.payload;
       if (n && paletteNames[n]) selectTab(n);
     });
   } catch (e) { /* 忽略 */ }
