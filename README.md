@@ -76,20 +76,22 @@ powershell -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.c
 |---|---|---|
 | 显示/隐藏主窗口 | 左键点托盘图标，或点 Dock 图标 | 双击/单击托盘图标，或点任务栏图标 |
 | 关闭窗口 | 隐藏到托盘 | 隐藏到托盘（App 与 dsh 继续后台运行） |
-| 窗口位置 | 主窗每次打开/显示都居中于当前屏幕；lan/插件/卸载等弹窗相对主窗中心显示（无系统标题栏按钮，✕/Esc 关闭） | 同左（弹窗在多显示器下自动避让到工作区） |
-| 用系统浏览器打开 | 托盘 *在浏览器中打开* | 同左 |
+| 窗口位置 | 主窗每次打开/显示都居中于当前屏幕；自绘弹窗相对主窗中心显示（无系统标题栏按钮，✕/Esc 关闭） | 同左（弹窗在多显示器下自动避让到工作区） |
+| 用系统浏览器打开 | 壳页 *常规* Tab：在浏览器打开 | 同左 |
 | 打开外链 | 工作台内点击外链（https 等）自动在系统浏览器打开 | 同左 |
 | 退出 | `Cmd+Q` 或托盘 *退出* | 托盘 *退出*（连带结束 dsh，无残留） |
 | 崩溃自愈 | dsh 意外退出自动重启（1s→2s→…→15s 退避）；连续 5 次后停止并提示查看日志 | 同左 |
-| 重启工作台 | 托盘 *重启工作台*（结束 dsh 进程并重新拉起，内存归零、会话从磁盘恢复） | 同左 |
-| 插件管理 | 托盘 *插件管理…*（安装/卸载 dsh 插件，实时进度） | 同左 |
+| 重启工作台 | 壳页 *常规* Tab：重启工作台（结束 dsh 进程并重新拉起，内存归零、会话从磁盘恢复） | 同左 |
+| 插件管理 | 壳页 *插件* Tab（安装/卸载 dsh 插件，实时进度） | 同左 |
+
+> P3 起，管理功能全部从托盘移入主窗壳页 Tab（工作台 / 常规 / 网络 / 插件 / 更新 / 卸载），托盘仅保留 **显示主窗口 / 管理台 / 退出** 三项；`⌘K`（Windows `Ctrl+K`）在工作台与管理 Tab 间循环切换。
 
 ### 3.4 扫码远程连接（手机/平板）
 
-1. 电脑连上家里 Wi-Fi，托盘点 **扫码远程连接…** 打开控制面板（玻璃拟态，内嵌二维码）。
-2. 点 **开启手机远程连接**：面板显示**二维码**、访问地址与访问令牌（可一键复制）。
+1. 电脑连上家里 Wi-Fi，壳页 **网络** Tab 点 **开启手机远程连接**（内嵌二维码面板）。
+2. 打开后显示**二维码**、访问地址与访问令牌（可一键复制）。
 3. 手机/平板连同一 Wi-Fi，**相机扫码**（iOS 相机需点横幅在 Safari 打开）即自动登录进入工作台；无法扫码时也可在手机上打开地址并输入令牌。
-4. 随时打开 *扫码远程连接…* 查看/复制地址与令牌；点 **关闭手机远程连接** 即停用。
+4. 随时打开 **网络** Tab 查看/复制地址与令牌；点 **关闭手机远程连接** 即停用。
 
 **登录与安全模型**：
 - 二维码内含**一次性配对码**（App 每次开启时重新生成，传入转发器）：扫码即签发该设备的独立凭据（30 天免登录）；**重启工作台或重开本开关后，旧配对码与全部已签发凭据一并失效**，需重新扫码（App 升级后同样需重新扫码一次）。
@@ -105,31 +107,30 @@ powershell -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.c
 
 ### 3.5 插件管理
 
-dsh 支持通过 profile 安装第三方插件（UI 皮肤、功能插件等）。托盘 **插件管理…** 打开管理窗口：
+dsh 支持通过 profile 安装第三方插件（UI 皮肤、功能插件等）。壳页 **插件** Tab 内操作：
 
 1. 输入包名（如 `@linxin666/dsh-web-ui-all`），点 **安装** 或 **卸载**。
 2. 输出区**实时滚动**显示 pnpm 进度（下载、依赖解析、构建脚本等）；完成后显示退出码与结果。
-3. 安装/卸载写入 `~/.dsh/profiles/web`（与终端 dsh 完全共用）；**完成后用托盘 *重启工作台* 生效**。
+3. 安装/卸载写入 `~/.dsh/profiles/web`（与终端 dsh 完全共用）；**完成后用壳页 *常规* Tab 的「重启工作台」生效**。
 
 **内置 pnpm，零环境依赖**：App 打包 pnpm 运行库 + 启动器（约 20MB），安装/卸载不需要你装 Node/pnpm。自动处理 pnpm 11 门禁（构建脚本授权 `allowBuilds`、新包发布年龄 `minimumReleaseAge: 0`），遇到被忽略的构建脚本会解析包名自动补授权重试。卸载后自动清扫残留空目录。仅限从插件管理窗口调用，工作台页面无法触发。
 
 ### 3.6 更新
 
-- 托盘 *检查更新…* 手动检查；App 每 24h 自动静默检查。
-- 有新版 → 确认 → 自动安装并重启 dsh，窗口自动刷新为新版工作台。
+- 壳页 **更新** Tab 手动检查；App 每 24h 自动静默检查。
+- 有新版 → 自绘确认 → 自动安装并重启 dsh，工作台自动刷新为新版。
 - Windows 上更新同样通过内置 npm 安装新闭包，失败不动当前版本。
 
 ### 3.7 登录自启
 
-托盘 *登录时启动*（勾选，默认关闭）→ 下次登录时自动启动 App。macOS 写 LaunchAgent，Windows 写注册表 `HKCU\...\Run` 键；只影响本 App，不碰其他应用的启动设置。
+壳页 **常规** Tab 的 *登录自启* 开关（默认关闭）→ 下次登录时自动启动 App。macOS 写 LaunchAgent，Windows 写注册表 `HKCU\...\Run` 键；只影响本 App，不碰其他应用的启动设置。
 
 ### 3.8 卸载
 
-托盘 *卸载 DeepSeek Harness…* → 打开**卸载确认窗口**（macOS/Windows 一致，中文三按钮）：
+壳页 **卸载** Tab（macOS/Windows 一致，中文两选项）：
 
 | 按钮 | 效果 |
 |---|---|
-| 取消 | 什么都不做 |
 | 卸载（保留 ~/.dsh） | 卸载，保留会话/凭据（推荐） |
 | 卸载并删除 ~/.dsh | 卸载，连会话/凭据一起删（不可恢复） |
 
@@ -137,9 +138,9 @@ dsh 支持通过 profile 安装第三方插件（UI 皮肤、功能插件等）�
 
 ### 3.9 日志与故障排查
 
-- 托盘 *打开日志* 直接打开日志目录：`launcher.log`（启动器）+ `dsh.log`（dsh 运行输出）。
+- 壳页 **常规** Tab 的 *打开日志* 直接打开日志目录：`launcher.log`（启动器）+ `dsh.log`（dsh 运行输出）。
 - 日志目录平台差异：macOS 为 `~/Library/Application Support/com.dsh-desktop.app/logs`，Windows 为 `%APPDATA%\com.dsh-desktop.app\logs`。
-- dsh 启动失败 / 连续崩溃时，App 会弹窗给出日志位置。
+- dsh 启动失败 / 连续崩溃时，App 会弹出自绘弹窗给出日志位置。
 - 常见问题：
   - **macOS 首次打不开** → 右键 → 打开（未签名）。
   - **Windows 白屏/黑窗** → 确认系统装有 WebView2 运行时（Win10/11 自带；老系统需安装 [WebView2 Runtime](https://developer.microsoft.com/en-us/microsoft-edge/webview2/)）。
@@ -205,12 +206,13 @@ dsh-desktop/
 └── apps/desktop/
     ├── ui/                      # 内置资产页（tauri://localhost）
     │   ├── theme.css            # 共享设计系统（颜色/圆角/字体/按钮/弹窗 token）
-    │   ├── index.html           # 启动页（玻璃拟态 + 流光进度，暗色统一）
-    │   ├── plugins.html/.js     # 插件管理窗口（共享 CSS + 实时输出流）
-    │   ├── lan.html/.js         # 扫码远程连接窗口（二维码 + 开关 + 地址令牌）
+    │   ├── shell.html/.js       # 壳页（主窗口）：工作台 iframe + 常规/网络/插件/更新/卸载 Tab
+    │   ├── index.html           # 启动页（玻璃拟态 + 流光进度，暗色统一；P3 后主窗改用壳页）
+    │   ├── plugins.html/.js     # 插件管理窗口（独立窗口版，已并入壳页 Tab；兼容保留）
+    │   ├── lan.html/.js         # 扫码远程连接窗口（独立窗口版，已并入壳页 Tab；兼容保留）
     │   ├── modal.html/.js       # 自绘弹窗（替代 rfd 系统对话框：启动失败/崩溃/更新确认）
-    │   ├── uninstall.html/.js   # 卸载确认窗口（选项卡片式，mac/win 一致）
-    │   └── qrcode.js            # 二维码生成库（扫码窗口用，MIT 单文件）
+    │   ├── uninstall.html/.js   # 卸载确认窗口（独立窗口版，已并入壳页 Tab；兼容保留）
+    │   └── qrcode.js            # 二维码生成库（扫码面板用，MIT 单文件）
     └── src-tauri/
         ├── Cargo.toml           # tauri2(tray-icon,image-png) + serde + rfd + ureq + dirs + getrandom（unix: libc；windows: arboard/trash/windows）
         ├── tauri.conf.json      # identifier / bundle.resources / CSP / withGlobalTauri / nsis(installerHooks) / dmg
@@ -254,7 +256,7 @@ resources/
 
 **扫码远程连接**：dsh 出于安全只绑 `127.0.0.1`。App 端「扫码远程连接」窗口（`ui/lan.html`）展示开关、地址、令牌与**二维码**；每次开启 App 生成新的**一次性配对码**（64-hex 传入转发器），扫码链接为 `http://<局域网IP>:<端口>/?pair=<配对码>`。转发器监听局域网，扫码/令牌登录签发**随机设备凭据**（内存会话表，30 天，代理重启即全部失效），把 HTTP/WebSocket 转发给本机 dsh，从 dsh 视角一切连接均来自本机（无需 `--trusted-host`，安全模型不变）。转发时剥离 `origin`/`sec-fetch-site`/`referer` 以通过 dsh 的 /api 信任篱笆，并向主文档注入 `crypto.randomUUID` polyfill（明文 HTTP 下该安全上下文 API 不可用）；启动 dsh 时设 `SSH_CONNECTION=1` 启用网页版目录浏览器。
 
-**插件管理**：托盘「插件管理…」打开内置管理窗口（`ui/plugins.html`），经 `plugin_op` command 执行 `dsh plugin --profile web add|remove <包名>`：内置 pnpm（`resources/pnpm-bin`，PATH 前置）运行安装，stdout/stderr 逐行 `emit` 实时回显；安装前自动写入 profile 的 `pnpm-workspace.yaml` 门禁配置（`allowBuilds` + `minimumReleaseAge: 0`），`ERR_PNPM_IGNORED_BUILDS` 时解析包名自动补授权重试；卸载后清扫残留空目录。命令仅接受插件管理窗口调用（window label 校验），插件操作全局串行锁保护。
+**插件管理**：壳页「插件」Tab（`shell.html`），经 `plugin_op` command 执行 `dsh plugin --profile web add|remove <包名>`：内置 pnpm（`resources/pnpm-bin`，PATH 前置）运行安装，stdout/stderr 逐行 `emit` 实时回显；安装前自动写入 profile 的 `pnpm-workspace.yaml` 门禁配置（`allowBuilds` + `minimumReleaseAge: 0`），`ERR_PNPM_IGNORED_BUILDS` 时解析包名自动补授权重试；卸载后清扫残留空目录。命令仅接受壳页/插件窗口调用（window label 校验），插件操作全局串行锁保护。**P3 起 dsh 工作台在 iframe 内，拿不到 `window.__TAURI__`，远程内容无法触发插件操作（比 label 白名单更安全）。**
 
 **app 数据目录**（卸载时整个删除；macOS 为 `~/Library/Application Support/…`，Windows 为 `%APPDATA%\…`）：
 

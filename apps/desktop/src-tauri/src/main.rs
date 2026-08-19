@@ -731,28 +731,19 @@ fn boot(app: AppHandle) {
     }
 }
 
+// P3：主窗口是壳页，dsh 工作台在壳页的 <iframe> 里。这里把当前 dsh 地址
+// 通过 dsh:url 事件推给壳页，让 shell.js 更新 iframe src；主窗自身始终停在
+// shell.html（不整窗导航，避免壳页/顶层丢失）。
 fn show_window(app: &AppHandle, url: &str) {
-    let parsed = match url.parse::<tauri::Url>() {
-        Ok(u) => u,
-        Err(_) => return,
-    };
     if let Some(w) = app.get_webview_window(WINDOW_LABEL) {
-        // only navigate when the URL actually changed (启动页 → dsh 工作台，
-        // 或 dsh 重启换端口)；同 URL 点击只显示/聚焦，避免整页重载闪烁。
-        let need_navigate = match w.url() {
-            Ok(cur) => cur.as_str() != parsed.as_str(),
-            Err(_) => true,
-        };
-        if need_navigate {
-            let _ = w.navigate(parsed);
-        }
+        let _ = w.emit("dsh:url", url);
         let _ = w.center(); // 每次打开/显示都居中于当前屏幕
         let _ = w.show();
         let _ = w.set_focus();
         return;
     }
-    // 兜底：窗口不存在（极罕见）时重建（探针在 setup 的窗口 builder 里已挂）
-    let _ = WebviewWindowBuilder::new(app, WINDOW_LABEL, WebviewUrl::External(parsed))
+    // 兜底：主窗不存在（极罕见）时重建壳页
+    if let Ok(w) = WebviewWindowBuilder::new(app, WINDOW_LABEL, WebviewUrl::App("shell.html".into()))
         .title("DeepSeek Harness")
         .inner_size(1280.0, 820.0)
         .min_inner_size(800.0, 560.0)
@@ -760,7 +751,12 @@ fn show_window(app: &AppHandle, url: &str) {
         .theme(Some(tauri::Theme::Dark))
         .on_navigation(webview_navigation_policy)
         .on_new_window(webview_new_window_policy)
-        .build();
+        .build()
+    {
+        // 重建后才拿到窗口：等页面就绪后推送地址（重建极罕见，尽力而为）
+        let js = format!("setTimeout(()=>{{ window.dispatchEvent(new CustomEvent('dsh:url', {{detail:'{url}'}})) }}, 500)");
+        let _ = w.eval(js);
+    }
 }
 
 /// Inject a one-shot error trap + probe into the webview and log the result.
@@ -897,28 +893,8 @@ fn restart_dsh(app: &AppHandle) {
     std::thread::spawn(move || boot(handle));
 }
 
-fn choose_workspace(app: &AppHandle) {
-    let current = workspace_dir(app);
-    if let Some(dir) = rfd::FileDialog::new()
-        .set_title("选择 DSh 工作文件夹")
-        .set_directory(&current)
-        .pick_folder()
-    {
-        let mut s = load_settings(app);
-        s.default_cwd = Some(dir.clone());
-        save_settings(app, &s);
-        logln!("workspace set to {}", dir.display());
-        restart_dsh(app);
-    }
-}
-
-fn open_workspace_in_finder(app: &AppHandle) {
-    let dir = workspace_dir(app);
-    open_dir(&dir);
-}
-
 // ---------------------------------------------------------------------------
-// Plugin management（托盘「插件管理…」窗口的后端）
+// Plugin management（壳页「插件」Tab 的后端）
 //
 // `dsh plugin --profile web <op> <pkg>` = 在 ~/.dsh/profiles/web 里转发给
 // pnpm（dsh 闭包写死 spawnSync("pnpm") 从 PATH 找，见 plugin-9h8shc4d.js）。
@@ -1228,6 +1204,9 @@ fn run_dsh_plugin(
 /// 页面（http://127.0.0.1，含第三方插件 bundle）也能拿到 window.__TAURI__
 /// （withGlobalTauri），本校验把 plugin_op 的授权面收回到专用窗口，防止远程
 /// 内容诱导安装任意 npm 包并执行其构建脚本。
+/// P3 起主窗口升级为「壳页 + iframe」：远程 dsh 工作台在 iframe 内，拿不到
+/// window.__TAURI__（Tauri 仅往主 frame 注入），因此只有壳页（main）与历史
+/// 独立管理窗口能调 IPC —— 授权面比之前更收窄。
 #[tauri::command]
 async fn plugin_op(
     app: AppHandle,
@@ -1235,7 +1214,7 @@ async fn plugin_op(
     op: String,
     pkg: String,
 ) -> Result<String, String> {
-    if window.label() != PLUGIN_LABEL {
+    if !matches!(window.label(), WINDOW_LABEL | PLUGIN_LABEL) {
         return Err("该操作仅限插件管理窗口使用".to_string());
     }
     if op != "add" && op != "remove" {
@@ -1274,87 +1253,9 @@ async fn plugin_op(
     .map_err(|e| format!("插件操作线程异常：{e}"))?
 }
 
-/// 打开（或聚焦）插件管理窗口。
-fn open_plugin_manager(app: &AppHandle) {
-    if let Some(w) = app.get_webview_window(PLUGIN_LABEL) {
-        let _ = w.show();
-        let _ = w.set_focus();
-        return;
-    }
-    match WebviewWindowBuilder::new(app, PLUGIN_LABEL, WebviewUrl::App("plugins.html".into()))
-        .decorations(false) // 无系统标题栏/放大缩小关闭按钮
-        .resizable(false)
-        .visible(false) // 定位后再显示，避免原始位置闪烁
-        .center() // 兜底：主窗口中心定位前先居中
-        .inner_size(560.0, 480.0)
-        .on_navigation(webview_navigation_policy)
-        .on_new_window(webview_new_window_policy)
-        .build()
-    {
-        Ok(w) => {
-            center_child_on_main(app, &w, 560.0, 480.0);
-            let _ = w.show();
-            let _ = w.set_focus();
-            logln!("[plugins] window opened");
-        }
-        Err(e) => logln!("[plugins] failed to open window: {e}"),
-    }
-}
-
-/// 打开（或聚焦）「扫码远程连接」窗口。
-fn open_lan_window(app: &AppHandle) {
-    if let Some(w) = app.get_webview_window(LAN_LABEL) {
-        let _ = w.show();
-        let _ = w.set_focus();
-        return;
-    }
-    match WebviewWindowBuilder::new(app, LAN_LABEL, WebviewUrl::App("lan.html".into()))
-        .decorations(false) // 无系统标题栏/放大缩小关闭按钮
-        .resizable(false)
-        .visible(false) // 定位后再显示，避免原始位置闪烁
-        .center() // 兜底
-        .inner_size(480.0, 560.0)
-        .on_navigation(webview_navigation_policy)
-        .on_new_window(webview_new_window_policy)
-        .build()
-    {
-        Ok(w) => {
-            center_child_on_main(app, &w, 480.0, 560.0);
-            let _ = w.show();
-            let _ = w.set_focus();
-            logln!("[lan] window opened");
-        }
-        Err(e) => logln!("[lan] failed to open window: {e}"),
-    }
-}
-
-/// 打开（或聚焦）卸载确认窗口。
-fn open_uninstall_window(app: &AppHandle) {
-    if let Some(w) = app.get_webview_window(UNINSTALL_LABEL) {
-        let _ = w.show();
-        let _ = w.set_focus();
-        return;
-    }
-    match WebviewWindowBuilder::new(app, UNINSTALL_LABEL, WebviewUrl::App("uninstall.html".into()))
-        .decorations(false) // 无系统标题栏/放大缩小关闭按钮
-        .resizable(false)
-        .visible(false) // 定位后再显示，避免原始位置闪烁
-        .center() // 兜底
-        .inner_size(460.0, 320.0)
-        .on_navigation(webview_navigation_policy)
-        .on_new_window(webview_new_window_policy)
-        .build()
-    {
-        Ok(w) => {
-            center_child_on_main(app, &w, 460.0, 320.0);
-            let _ = w.show();
-            let _ = w.set_focus();
-            logln!("[uninstall] window opened");
-        }
-        Err(e) => logln!("[uninstall] failed to open window: {e}"),
-    }
-}
-
+// P3：插件管理 / 局域网 / 卸载 已并入壳页（shell.html）Tab，不再有独立窗口。
+// 保留 PLUGIN_LABEL / LAN_LABEL / UNINSTALL_LABEL 常量仅用于兼容性与
+// 卸载时统一销毁（见 uninstall_run 的 destroy 列表）。
 // ---------------------------------------------------------------------------
 // 自绘弹窗（modal.html）：替代 rfd 系统对话框，统一玻璃卡片风格、可居中。
 // ---------------------------------------------------------------------------
@@ -1514,6 +1415,142 @@ fn show_modal(app: &AppHandle, title: &str, message: &str, kind: &str) -> bool {
     rx.recv_timeout(Duration::from_secs(24 * 3600)).unwrap_or(false)
 }
 
+// ---------------------------------------------------------------------------
+// 壳页命令（P3：管理功能从托盘移入主窗壳页 Tabs，经这些 command 调用）
+// ---------------------------------------------------------------------------
+
+/// 当前 dsh 工作台 URL（壳页 iframe 用它设定 src；None = dsh 未就绪）。
+#[tauri::command]
+fn get_dsh_url() -> Option<String> {
+    mlock(&DSH_URL).clone()
+}
+
+/// 壳页「常规」/「更新」需要的初始状态。
+#[derive(Serialize)]
+struct ShellState {
+    cwd: String,
+    login_on: bool,
+    app_version: String,
+    dsh_version: String,
+}
+
+#[tauri::command]
+fn get_shell_state(app: AppHandle) -> ShellState {
+    let p = paths_from_app(&app);
+    let settings = load_settings_at(&p.app_data);
+    let home = home_dir();
+    ShellState {
+        cwd: settings
+            .default_cwd
+            .filter(|d| d.is_dir())
+            .unwrap_or(home)
+            .to_string_lossy()
+            .into_owned(),
+        login_on: login_item_enabled(),
+        app_version: env!("CARGO_PKG_VERSION").to_string(),
+        dsh_version: active_closure(&p)
+            .and_then(|dir| update::closure_version(&dir))
+            .unwrap_or_else(|| "未知".into()),
+    }
+}
+
+/// 选择默认工作目录（复用 rfd 目录选择器）；返回新目录，取消返回 None。
+/// 选择后立即写入 settings（保持与托盘「设置默认工作目录…」一致）。
+#[tauri::command]
+fn choose_workspace_cmd(app: AppHandle) -> Option<String> {
+    let p = paths_from_app(&app);
+    let current = load_settings_at(&p.app_data)
+        .default_cwd
+        .unwrap_or_else(home_dir);
+    let dir = rfd::FileDialog::new()
+        .set_title("选择 DSh 工作文件夹")
+        .set_directory(&current)
+        .pick_folder()?;
+    let mut s = load_settings_at(&p.app_data);
+    s.default_cwd = Some(dir.clone());
+    save_settings_at(&p.app_data, &s);
+    Some(dir.to_string_lossy().into_owned())
+}
+
+/// 打开默认工作目录（系统文件管理器）。
+#[tauri::command]
+fn open_workspace_cmd(app: AppHandle) -> Result<(), String> {
+    let p = paths_from_app(&app);
+    let dir = load_settings_at(&p.app_data)
+        .default_cwd
+        .filter(|d| d.is_dir())
+        .unwrap_or_else(home_dir);
+    open_dir(&dir);
+    Ok(())
+}
+
+/// 打开日志目录。
+#[tauri::command]
+fn open_logs_cmd(app: AppHandle) -> Result<(), String> {
+    let p = paths_from_app(&app);
+    open_dir(&p.app_data.join("logs"));
+    Ok(())
+}
+
+/// 重启工作台。
+#[tauri::command]
+fn restart_dsh_cmd(app: AppHandle) -> Result<(), String> {
+    restart_dsh(&app);
+    Ok(())
+}
+
+/// 在系统浏览器打开工作台。
+#[tauri::command]
+fn open_browser_cmd(app: AppHandle) -> Result<(), String> {
+    open_in_browser(&app);
+    Ok(())
+}
+
+/// 登录自启开关。
+#[tauri::command]
+fn set_login_cmd(enable: bool) -> Result<(), String> {
+    set_login_item_core(enable)?;
+    LOGIN_ON.store(enable, Ordering::SeqCst);
+    if let Some(item) = mlock(&LOGIN_ITEM).as_ref() {
+        let _ = item.set_checked(enable);
+    }
+    Ok(())
+}
+
+/// 检查更新：发现新版 → 自绘确认框 → 后台应用。
+/// 返回状态串：latest（已是最新）| updating（正开始更新）| cancelled（用户取消）。
+#[tauri::command]
+fn check_update_cmd(app: AppHandle) -> Result<String, String> {
+    let p = paths_from_app(&app);
+    let settings = load_settings_at(&p.app_data);
+    match update::check_update(&p, settings.registry.as_deref()) {
+        Ok(Some((_, latest))) => {
+            let msg = format!("发现新版本 v{latest}。是否现在更新？");
+            let yes = show_modal(&app, "DeepSeek Harness 更新", &msg, "yesno");
+            if yes {
+                let app3 = app.clone();
+                let p2 = p.clone();
+                let reg = settings.registry.clone();
+                std::thread::spawn(move || {
+                    let reg_url = update::registry_url(reg.as_deref());
+                    match update::apply_update(&p2, &latest, &reg_url) {
+                        Ok(()) => {
+                            update::notify("更新完成", &format!("已升级到 v{latest}，正在重启 dsh"));
+                            restart_dsh(&app3);
+                        }
+                        Err(e) => update::notify("更新失败", &e),
+                    }
+                });
+                Ok("updating".into())
+            } else {
+                Ok("cancelled".into())
+            }
+        }
+        Ok(None) => Ok("latest".into()),
+        Err(e) => Err(e),
+    }
+}
+
 /// 卸载确认窗口返回的状态。
 #[derive(Serialize)]
 struct LanState {
@@ -1526,9 +1563,10 @@ struct LanState {
 }
 
 /// 「扫码远程连接」窗口：读取当前局域网状态（开关/地址/令牌/二维码链接）。
+/// P3 起主窗壳页（main）也能调用（网络 Tab 内嵌）。
 #[tauri::command]
 fn lan_state(app: AppHandle, window: tauri::WebviewWindow) -> Result<LanState, String> {
-    if window.label() != LAN_LABEL {
+    if !matches!(window.label(), WINDOW_LABEL | LAN_LABEL) {
         return Err("该操作仅限扫码远程连接窗口使用".to_string());
     }
     let s = load_settings(&app);
@@ -1553,9 +1591,10 @@ fn lan_state(app: AppHandle, window: tauri::WebviewWindow) -> Result<LanState, S
 }
 
 /// 「扫码远程连接」窗口：切换局域网访问开关（复用 set_lan_access 逻辑）。
+/// P3 起主窗壳页（main）也能调用（网络 Tab 内嵌）。
 #[tauri::command]
 fn lan_toggle(app: AppHandle, window: tauri::WebviewWindow, enable: bool) -> Result<(), String> {
-    if window.label() != LAN_LABEL {
+    if !matches!(window.label(), WINDOW_LABEL | LAN_LABEL) {
         return Err("该操作仅限扫码远程连接窗口使用".to_string());
     }
     set_lan_access(&app, enable);
@@ -1633,38 +1672,8 @@ async fn uninstall_run(app: AppHandle, wipe: bool) -> Result<(), String> {
 // ---------------------------------------------------------------------------
 // Update flows (GUI)
 // ---------------------------------------------------------------------------
-
-/// Manual check: on finding an update, ask, then apply in the background.
-fn check_for_updates(app: &AppHandle) {
-    let app2 = app.clone();
-    std::thread::spawn(move || {
-        let p = paths_from_app(&app2);
-        let settings = load_settings(&app2);
-        match update::check_update(&p, settings.registry.as_deref()) {
-            Ok(Some((cur, latest))) => {
-                let msg = format!("当前 v{cur}，发现新版本 v{latest}。是否现在更新？");
-                let yes = show_modal(&app2, "DeepSeek Harness 更新", &msg, "yesno");
-                if yes {
-                    let app3 = app2.clone();
-                    let p2 = p.clone();
-                    let reg = settings.registry.clone();
-                    std::thread::spawn(move || {
-                        let reg_url = update::registry_url(reg.as_deref());
-                        match update::apply_update(&p2, &latest, &reg_url) {
-                            Ok(()) => {
-                                update::notify("更新完成", &format!("已升级到 v{latest}，正在重启 dsh"));
-                                restart_dsh(&app3);
-                            }
-                            Err(e) => update::notify("更新失败", &e),
-                        }
-                    });
-                }
-            }
-            Ok(None) => update::notify("检查更新", "已是最新版本"),
-            Err(e) => update::notify("检查更新失败", &e),
-        }
-    });
-}
+// （P3：手动检查更新已并入壳页「更新」Tab，走 check_update_cmd command；
+//   check_for_updates 已删除，不再有托盘入口。）
 
 /// Silent periodic check: notify only (no dialog); the user updates via the menu.
 fn periodic_check(app: AppHandle) {
@@ -2373,16 +2382,6 @@ fn set_login_item_core(_enable: bool) -> Result<(), String> {
     Ok(())
 }
 
-fn set_login_item(enable: bool) -> Result<(), String> {
-    set_login_item_core(enable)?;
-    LOGIN_ON.store(enable, Ordering::SeqCst);
-    // sync the tray check state
-    if let Some(item) = mlock(&LOGIN_ITEM).as_ref() {
-        let _ = item.set_checked(enable);
-    }
-    Ok(())
-}
-
 /// Shared teardown for uninstall (also used by the CLI test hook).
 /// 删除目录并自动重试（Windows 共享锁：WebView2/日志句柄释放有延迟，
 /// macOS 的 unlink 无共享锁语义不受影响）。仍失败则返回最后一次错误。
@@ -2665,54 +2664,24 @@ fn main() {
             uninstall_run,
             modal_spec,
             modal_respond,
+            get_dsh_url,
+            get_shell_state,
+            choose_workspace_cmd,
+            open_workspace_cmd,
+            open_logs_cmd,
+            restart_dsh_cmd,
+            open_browser_cmd,
+            set_login_cmd,
+            check_update_cmd,
         ])
         .setup(|app| {
+            // P3：托盘收敛为最小集 —— 显示主窗口 / 管理台 / 退出。
+            // 其余功能（工作目录/自启/日志/重启/插件/局域网/更新/卸载）全部移入
+            // 壳页（shell.html）的 Tab 面板，经 command/event 交互。
             let show = MenuItem::with_id(app, "show", "显示主窗口", true, None::<&str>)?;
-            let open = MenuItem::with_id(app, "open_browser", "在浏览器中打开", true, None::<&str>)?;
-            let ws = MenuItem::with_id(app, "choose_ws", "设置默认工作目录…", true, None::<&str>)?;
-            let open_ws =
-                MenuItem::with_id(app, "open_ws", "打开默认工作目录", true, None::<&str>)?;
-            let check = MenuItem::with_id(app, "check_update", "检查更新…", true, None::<&str>)?;
-            let logs = MenuItem::with_id(app, "open_logs", "打开日志", true, None::<&str>)?;
-            let restart = MenuItem::with_id(app, "restart", "重启工作台", true, None::<&str>)?;
-            let plugins = MenuItem::with_id(app, "plugins", "插件管理…", true, None::<&str>)?;
-            let login = CheckMenuItem::with_id(
-                app,
-                "launch_login",
-                "登录时启动",
-                true,
-                login_item_enabled(),
-                None::<&str>,
-            )?;
-            LOGIN_ON.store(login_item_enabled(), Ordering::SeqCst);
-            *mlock(&LOGIN_ITEM) = Some(login.clone());
-            let lan_panel = MenuItem::with_id(app, "lan_panel", "扫码远程连接…", true, None::<&str>)?;
-            let uninstall_item = MenuItem::with_id(app, "uninstall", "卸载 DeepSeek Harness…", true, None::<&str>)?;
+            let manage = MenuItem::with_id(app, "manage", "管理台", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
-            let sep1 = tauri::menu::PredefinedMenuItem::separator(app)?;
-            let sep2 = tauri::menu::PredefinedMenuItem::separator(app)?;
-            let sep3 = tauri::menu::PredefinedMenuItem::separator(app)?;
-            // 市场惯例分组：窗口/视图 → 功能 → 自启/局域网 → 卸载/退出
-            let menu = Menu::with_items(
-                app,
-                &[
-                    &show,
-                    &open,
-                    &sep1,
-                    &ws,
-                    &open_ws,
-                    &check,
-                    &logs,
-                    &restart,
-                    &plugins,
-                    &lan_panel,
-                    &sep2,
-                    &login,
-                    &sep3,
-                    &uninstall_item,
-                    &quit,
-                ],
-            )?;
+            let menu = Menu::with_items(app, &[&show, &manage, &quit])?;
             let _tray = TrayIconBuilder::with_id("tray")
                 .icon(app.default_window_icon().unwrap().clone())
                 .menu(&menu)
@@ -2722,37 +2691,18 @@ fn main() {
                         kill_dsh();
                         app.exit(0);
                     }
-                    "show" => {
+                    // 显示主窗口 / 管理台：都唤起壳页；管理台额外切到「常规」Tab。
+                    "show" | "manage" => {
                         let url = mlock(&DSH_URL)
                             .clone()
                             .unwrap_or_else(|| "http://127.0.0.1:3080".into());
                         show_window(app, &url);
-                    }
-                    "open_browser" => open_in_browser(app),
-                    "choose_ws" => choose_workspace(app),
-                    "open_ws" => open_workspace_in_finder(app),
-                    "check_update" => check_for_updates(app),
-                    "open_logs" => {
-                        let p = paths_from_app(app);
-                        open_dir(&p.app_data.join("logs"));
-                    }
-                    "lan_panel" => open_lan_window(app),
-                    "restart" => restart_dsh(app),
-                    "plugins" => open_plugin_manager(app),
-                    "launch_login" => {
-                        let next = !LOGIN_ON.load(Ordering::SeqCst);
-                        match set_login_item(next) {
-                            Ok(()) => {}
-                            Err(e) => {
-                                // Tauri 点击已自动翻转勾选：失败时恢复菜单与 LOGIN_ON 一致
-                                if let Some(item) = mlock(&LOGIN_ITEM).as_ref() {
-                                    let _ = item.set_checked(LOGIN_ON.load(Ordering::SeqCst));
-                                }
-                                update::notify("登录自启设置失败", &e);
+                        if event.id.as_ref() == "manage" {
+                            if let Some(w) = app.get_webview_window(WINDOW_LABEL) {
+                                let _ = w.emit("shell:tab", "general");
                             }
                         }
                     }
-                    "uninstall" => open_uninstall_window(app),
                     _ => {}
                 })
                 .on_tray_icon_event(|tray, event| {
@@ -2772,12 +2722,15 @@ fn main() {
 
             let handle = app.handle().clone();
             init_log(&paths_from_app(app.handle()));
-            // 启动先显示占位启动页（ui/index.html，"正在启动…"），
-            // dsh 就绪后 show_window 会导航到工作台地址，避免白屏。
+            // P3：主窗口 = 壳页（ui/shell.html）。壳页顶部是 Tab 栏（工作台/常规/
+            // 网络/插件/更新/卸载），工作台 Tab 内用 <iframe> 内嵌 dsh 工作台；
+            // 其余管理能力内嵌为面板（window.__TAURI__ 只注入主 frame → 远程 iframe
+            // 拿不到 IPC，安全面收窄）。dsh 就绪后 show_window 用 dsh:url 事件告诉
+            // 壳页把 iframe src 指向工作台地址，而不是整窗导航。
             let _ = WebviewWindowBuilder::new(
                 app,
                 WINDOW_LABEL,
-                WebviewUrl::App("index.html".into()),
+                WebviewUrl::App("shell.html".into()),
             )
             .title("DeepSeek Harness")
             .inner_size(1280.0, 820.0)
@@ -2785,20 +2738,11 @@ fn main() {
             .center() // 主窗启动即居中于当前屏幕
             .theme(Some(tauri::Theme::Dark)) // B1：暗色原生标题栏一致化
             .on_page_load(|webview, payload| {
-                // 所有页面加载记一行日志；DOM 探针只针对 dsh 工作台页面
+                // 所有页面加载记一行日志（壳页自身；dsh 在 iframe 内不在此触发）
                 let url = payload.url().to_string();
                 logln!("[webview] page loaded: {url}");
-                if url.starts_with("http://127.0.0.1") {
-                    let label = webview.label().to_string();
-                    probe_webview(&webview, label.clone(), "load".to_string());
-                    let wv = webview.clone();
-                    std::thread::spawn(move || {
-                        std::thread::sleep(Duration::from_millis(4000));
-                        let _ = wv.eval_with_callback(
-                            r#"JSON.stringify({ready:document.readyState,title:document.title,bodyLen:document.body?document.body.innerText.length:-1,bodyHead:document.body?document.body.innerText.slice(0,160):''})"#,
-                            move |res| logln!("[webview:{label}] probe(t+4s): {res}"),
-                        );
-                    });
+                if url.contains("/shell.html") {
+                    probe_webview(&webview, webview.label().to_string(), "load".to_string());
                 }
             })
             .on_navigation(webview_navigation_policy)

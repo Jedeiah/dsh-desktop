@@ -1,6 +1,6 @@
 # DSh Desktop：Windows 卸载 / App 壳与弹框 / 居中 / 功能上移 —— 审查与设计方案
 
-> 状态：**实施中（P1/P2 已完成编码，待评审/发版）**
+> 状态：**实施中（P1-P4 均已编码，P1/P2/P4 已评审通过，P3 壳页待真机回归）**
 > 版本基准：`main` @ `34cc8f1`（v0.1.8 之后），dsh `0.1.0-rc.7`
 > 日期：2026-08-19
 
@@ -8,10 +8,17 @@
 
 ## 0.5 实施进展与关键调整（2026-08-19 追加）
 
-- **P1（居中与弹窗形态）+ P2（设计统一 + 标题栏）已编码完成**：全窗口 `.center()`；主窗每次显示居中；lan/plugins/uninstall/自绘弹窗全部 `decorations(false)+resizable(false)+固定尺寸`，并新增 `center_child_on_main`（相对主窗口中心物理定位 + clamp 到工作区，多显示器正确）；弹窗 ✕ 关闭 + Esc 关闭（uninstall 属危险操作，仅 ✕=取消、禁 Esc）；rfd 三个系统对话框（启动失败/连续崩溃/更新确认）已替换为自绘 `modal.html`/`modal.js`（玻璃卡片、居中、可按需 ok/yesno）；新建 `theme.css` 共享设计 token，五个页面统一过一遍（Segoe UI 字体栈、光斑收敛、prefers-reduced-motion 保留）。
+- **P1（居中与弹窗形态）+ P2（设计统一 + 标题栏）已编码完成**：全窗口 `.center()`；主窗每次显示居中；lan/plugins/uninstall/自绘弹窗全部 `decorations(false)+resizable(false)+固定尺寸`，并新增 `center_child_on_main`（相对主窗口中心物理定位 + clamp 到工作区，多显示器正确）；弹窗 ✕ 关闭 + Esc 关闭（uninstall 属危险操作，仅 ✕=取消、禁 Esc）；rfd 三个系统对话框（启动失败/连续崩溃/更新确认）已替换为自绘 `modal.html`/`modal.js`（玻璃卡片、居中、可按需 ok/yesno）；新建 `theme.css` 共享设计 token，六个页面统一过一遍（Segoe UI 字体栈、光斑收敛、prefers-reduced-motion 保留）。
 - **B1 标题栏落地方式调整**：原方案「macOS overlay + Windows 深色原生」。落地时发现主窗口大段时间承载**外部 dsh 工作台页面**（非本项目 HTML）——overlay 会把交通灯压在 dsh 自己的顶部工具栏上、且无 `data-tauri-drag-region` 可注入外部页面，拖拽与可读性会受损。故 B1 两平台统一用**原生暗色标题栏**（主窗 builder `.theme(Dark)`），同样消除「亮标题栏 vs 暗内容」违和、不损失任何系统窗口能力，但零回归风险；macOS overlay 的完整自绘（B2）仍留作二期对比项。
 - **P3 架构前提已完成（2026-08-18 半天 spike）**：`docs/spike-iframe-report.md` 结论 **路径 A（壳页 + iframe）有条件可行**——dsh 无 `X-Frame-Options`/CSP `frame-ancestors`，无 frame-breaking JS，WebSocket 流式同源可用；剩余为 iframe 语义级验证（键盘焦点/剪贴板/嵌套弹层/新开窗口），P3 时按报告 §C 做真实桌面回归。
-- **P4（NSIS 完整卸载）已编码**：新增 `--self-uninstall-full [--wipe]` CLI sidecar（Windows：先按进程名/命令行特征树杀其它运行实例与 node/dsh/lan/mdns 子进程释放文件锁 → 复用 `uninstall_teardown` 清用户数据/WebView2/登录自启/可选 ~/.dsh，全程无窗口，失败不阻断 NSIS）；新增 `installer-hooks.nsh`（`NSIS_HOOK_PREUNINSTALL` 调 sidecar、`POSTUNINSTALL` 删自启注册表项）；`tauri.conf.json` 接入 `bundle.windows.nsis.installerHooks`；App 内卸载 Windows 分支改为「teardown 数据 → 唤起 `$INSTDIR\uninstall.exe` → 退出」，删除割裂的"请到设置里卸载"兜底。macOS 分支保持 trash_self。此部分逻辑在 macOS 本地只能编译期验证，完整验收需 Windows 实机（见 §6）。
+- **P4（NSIS 完整卸载）已编码**：新增 `--self-uninstall-full [--wipe]` CLI sidecar（Windows：先按进程名/命令行特征树杀其它运行实例与 node/dsh/lan/mdns 子进程释放文件锁 → 复用 `uninstall_teardown` 清用户数据/WebView2/登录自启/可选 ~/.dsh，全程无窗口，失败不阻断 NSIS）；新增 `installer-hooks.nsh`（`NSIS_HOOK_PREUNINSTALL` 调 sidecar、`POSTUNINSTALL` 删自启注册表项）；`tauri.conf.json` 接入 `bundle.windows.nsis.installerHooks`；App 内卸载 Windows 分支改为「teardown 数据 → 唤起 `$INSTDIR\uninstall.exe` → 退出」，删除割裂的"请到设置里卸载"兜底。macOS 分支保持 trash_self。此部分逻辑在 macOS 本地只能编译期验证，完整验收需 Windows 实机（见 §6）。**P4 已随 P1/P2 一并评审（docs/review-p1p2p4.md，Ship-with-minor-fixes，3 项必改已修）。**
+- **P3（管理台整合）已编码**：
+  - **主窗 = 壳页 `shell.html`**：顶部 Tab 栏（工作台 / 常规 / 网络 / 插件 / 更新 / 卸载）；**工作台 Tab 用 `<iframe>` 内嵌 dsh**（`show_window` 改为向壳页 `emit dsh:url`，由 shell.js 设置 iframe src，整窗不再导航外部页面）。
+  - **安全面收窄（红利）**：Tauri 只往**主 frame** 注入 `window.__TAURI__`（核实 tauri-runtime-wry `for_main_frame_only: true`）→ dsh 在 iframe 内**拿不到 IPC**，比之前的 label 白名单更安全；管理面板因此必须内嵌壳页主 frame（不走 iframe）。
+  - **托盘收敛为「显示主窗口 / 管理台 / 退出」**，其余 9 项移入壳页管理 Tab。
+  - 新增壳页 command：`get_dsh_url`、`get_shell_state`、`choose_workspace_cmd`、`open_workspace_cmd`、`open_logs_cmd`、`restart_dsh_cmd`、`open_browser_cmd`、`set_login_cmd`、`check_update_cmd`；`plugin_op`/`lan_state`/`lan_toggle` 白名单扩到 `WINDOW_LABEL | PLUGIN_LABEL | LAN_LABEL`。
+  - CSP 增 `frame-src http://127.0.0.1:* http://localhost:*`（Spike §D）。
+  - **P3 残留风险（Spike §C，需 macOS/Windows 真机回归）**：iframe 内键盘焦点/快捷键直达、剪贴板、`target=_blank`/新窗口承接、目录选择器、嵌套弹层布局等——见 §6 P3 验收矩阵；本环境无法跑 GUI，仅能编译期+DOM 层验证。
 
 ---
 
