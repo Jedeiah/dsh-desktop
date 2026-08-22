@@ -42,6 +42,9 @@
       selectTab(TAB_NAMES[(idx + 1) % TAB_NAMES.length]);
     }
     if (e.key === 'Escape') {
+      // 输入框/下拉聚焦时 Esc 不切 Tab（避免误触打断编辑）
+      const t = e.target;
+      if (t && (t.tagName === 'INPUT' || t.tagName === 'SELECT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
       const activePanel = document.querySelector('.panel.active');
       if (activePanel) selectTab('workbench');
     }
@@ -112,12 +115,14 @@
   const setupErrTitle = $('setupErrTitle');
   const setupErrMsg = $('setupErrMsg');
   const btnSetupInstall = $('btnSetupInstall');
+  const btnSetupInstallAdv = $('btnSetupInstallAdv');
   const btnSetupCancel = $('btnSetupCancel');
   const btnSetupRetry = $('btnSetupRetry');
   const setupReg = $('setupReg');
   const setupVer = $('setupVer');
   const setupAdv = $('setupAdv');
   let setupCancelled = false;
+  let setupDoneTimer = null; // 安装成功但 dsh:url 未达（boot 失败）时的恢复定时器
 
   function showSetupView() {
     setupActive = true;
@@ -128,6 +133,7 @@
   function hideSetupView() {
     setupActive = false;
     setupView.hidden = true;
+    clearTimeout(setupDoneTimer); // 已切回工作台：取消「启动失败」恢复定时器
     if (!lastUrl) showPlaceholder(); // 引导收起但工作台未就绪：恢复占位 spinner
   }
   function setSetupPhase(phase) {
@@ -168,9 +174,11 @@
     }
     const registry = setupReg.value.trim() || 'https://registry.npmjs.org';
     setupCancelled = false;
-    // 进入进行中态：进度条 + 取消按钮出现，安装按钮锁定
+    clearTimeout(setupDoneTimer);
+    // 进入进行中态：进度条 + 取消按钮出现，主/高级区安装按钮同步锁定
     setupProgress.hidden = false;
     btnSetupInstall.disabled = true;
+    btnSetupInstallAdv.disabled = true;
     btnSetupCancel.hidden = false;
     btnSetupCancel.disabled = false;
     btnSetupCancel.textContent = '取消安装';
@@ -179,11 +187,20 @@
     setupMeta.textContent = '首次安装约 300MB，请耐心等待';
     try {
       await invoke('setup_dsh_cmd', { ver, registry });
-      // 成功：后端 boot 会 emit dsh:url → loadWorkbench 自动切回工作台
+      // 成功：后端 boot 会 emit dsh:url → loadWorkbench 自动切回工作台；
+      // 若 4s 内未收到 dsh:url（boot 失败/事件丢失），恢复为可重试状态。
       if (!setupCancelled) {
         setupStage.textContent = '安装完成，正在启动工作台…';
         setupMeta.textContent = '';
         btnSetupCancel.disabled = true;
+        setupDoneTimer = setTimeout(() => {
+          if (setupActive && !setupCancelled) {
+            showSetupError(
+              '安装完成但工作台启动失败',
+              'dsh 已安装，但工作台未能自动启动。可重试：将先尝试直接拉起工作台，失败则重新安装。'
+            );
+          }
+        }, 4000);
       }
     } catch (e) {
       const msg = (e && e.message) || String(e);
@@ -196,7 +213,19 @@
   }
 
   btnSetupInstall.addEventListener('click', () => runSetup());
-  btnSetupRetry.addEventListener('click', () => runSetup());
+  btnSetupInstallAdv.addEventListener('click', () => runSetup());
+  btnSetupRetry.addEventListener('click', async () => {
+    // 先尝试恢复工作台（适用于「安装完成但启动失败」：dsh 可能已就绪，
+    // 仅 dsh:url 事件丢失）；拿不到 URL 再走重新安装。
+    for (let i = 0; i < 5; i++) {
+      try {
+        const url = await invoke('get_dsh_url');
+        if (url) { loadWorkbench(url); return; }
+      } catch (e) { break; }
+      await new Promise((r) => setTimeout(r, 800));
+    }
+    runSetup();
+  });
   setupReg.addEventListener('keydown', (e) => { if (e.key === 'Enter') runSetup(); });
 
   btnSetupCancel.addEventListener('click', () => {

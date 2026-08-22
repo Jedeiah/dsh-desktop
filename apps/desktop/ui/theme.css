@@ -287,6 +287,12 @@ input[type="text"]:disabled { opacity: 0.55; }
   --dsh-topbar-h: 46px;
   --dsh-control-h: 34px;
 
+  /* 字体（对齐 tokens.css） */
+  --dsh-font-ui: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC",
+                 "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+  --dsh-font-mono: ui-monospace, "SF Mono", "JetBrains Mono", "Menlo",
+                   "Cascadia Code", Consolas, monospace;
+
   /* 与旧 token 桥接（壳页按钮/输入框同时生效） */
   --card-border: var(--dsh-border);
   --r-sm: var(--dsh-radius-sm);
@@ -301,6 +307,8 @@ input[type="text"]:disabled { opacity: 0.55; }
   --ok: var(--dsh-success);
   --err: var(--dsh-danger);
   --warn: var(--dsh-warning);
+  --font: var(--dsh-font-ui);
+  --font-mono: var(--dsh-font-mono);
 }
 
 /* ---- 壳页内容容器（dsh/插件/关于 共用） ---- */
@@ -316,6 +324,7 @@ input[type="text"]:disabled { opacity: 0.55; }
 /* ---- 卡片（壳页面板内） ---- */
 .panel .card {
   position: relative;
+  width: 100%;
   border-radius: var(--dsh-radius-lg);
   border: 1px solid var(--dsh-border);
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0.03));
