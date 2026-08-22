@@ -26,6 +26,7 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod registry;
 mod update;
 
 use std::io::{BufRead, BufReader, Write};
