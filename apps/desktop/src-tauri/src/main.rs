@@ -276,12 +276,18 @@ pub struct Paths {
 // Paths & settings
 // ---------------------------------------------------------------------------
 
+/// Resources root contains the bundled node runtime (node/bin/node or
+/// node/node.exe). No dsh closure is bundled anymore (thin shell).
+fn has_runtime(dir: &Path) -> bool {
+    dir.join("node/bin/node").is_file() || dir.join("node/node.exe").is_file()
+}
+
 /// Resources root for the GUI: dev cwd, packaged `Contents/Resources/resources`,
 /// or prod `Contents/Resources`.
 fn resource_dir(app: &AppHandle) -> PathBuf {
     let res = app.path().resource_dir().unwrap_or_default();
     for cand in [res.join("resources"), res] {
-        if cand.join("dsh").is_dir() {
+        if has_runtime(&cand) {
             return strip_verbatim(cand);
         }
     }
@@ -344,7 +350,7 @@ pub(crate) fn paths_from_cli() -> Paths {
     let resources = strip_verbatim(
         candidates
             .into_iter()
-            .find(|p| p.join("dsh").is_dir())
+            .find(|p| has_runtime(p))
             .unwrap_or_else(|| cwd.join("resources")),
     );
     Paths {
@@ -632,7 +638,71 @@ pub(crate) fn spawn_dsh(app: &AppHandle) -> std::io::Result<Child> {
 // Boot / lifecycle
 // ---------------------------------------------------------------------------
 
+/// 首次引导安装状态（供壳页查询）。
+#[derive(Serialize)]
+struct SetupState {
+    installing: bool,
+    current: Option<String>,
+}
+
+/// 防止并发触发安装（防重复安装；取消/失败/成功都会复位）。
+static SETUP_BUSY: AtomicBool = AtomicBool::new(false);
+
+/// 安装指定版本 dsh；进度经 `dsh:setup-progress` 推送；成功后 `boot(app)` 启动工作台。
+#[tauri::command]
+async fn setup_dsh_cmd(app: AppHandle, ver: String, registry: String) -> Result<(), String> {
+    if SETUP_BUSY.swap(true, Ordering::SeqCst) {
+        return Err("已有一个安装正在进行中".to_string());
+    }
+    let app_after = app.clone(); // 供安装成功后切回主线程 boot（app 将被 move 进阻塞线程）
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        let p = paths_from_app(&app);
+        let reg = crate::registry::registry_url(Some(&registry));
+        crate::dsh::install_version(&p, &ver, &reg, &|msg| {
+            let _ = app.emit("dsh:setup-progress", msg);
+        })
+    })
+    .await;
+    // join 失败（线程 panic）也必须在返回前释放锁，否则永久锁死（审查项）
+    SETUP_BUSY.store(false, Ordering::SeqCst);
+    result.map_err(|e| format!("安装线程异常：{e}"))??;
+    // 安装成功 → 启动工作台（boot 会 emit dsh:url，壳页自动切入工作台）
+    let _ = app_after.clone().run_on_main_thread(move || boot(app_after));
+    Ok(())
+}
+
+/// 终止进行中的 npm 安装（规格 5.1「可取消」）；取消后 install 返回 Err →
+/// tmp 清理 → 引导页可重试。
+#[tauri::command]
+fn setup_cancel_cmd() {
+    crate::dsh::cancel_install();
+}
+
+#[tauri::command]
+fn setup_state_cmd(app: AppHandle) -> SetupState {
+    let p = paths_from_app(&app);
+    SetupState {
+        installing: SETUP_BUSY.load(Ordering::SeqCst),
+        current: crate::dsh::current_closure(&p).and_then(|d| crate::dsh::closure_version(&d)),
+    }
+}
+
+#[tauri::command]
+fn list_dsh_versions_cmd(app: AppHandle) -> Vec<String> {
+    let p = paths_from_app(&app);
+    let reg = crate::registry::registry_url(load_settings_at(&p.app_data).registry.as_deref());
+    crate::registry::list_versions(&reg).unwrap_or_default()
+}
+
 pub(crate) fn boot(app: AppHandle) {
+    // thin shell: no bundled closure — first run must install dsh first
+    let p = paths_from_app(&app);
+    if crate::dsh::current_closure(&p).is_none() {
+        logln!("no dsh closure installed; entering setup mode");
+        let _ = app.emit("dsh:need-setup", ());
+        reveal_main_window(&app, None);
+        return;
+    }
     let mut child = match spawn_dsh(&app) {
         Ok(c) => c,
         Err(e) => {
@@ -2683,6 +2753,10 @@ fn main() {
             open_browser_cmd,
             set_login_cmd,
             check_update_cmd,
+            setup_dsh_cmd,
+            setup_state_cmd,
+            setup_cancel_cmd,
+            list_dsh_versions_cmd,
         ])
         .setup(|app| {
             // P3：托盘收敛为最小集 —— 显示主窗口 / 管理台 / 退出。
