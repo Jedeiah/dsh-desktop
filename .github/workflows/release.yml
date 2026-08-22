@@ -56,21 +56,9 @@ jobs:
         with:
           node-version: 24
 
-      - name: Resolve latest upstream dsh version (DSH_VERSION)
-        run: echo "DSH_VERSION=$(npm view @deepseek-ai/dsh version)" >> "$GITHUB_ENV"
-
-      - name: Prepare bundled resources (node + dsh closure + icons)
+      - name: Prepare bundled resources (node + npm + pnpm)
         run: |
-          NODE_SRC="$(command -v node)"
-          # 大闭包 npm install：显式抬高 V8 堆，避免 CI 低内存/并发下
-          # "JavaScript heap out of memory"（prepare 脚本内亦已设置 NODE_OPTIONS）。
-          NODE_OPTIONS=--max-old-space-size=6144 \
-          npm install --prefix "$RUNNER_TEMP/closure" "@deepseek-ai/dsh@${DSH_VERSION}" \
-            --ignore-scripts --no-audit --no-fund
-          CLOSURE_SRC="$RUNNER_TEMP/closure/node_modules" \
-          NODE_SRC="$NODE_SRC" \
-          DSH_VERSION="$DSH_VERSION" \
-          ./scripts/prepare-resources.sh
+          NODE_SRC="$(command -v node)" ./scripts/prepare-resources.sh
 
       - name: Install tauri-cli
         run: cargo install tauri-cli --locked
@@ -85,20 +73,6 @@ jobs:
           cd apps/desktop/src-tauri/target/release/bundle/macos
           ditto -c -k --keepParent "DeepSeek Harness.app" \
             "DeepSeek-Harness-macOS-arm64.zip"
-
-      - name: Track released dsh baseline (dsh.version)
-        run: |
-          # 工作区在 tag checkout 上且被 tauri.conf.json 版本改写 (dirty)：强制切到 main
-          git fetch origin main
-          git checkout -f -B main origin/main
-          echo "$DSH_VERSION" > dsh.version
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add dsh.version
-          git commit -m "chore(ci): track dsh @$DSH_VERSION" || echo "dsh.version 无变更"
-          # 与 upstream-check 并发推 main 时先 rebase 防 non-fast-forward
-          git pull --rebase origin main || true
-          git push origin main
 
       - name: Upload to GitHub Release (${{ steps.ver.outputs.tag }})
         uses: softprops/action-gh-release@v3
@@ -158,20 +132,9 @@ jobs:
           $v = "${{ steps.ver.outputs.app_version }}"
           node -e "const fs=require('fs');const p='apps/desktop/src-tauri/tauri.conf.json';const d=JSON.parse(fs.readFileSync(p));d.version=process.argv[1];fs.writeFileSync(p,JSON.stringify(d,null,2)+'\n')" $v
 
-      - name: Resolve latest upstream dsh version (DSH_VERSION)
-        shell: bash
-        run: echo "DSH_VERSION=$(npm view @deepseek-ai/dsh version)" >> "$GITHUB_ENV"
-
-      - name: Prepare bundled resources (node.exe + dsh closure + icons)
+      - name: Prepare bundled resources (node.exe + npm + pnpm)
         shell: pwsh
-        run: |
-          # 大闭包 npm install：显式抬高 V8 堆，避免 CI 低内存/并发下 OOM。
-          $env:NODE_OPTIONS = "--max-old-space-size=6144"
-          npm install --prefix "$env:RUNNER_TEMP\closure" "@deepseek-ai/dsh@$env:DSH_VERSION" --ignore-scripts --no-audit --no-fund
-          ./scripts/prepare-resources.ps1 `
-            -DshVersion $env:DSH_VERSION `
-            -NodeSrc (Get-Command node).Source `
-            -ClosureSrc "$env:RUNNER_TEMP\closure\node_modules"
+        run: ./scripts/prepare-resources.ps1 -NodeSrc (Get-Command node).Source
 
       - name: Install tauri-cli
         run: cargo install tauri-cli --locked

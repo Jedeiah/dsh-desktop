@@ -5,12 +5,10 @@
 target/
 apps/desktop/src-tauri/gen/
 
-# 打包时生成/拷贝的内置运行时与闭包（可再生成，体积大不入库）
-# 但保留 resources/dsh/.gitkeep 占位，让 tauri-build 的 resources glob 在空检出时也能匹配
+# 打包时生成/拷贝的内置运行时（node/npm/pnpm-bin，可再生成，体积大不入库）
+# 保留 resources/.gitkeep 占位，让 tauri-build 的 resources glob 在空检出时也能匹配
 apps/desktop/src-tauri/resources/*
-!apps/desktop/src-tauri/resources/dsh/
-apps/desktop/src-tauri/resources/dsh/*
-!apps/desktop/src-tauri/resources/dsh/.gitkeep
+!apps/desktop/src-tauri/resources/.gitkeep
 
 # 构建脚本输出
 build/
@@ -18,6 +16,3 @@ build/
 # 编辑器/系统临时
 *.swp
 *.tmp
-
-# 保留占位文件（让 tauri-build 的 resources glob 在空检出时也能匹配）
-!apps/desktop/src-tauri/resources/dsh/.gitkeep

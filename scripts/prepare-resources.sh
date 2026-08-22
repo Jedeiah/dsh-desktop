@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
-# Prepare bundled resources for DSh Desktop (M1):
+# Prepare bundled resources for DSh Desktop:
 #   resources/node/bin/node  — Node arm64 runtime (copied from fnm install)
-#   resources/dsh/<ver>/     — full dsh closure (node_modules incl. @deepseek-ai/dsh)
-#   resources/dsh/current    — symlink to the active version
+#   resources/npm, pnpm-bin  — bundled npm/pnpm for in-app dsh install / plugin mgmt
 #   icons/icon.png + icon.icns — app/tray icons (generated locally)
 #
 # Build-time script: the machine running this may use npm/fnm; the bundled
@@ -11,15 +10,14 @@ set -euo pipefail
 
 # 大闭包用 npm 安装（CI 低内存/并发下 npm/arborist 极易触发 V8 默认堆上限，
 # 表现为 "JavaScript heap out of memory" 直接 Abort）→ 显式抬高堆上限。
-# 本脚本内的 npm install（pnpm 等）与后续 dsh --version 自检都走这个 NODE_OPTIONS。
+# 本脚本内的 npm install（pnpm 等）都走这个 NODE_OPTIONS。
 export NODE_OPTIONS="${NODE_OPTIONS:+$NODE_OPTIONS }--max-old-space-size=6144"
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SRC_TAURI="$ROOT/apps/desktop/src-tauri"
 RES="$SRC_TAURI/resources"
-VER="${DSH_VERSION:-0.1.0-rc.6}"
 
-echo "==> Preparing resources for dsh closure $VER"
+echo "==> Preparing bundled resources (node + npm + pnpm)"
 
 # --- 1. Node runtime ---------------------------------------------------------
 NODE_SRC="${NODE_SRC:-$HOME/.local/share/fnm/node-versions/v24.14.0/installation/bin/node}"
@@ -42,49 +40,7 @@ rm -rf "$RES/npm"
 cp -R "$NPM_SRC" "$RES/npm"
 echo "    npm: $(wc -c < "$RES/npm/bin/npm-cli.js" | tr -d ' ')B npm-cli.js"
 
-# --- 2. dsh closure ---------------------------------------------------------
-# Source: default to the currently bundled closure (project-local, self-sufficient);
-# override with CLOSURE_SRC=<dir containing node_modules/@deepseek-ai/dsh> for a new version.
-if [[ -z "${CLOSURE_SRC:-}" && -d "$RES/dsh/current/node_modules" ]]; then
-  CLOSURE_SRC="$RES/dsh/current/node_modules"
-fi
-if [[ ! -d "$CLOSURE_SRC/@deepseek-ai/dsh" ]]; then
-  echo "closure source missing @deepseek-ai/dsh at $CLOSURE_SRC; set CLOSURE_SRC" >&2
-  exit 1
-fi
-# stage first: the source may live inside the dir we are about to rewrite
-# (e.g. resources/dsh/current), so never delete it before copying.
-STAGE="$(mktemp -d)"
-cp -R "$CLOSURE_SRC" "$STAGE/node_modules"
-DST="$RES/dsh/$VER"
-rm -rf "$DST"
-mkdir -p "$DST"
-mv "$STAGE/node_modules" "$DST/node_modules"
-rmdir "$STAGE"
-echo "{\"name\":\"dsh-closure\",\"version\":\"$VER\"}" >"$DST/package.json"
-echo "$VER" >"$DST/VERSION"
-# `current` 是版本标记文件（内容=版本号），跨平台（Windows 无软链权限也通用）。
-# 旧版用软链时 Rust 侧会回退扫描，无需迁移。
-echo "$VER" >"$RES/dsh/current"
-rm -f "$RES/dsh/current.tmp"
-echo "    closure: $(du -sh "$DST" | cut -f1) at $DST"
-
-# --- 2b. LAN proxy (M6: 局域网访问转发器) --------------------------------
-cp "$SRC_TAURI/lan-proxy.js" "$RES/lan-proxy.js"
-echo "    lan-proxy.js: $(wc -c < "$RES/lan-proxy.js" | tr -d ' ')B"
-# --- 2b2. mDNS 通告器（壳层增强②，Windows 用） ---------------------------
-cp "$SRC_TAURI/mdns-advertise.js" "$RES/mdns-advertise.js"
-# --- 2b2b. 二维码生成库（登录页扫码用，MIT 单文件）---------------------------
-cp "$SRC_TAURI/qrcode.js" "$RES/qrcode.js"
-echo "    mdns-advertise.js: $(wc -c < "$RES/mdns-advertise.js" | tr -d ' ')B"
-# 无网络自测：验证 mDNS 报文逻辑（打包前兜底，失败即中止）
-if ! "$RES/node/bin/node" "$RES/mdns-advertise.js" --self-test >/dev/null 2>&1; then
-  echo "ERROR: mdns-advertise self-test failed" >&2
-  exit 1
-fi
-echo "    mdns-advertise.js self-test OK"
-
-# --- 2b3. pnpm（插件管理；JS 发行版 + shim，零运行时网络）----------------------
+# --- 1c. pnpm（插件管理；JS 发行版 + shim，零运行时网络）----------------------
 # dsh plugin 写死 spawnSync("pnpm") 从 PATH 找；App 内置 pnpm 并注入 PATH。
 # 方案：安装 pnpm 的 JS 发行版（pnpm@^11，dist 为自包含 bundle），把
 # bin/pnpm.mjs + dist/ + package.json 拷到 resources/pnpm-bin，并生成同名
@@ -120,15 +76,7 @@ fi
 echo "    pnpm: $PNPM_VER"
 rm -rf "$PNPM_STAGE"
 
-# --- 2c. closure self-check (must boot under the bundled node) --------------
-DETECTED_VER="$("$RES/node/bin/node" "$DST/node_modules/@deepseek-ai/dsh/lib/bin.js" --version 2>/dev/null || true)"
-if [[ "$DETECTED_VER" != "$VER" ]]; then
-  echo "ERROR: bundled closure does not boot (expected version $VER, got '${DETECTED_VER}')" >&2
-  exit 1
-fi
-echo "    closure self-check OK: dsh $DETECTED_VER"
-
-# --- 3. icons ----------------------------------------------------------------
+# --- 2. icons ----------------------------------------------------------------
 # The app icon is the user-provided one: icons/icon.png (RGBA 1024) + icon.icns.
 # If either is missing, regenerate from a source image (env ICON_SRC).
 ICONS="$SRC_TAURI/icons"
