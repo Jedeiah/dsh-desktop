@@ -15,7 +15,7 @@ rfd = "0.17"
 ureq = "2"
 dirs = "6"
 # 跨平台 CSPRNG（替换 macOS 专属的 /dev/urandom；getrandom 已是本依赖树成员，无新增下载）
-getrandom = "0.2"
+getrandom = "0.4"
 
 [target.'cfg(unix)'.dependencies]
 # 仅 unix 用 PID+SIGTERM 结束 LAN 代理（Windows 走 taskkill）

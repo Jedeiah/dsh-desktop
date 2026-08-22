@@ -732,7 +732,7 @@ version = "0.2.1"
 dependencies = [
  "arboard",
  "dirs",
- "getrandom 0.2.17",
+ "getrandom 0.4.3",
  "libc",
  "rfd",
  "serde",
