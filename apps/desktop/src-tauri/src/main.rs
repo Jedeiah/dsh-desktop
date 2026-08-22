@@ -26,8 +26,8 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod dsh;
 mod registry;
-mod update;
 
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -110,10 +110,10 @@ static MODAL_RESULT: Mutex<Option<mpsc::Sender<bool>>> = Mutex::new(None);
 static MODAL_LOCK: Mutex<()> = Mutex::new(());
 
 /// App 标识（与 tauri.conf.json identifier 一致；决定 app 数据目录名）。
-pub const APP_ID: &str = "com.dsh-desktop.app";
+pub(crate) const APP_ID: &str = "com.dsh-desktop.app";
 const RESTART_BASE_MS: u64 = 1000;
 const RESTART_MAX_MS: u64 = 15000;
-const WINDOW_LABEL: &str = "main";
+pub(crate) const WINDOW_LABEL: &str = "main";
 const PLUGIN_LABEL: &str = "plugins";
 const LAN_LABEL: &str = "lan";
 const UNINSTALL_LABEL: &str = "uninstall";
@@ -121,7 +121,7 @@ const MODAL_LABEL: &str = "modal";
 
 /// 用户主目录：优先平台主目录环境变量（unix: HOME，Windows: USERPROFILE），
 /// 回退到系统用户目录（跨平台，不写死用户名）。
-pub fn home_dir() -> PathBuf {
+pub(crate) fn home_dir() -> PathBuf {
     let env = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
     std::env::var_os(env)
         .map(PathBuf::from)
@@ -130,7 +130,7 @@ pub fn home_dir() -> PathBuf {
 }
 
 /// Poison-safe mutex lock.
-fn mlock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+pub(crate) fn mlock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
@@ -139,7 +139,7 @@ fn mlock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 /// instance is running (caller should activate it and exit). The locked file
 /// is deliberately leaked so the fd (and thus the lock) lives until exit.
 fn acquire_single_instance() -> bool {
-    let dir = update::app_data_from_home();
+    let dir = crate::dsh::app_data_from_home();
     let _ = std::fs::create_dir_all(&dir);
     match std::fs::OpenOptions::new()
         .create(true)
@@ -196,7 +196,7 @@ fn hms(secs: u64) -> String {
 }
 
 /// Write a launcher log line (file in packaged mode; stderr in dev).
-fn logln(msg: &str) {
+pub(crate) fn logln(msg: &str) {
     let stamp = hms(SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs());
     eprintln!("{msg}");
     if let Some(f) = mlock(&LOG_FILE).as_mut() {
@@ -206,6 +206,48 @@ fn logln(msg: &str) {
 
 macro_rules! logln {
     ($($arg:tt)*) => { crate::logln(&format!($($arg)*)) };
+}
+
+/// Post a desktop notification (best-effort, per-platform mechanism).
+/// 迁自 update.rs（Task 2）：通知与闭包管理解耦，属壳层通用能力。
+pub(crate) fn notify(title: &str, body: &str) {
+    #[cfg(target_os = "macos")]
+    {
+        let script = format!(
+            "display notification \"{}\" with title \"{}\"",
+            body.replace('"', "'"),
+            title.replace('"', "'")
+        );
+        let _ = Command::new("osascript").args(["-e", &script]).spawn();
+    }
+    #[cfg(target_os = "windows")]
+    {
+        // PowerShell 无窗口气球提示（NotifyIcon），尽力而为：整体包在
+        // try/catch 里，任一环节失败（如 System.Drawing 未加载）都静默。
+        let ps = format!(
+            "try {{ \
+             Add-Type -AssemblyName System.Windows.Forms; Add-Type -AssemblyName System.Drawing; \
+             $n = New-Object System.Windows.Forms.NotifyIcon; \
+             $n.Icon = [System.Drawing.SystemIcons]::Information; \
+             $n.Visible = $true; \
+             $n.ShowBalloonTip(5000, '{title}', '{body}', [System.Windows.Forms.ToolTipIcon]::Info); \
+             Start-Sleep -Milliseconds 6000; \
+             $n.Dispose() \
+             }} catch {{}}",
+            title = title.replace('\'', "''"),
+            body = body.replace('\'', "''")
+        );
+        let _ = no_console(Command::new("powershell.exe"))
+            .arg("-NoProfile")
+            .arg("-NonInteractive")
+            .arg("-WindowStyle")
+            .arg("Hidden")
+            .arg("-Command")
+            .arg(&ps)
+            .spawn();
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    let _ = (title, body);
 }
 
 /// True when running from a packaged bundle (vs `cargo run` / raw binary).
@@ -278,7 +320,7 @@ fn strip_verbatim(p: PathBuf) -> PathBuf {
     p
 }
 
-fn paths_from_app(app: &AppHandle) -> Paths {
+pub(crate) fn paths_from_app(app: &AppHandle) -> Paths {
     let app_data = strip_verbatim(app.path().app_data_dir().unwrap_or_default());
     Paths {
         resources: resource_dir(app),
@@ -289,7 +331,7 @@ fn paths_from_app(app: &AppHandle) -> Paths {
 /// Resources root for the CLI hooks (no Tauri handle): bundled resources
 /// relative to the executable (macOS `../Resources/resources`, Windows
 /// `resources` beside the exe), or dev cwd.
-fn paths_from_cli() -> Paths {
+pub(crate) fn paths_from_cli() -> Paths {
     let exe = std::env::current_exe().unwrap_or_default();
     let exe_dir = strip_verbatim(exe.parent().unwrap_or(Path::new(".")).to_path_buf());
     let cwd = strip_verbatim(std::env::current_dir().unwrap_or_default());
@@ -307,12 +349,12 @@ fn paths_from_cli() -> Paths {
     );
     Paths {
         resources,
-        app_data: update::app_data_from_home(),
+        app_data: crate::dsh::app_data_from_home(),
     }
 }
 
 /// The bundled node executable (name differs per platform: `node` vs `node.exe`).
-pub fn node_bin(resources: &Path) -> PathBuf {
+pub(crate) fn node_bin(resources: &Path) -> PathBuf {
     if cfg!(windows) {
         resources.join("node/node.exe")
     } else {
@@ -532,63 +574,11 @@ fn workspace_dir(app: &AppHandle) -> PathBuf {
     )
 }
 
-// ---------------------------------------------------------------------------
-// Closure resolution
-// ---------------------------------------------------------------------------
-
-fn closure_marker(dir: &Path) -> bool {
-    dir.join("node_modules/@deepseek-ai/dsh/package.json").is_file()
-}
-
-/// Resolve the active closure under a `dsh/` dir using the `current` marker.
-/// The marker is a plain text file holding the version directory name; older
-/// installs that used a `current` symlink to a version dir are also accepted.
-fn resolve_current(dsh_dir: &Path) -> Option<PathBuf> {
-    let marker = dsh_dir.join("current");
-    if let Ok(ver) = std::fs::read_to_string(&marker) {
-        let ver = ver.trim();
-        if !ver.is_empty() {
-            let dir = dsh_dir.join(ver);
-            if closure_marker(&dir) {
-                return Some(dir);
-            }
-        }
-    }
-    // legacy: `current` was a symlink pointing at a version dir
-    if closure_marker(&marker) {
-        return Some(marker);
-    }
-    None
-}
-
-/// Resolve the active dsh closure: prefer the app-data `current` (managed by
-/// updates), otherwise the bundled one.
-pub fn active_closure(p: &Paths) -> Option<PathBuf> {
-    resolve_current(&p.app_data.join("dsh")).or_else(|| resolve_closure(&p.resources))
-}
-
-/// Scan the (read-only) bundled `dsh/` for the active version dir.
-fn resolve_closure(res: &Path) -> Option<PathBuf> {
-    let dsh = res.join("dsh");
-    if let Some(c) = resolve_current(&dsh) {
-        return Some(c);
-    }
-    if let Ok(entries) = std::fs::read_dir(&dsh) {
-        for e in entries.flatten() {
-            let p = e.path();
-            if p.is_dir() && closure_marker(&p) {
-                return Some(p);
-            }
-        }
-    }
-    None
-}
-
-fn spawn_dsh(app: &AppHandle) -> std::io::Result<Child> {
+pub(crate) fn spawn_dsh(app: &AppHandle) -> std::io::Result<Child> {
     let p = paths_from_app(app);
     let node = node_bin(&p.resources);
-    let closure = active_closure(&p).ok_or_else(|| {
-        std::io::Error::other(format!("dsh closure not found under {}", p.resources.display()))
+    let closure = crate::dsh::current_closure(&p).ok_or_else(|| {
+        std::io::Error::other(format!("dsh closure not found under {}", p.app_data.display()))
     })?;
     let bin = closure.join("node_modules/@deepseek-ai/dsh/lib/bin.js");
     let cwd = workspace_dir(app);
@@ -642,7 +632,7 @@ fn spawn_dsh(app: &AppHandle) -> std::io::Result<Child> {
 // Boot / lifecycle
 // ---------------------------------------------------------------------------
 
-fn boot(app: AppHandle) {
+pub(crate) fn boot(app: AppHandle) {
     let mut child = match spawn_dsh(&app) {
         Ok(c) => c,
         Err(e) => {
@@ -741,7 +731,7 @@ fn boot(app: AppHandle) {
 //  - 只在窗口「当前不可见」时才 center + show —— 首次出现即居中，已可见时
 //    不再重定位。这是启动"往上闪一下"的根因修复：此前窗口创建即 show、
 //    dsh 就绪又 center+show 一次，macOS 会对已显示窗口再次定位，产生跳动。
-fn reveal_main_window(app: &AppHandle, url: Option<&str>) {
+pub(crate) fn reveal_main_window(app: &AppHandle, url: Option<&str>) {
     let Some(w) = app.get_webview_window(WINDOW_LABEL) else {
         // 兜底：主窗不存在（极罕见）时重建壳页。shell.js 自带 get_dsh_url
         // 轮询兜底，重建后无需再补发地址事件。
@@ -873,7 +863,7 @@ fn open_in_browser(_app: &AppHandle) {
     open_url(&url);
 }
 
-fn kill_dsh() {
+pub(crate) fn kill_dsh() {
     // mark as intentional so the boot thread never treats the EOF as a crash
     // and never spawns a restart after the app is quitting (avoids orphans).
     INTENTIONAL_STOP.store(true, Ordering::SeqCst);
@@ -884,7 +874,7 @@ fn kill_dsh() {
     }
 }
 
-fn restart_dsh(app: &AppHandle) {
+pub(crate) fn restart_dsh(app: &AppHandle) {
     INTENTIONAL_STOP.store(true, Ordering::SeqCst);
     kill_dsh();
     if let Some(w) = app.get_webview_window(WINDOW_LABEL) {
@@ -1084,7 +1074,7 @@ fn run_dsh_plugin(
 ) -> Result<(String, bool), String> {
     let p = paths_from_app(app);
     let node = node_bin(&p.resources);
-    let closure = active_closure(&p)
+    let closure = crate::dsh::current_closure(&p)
         .ok_or_else(|| format!("dsh 闭包未找到：{}", p.resources.display()))?;
     let bin = closure.join("node_modules/@deepseek-ai/dsh/lib/bin.js");
     let home = home_dir();
@@ -1454,8 +1444,8 @@ fn get_shell_state(app: AppHandle) -> ShellState {
             .into_owned(),
         login_on: login_item_enabled(),
         app_version: env!("CARGO_PKG_VERSION").to_string(),
-        dsh_version: active_closure(&p)
-            .and_then(|dir| update::closure_version(&dir))
+        dsh_version: crate::dsh::current_closure(&p)
+            .and_then(|dir| crate::dsh::closure_version(&dir))
             .unwrap_or_else(|| "未知".into()),
     }
 }
@@ -1540,7 +1530,7 @@ async fn check_update_cmd(app: AppHandle) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let p = paths_from_app(&app);
         let settings = load_settings_at(&p.app_data);
-        match update::check_update(&p, settings.registry.as_deref()) {
+        match crate::dsh::check_update(&p, settings.registry.as_deref()) {
             Ok(Some((_, latest))) => {
                 let msg = format!("发现新版本 v{latest}。是否现在更新？");
                 let yes = show_modal(&app, "DeepSeek Harness 更新", &msg, "yesno");
@@ -1549,13 +1539,13 @@ async fn check_update_cmd(app: AppHandle) -> Result<String, String> {
                     let p2 = p.clone();
                     let reg = settings.registry.clone();
                     std::thread::spawn(move || {
-                        let reg_url = update::registry_url(reg.as_deref());
-                        match update::apply_update(&p2, &latest, &reg_url) {
+                        let reg_url = crate::registry::registry_url(reg.as_deref());
+                        match crate::dsh::install_version(&p2, &latest, &reg_url, &|_msg| {}) {
                             Ok(()) => {
-                                update::notify("更新完成", &format!("已升级到 v{latest}，正在重启 dsh"));
+                                notify("更新完成", &format!("已升级到 v{latest}，正在重启 dsh"));
                                 restart_dsh(&app3);
                             }
-                            Err(e) => update::notify("更新失败", &e),
+                            Err(e) => notify("更新失败", &e),
                         }
                     });
                     Ok("updating".into())
@@ -1643,7 +1633,7 @@ async fn uninstall_run(app: AppHandle, wipe: bool) -> Result<(), String> {
     .map_err(|e| format!("卸载线程异常：{e}"))?;
     if let Err(e) = teardown {
         // 卸载确认窗口已销毁，JS 无法回显：用系统通知兜底
-        update::notify("卸载未完成", &e);
+        notify("卸载未完成", &e);
         return Err(e);
     }
     // teardown 成功：移入回收站 / 引导系统卸载，然后退出
@@ -1670,7 +1660,7 @@ async fn uninstall_run(app: AppHandle, wipe: bool) -> Result<(), String> {
             }
         }
         if !spawned {
-            update::notify(
+            notify(
                 "请通过系统卸载",
                 "应用数据已清理。请到“设置 → 应用 → 已安装的应用”中卸载 DeepSeek Harness。",
             );
@@ -1679,7 +1669,7 @@ async fn uninstall_run(app: AppHandle, wipe: bool) -> Result<(), String> {
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
         if !trash_self() {
-            update::notify(
+            notify(
                 "请通过系统卸载",
                 "应用数据已清理。请通过系统卸载 DeepSeek Harness。",
             );
@@ -1702,8 +1692,8 @@ fn periodic_check(app: AppHandle) {
         loop {
             let p = paths_from_app(&app);
             let settings = load_settings(&app);
-            match update::check_update(&p, settings.registry.as_deref()) {
-                Ok(Some((_, latest))) => update::notify(
+            match crate::dsh::check_update(&p, settings.registry.as_deref()) {
+                Ok(Some((_, latest))) => notify(
                     "有可用更新",
                     &format!("DeepSeek Harness v{latest} 已发布，从托盘菜单更新"),
                 ),
@@ -2010,12 +2000,12 @@ fn set_lan_access(app: &AppHandle, enable: bool) {
         s.lan_enabled = false;
         save_settings(app, &s);
         sync_lan_check();
-        update::notify("局域网访问已关闭", "仅本机可访问");
+        notify("局域网访问已关闭", "仅本机可访问");
         Ok(())
     };
     if let Err(e) = result {
         sync_lan_check(); // Tauri 点击已自动翻转勾选：失败时恢复菜单与 LAN_ON 一致
-        update::notify("局域网访问设置失败", &e);
+        notify("局域网访问设置失败", &e);
     }
 }
 
@@ -2264,7 +2254,7 @@ fn start_ip_watch(port: u16) {
                     // None→Some（网络刚就绪）只记日志不弹通知，避免误报
                     // "地址变化"；只有两个真实地址之间的变化才通知用户。
                     if last.is_some() {
-                        update::notify("局域网地址已变化", &format!("新地址 http://{now}:{port}"));
+                        notify("局域网地址已变化", &format!("新地址 http://{now}:{port}"));
                     }
                     last = Some(now);
                     *mlock(&LAN_IP_LAST) = last.clone();
@@ -2455,7 +2445,7 @@ fn uninstall_teardown(p: &Paths, wipe_dsh: bool) -> Result<(), String> {
     if !leftovers.is_empty() {
         let msg = format!("以下目录被占用未能删除，重启电脑后即可手动清理：\n{}", leftovers.join("\n"));
         logln!("[uninstall] 残留目录: {msg}");
-        update::notify("部分数据将延迟清理", &msg);
+        notify("部分数据将延迟清理", &msg);
     }
     if wipe_dsh {
         let dsh_home = home.join(".dsh");
@@ -2578,7 +2568,7 @@ fn run_cli_hooks(args: &[String]) -> bool {
     if args.iter().any(|a| a == "--self-update-check") {
         let p = paths_from_cli();
         let settings = load_settings_at(&p.app_data);
-        match update::check_update(&p, settings.registry.as_deref()) {
+        match crate::dsh::check_update(&p, settings.registry.as_deref()) {
             Ok(Some((cur, latest))) => println!("UPDATE_AVAILABLE current={cur} latest={latest}"),
             Ok(None) => println!("UP_TO_DATE"),
             Err(e) => {
@@ -2592,8 +2582,8 @@ fn run_cli_hooks(args: &[String]) -> bool {
         let ver = args.get(idx + 1).cloned().unwrap_or_default();
         let p = paths_from_cli();
         let settings = load_settings_at(&p.app_data);
-        let reg_url = update::registry_url(settings.registry.as_deref());
-        match update::apply_update(&p, &ver, &reg_url) {
+        let reg_url = crate::registry::registry_url(settings.registry.as_deref());
+        match crate::dsh::install_version(&p, &ver, &reg_url, &|_msg| {}) {
             Ok(()) => {
                 println!("APPLIED {ver}");
                 std::process::exit(0);
