@@ -70,7 +70,7 @@ pub fn installed_versions(p: &Paths) -> Vec<String> {
         for e in entries.flatten() {
             let name = e.file_name().to_string_lossy().to_string();
             if let Some(ver) = name.strip_prefix('v') {
-                if !ver.ends_with("-tmp") && e.path().is_dir() {
+                if !ver.ends_with("-tmp") && !ver.ends_with(".old") && e.path().is_dir() {
                     out.push(ver.to_string());
                 }
             }
@@ -138,10 +138,11 @@ fn install_and_verify(
         .stderr(Stdio::inherit())
         .spawn()
         .map_err(|e| format!("运行内置 npm 失败: {e}"))?;
-    // 记录子进程 PID 供 setup_cancel_cmd 取消；wait 结束后清除
+    // 记录子进程 PID 供 setup_cancel_cmd 取消；无论 wait 成败都先清空
     *SETUP_CHILD.lock().unwrap() = Some(child.id());
-    let status = child.wait().map_err(|e| format!("等待内置 npm 失败: {e}"))?;
+    let wait = child.wait();
     *SETUP_CHILD.lock().unwrap() = None;
+    let status = wait.map_err(|e| format!("等待内置 npm 失败: {e}"))?;
     if !status.success() {
         return Err(format!("npm install @deepseek-ai/dsh@{ver} 失败 (exit {status})"));
     }
@@ -200,12 +201,14 @@ pub fn install_version(
     std::fs::create_dir_all(&tmp).map_err(|e| format!("创建临时目录失败: {e}"))?;
 
     progress(&format!("正在下载并安装 dsh v{ver}（约 300MB，首次可能需要几分钟）…"));
+    // 安装（下载）文案覆盖 install_and_verify 内的 npm install 阶段；
+    // 自检在安装成功后进行，故先提示再进入双重自检。
+    progress("正在校验新版本…");
     if let Err(e) = install_and_verify(p, &tmp, ver, registry) {
         let _ = std::fs::remove_dir_all(&tmp);
         return Err(e);
     }
 
-    progress("正在校验新版本…");
     std::fs::write(tmp.join("VERSION"), ver).map_err(|e| format!("写版本标记失败: {e}"))?;
 
     // promote tmp -> v<ver> with overwrite safety: the existing dir is moved
@@ -223,9 +226,6 @@ pub fn install_version(
         }
         return Err(format!("发布新版本目录失败: {e}"));
     }
-    if old.exists() {
-        let _ = std::fs::remove_dir_all(&old);
-    }
 
     let cur_marker = dsh_dir.join("current");
     let prev_ver = std::fs::read_to_string(&cur_marker)
@@ -237,6 +237,13 @@ pub fn install_version(
         .map_err(|e| format!("写 current 标记失败: {e}"))?;
     std::fs::rename(&tmp_marker, &cur_marker)
         .map_err(|e| format!("切换 current 标记失败: {e}"))?;
+
+    // current 标记已原子切换成功：此刻起旧版本目录不再被 current 引用，
+    // 才可安全删除 .old。若切换失败（磁盘满/权限等），旧目录仍在原位
+    // （或可被恢复），保证任何失败都不动当前可用版本（规格 6）。
+    if old.exists() {
+        let _ = std::fs::remove_dir_all(&old);
+    }
 
     // GC: keep the new version + the previous one (rollback), drop older ones.
     if let Ok(entries) = std::fs::read_dir(&dsh_dir) {
@@ -313,6 +320,7 @@ mod tests {
             std::fs::create_dir_all(root.join("dsh").join(v)).unwrap();
         }
         std::fs::create_dir_all(root.join("dsh/npm-cache")).unwrap(); // 非 v* 应忽略
+        std::fs::create_dir_all(root.join("dsh/v0.1.0-rc.6.old")).unwrap(); // .old 残留应忽略
         let p = crate::Paths {
             resources: tmp(),
             app_data: root.clone(),
