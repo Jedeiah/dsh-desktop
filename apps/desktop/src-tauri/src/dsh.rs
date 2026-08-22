@@ -64,6 +64,9 @@ pub fn current_closure(p: &Paths) -> Option<PathBuf> {
 }
 
 /// Version dir names under `<app-data>/dsh/`, newest first.
+// Task 7 删除其唯一生产调用后成为死代码（bin crate 内 pub 不豁免 dead_code）；
+// 函数与单测仍有价值，保留并抑制 lint，避免扩大改动面。
+#[allow(dead_code)]
 pub fn installed_versions(p: &Paths) -> Vec<String> {
     let mut out = vec![];
     if let Ok(entries) = std::fs::read_dir(p.app_data.join("dsh")) {

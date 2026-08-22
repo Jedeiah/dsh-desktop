@@ -877,13 +877,6 @@ fn webview_new_window_policy(
     tauri::webview::NewWindowResponse::Deny
 }
 
-fn open_in_browser(_app: &AppHandle) {
-    let url = mlock(&DSH_URL)
-        .clone()
-        .unwrap_or_else(|| "http://127.0.0.1:3080".into());
-    open_url(&url);
-}
-
 pub(crate) fn kill_dsh() {
     // mark as intentional so the boot thread never treats the EOF as a crash
     // and never spawns a restart after the app is quitting (avoids orphans).
@@ -1098,10 +1091,11 @@ fn get_shell_state(app: AppHandle) -> ShellState {
     }
 }
 
-/// 在系统浏览器打开工作台。
+/// 在系统浏览器打开 App 的 GitHub releases 下载页（手动下载兜底入口，规格 5.3）。
+/// 原「打开工作台」语义随常规 Tab 删除；工作台地址经 iframe 内嵌即可触达。
 #[tauri::command]
-fn open_browser_cmd(app: AppHandle) -> Result<(), String> {
-    open_in_browser(&app);
+fn open_browser_cmd(_app: AppHandle) -> Result<(), String> {
+    open_url("https://github.com/Jedeiah/dsh-desktop/releases/latest");
     Ok(())
 }
 
@@ -1466,13 +1460,13 @@ fn main() {
                         kill_dsh();
                         app.exit(0);
                     }
-                    // 显示主窗口 / 管理台：都唤起壳页；管理台额外切到「常规」Tab。
+                    // 显示主窗口 / 管理台：都唤起壳页；管理台额外切到「dsh」Tab。
                     // 不虚构 URL（dsh 未就绪时壳页保持占位，而不是塞一个假地址）。
                     "show" | "manage" => {
                         reveal_main_window(app, mlock(&DSH_URL).as_deref());
                         if event.id.as_ref() == "manage" {
                             if let Some(w) = app.get_webview_window(WINDOW_LABEL) {
-                                let _ = w.emit("shell:tab", "general");
+                                let _ = w.emit("shell:tab", "dsh");
                             }
                         }
                     }

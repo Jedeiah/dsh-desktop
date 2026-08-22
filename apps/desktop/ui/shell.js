@@ -1,6 +1,7 @@
-// 壳页 shell.js：工作台(iframe) + 管理 Tabs（常规/网络/插件/更新/卸载）
-// 所有管理能力内嵌于主窗（window.__TAURI__ 只注入主 frame —— 远程 iframe 拿不到
-// IPC，安全面收窄）。⌘K 打开命令面板。Esc 在管理页返回工作台。
+// 壳页 shell.js：工作台(iframe) + 4 个 Tab（工作台 / dsh / 插件 / 关于）
+// 全部管理能力经 window.__TAURI__.core.invoke 走真实 IPC（Tauri 只往主 frame
+// 注入 __TAURI__，远程 dsh iframe 拿不到，安全面收窄）。
+// ⌘K/Ctrl+K 循环切换 Tab；Esc 在管理页返回工作台。
 (() => {
   'use strict';
   const $ = (id) => document.getElementById(id);
@@ -8,44 +9,38 @@
   const invoke = (...a) => T.core.invoke(...a);
 
   // ---------------- Tab 切换 ----------------
+  const TAB_NAMES = ['workbench', 'dsh', 'plugins', 'about'];
+  const tabLabels = { workbench: '工作台', dsh: 'dsh', plugins: '插件', about: '关于' };
   const tabs = $('tabs').querySelectorAll('.tab');
-  const tabOf = (name) => {
+
+  function tabOf(name) {
     if (name === 'workbench') {
       document.querySelectorAll('.panel').forEach((p) => p.classList.remove('active'));
       $('activity-workbench').style.display = 'block';
       return;
     }
-    ['general', 'lan', 'plugins', 'update', 'uninstall'].forEach((n) => {
-      const active = n === name;
-      $('panel-' + n).classList.toggle('active', active);
-    });
     $('activity-workbench').style.display = 'none';
-  };
+    TAB_NAMES.slice(1).forEach((n) => {
+      $('panel-' + n).classList.toggle('active', n === name);
+    });
+    // 进入管理页时刷新对应数据（安装状态可能已在后台变化）
+    if (name === 'dsh') refreshDsh();
+    if (name === 'plugins') refreshPlugins();
+  }
   function selectTab(name) {
     tabs.forEach((t) => t.classList.toggle('active', t.dataset.tab === name));
     tabOf(name);
   }
   tabs.forEach((t) => t.addEventListener('click', () => selectTab(t.dataset.tab)));
 
-  // ⌘K / Ctrl+K 命令面板
-  const paletteNames = {
-    workbench: '工作台', general: '常规', lan: '网络',
-    plugins: '插件', update: '更新', uninstall: '卸载',
-  };
+  // ⌘K / Ctrl+K：循环切换；Esc：管理页返回工作台
   window.addEventListener('keydown', (e) => {
     if ((e.metaKey || e.ctrlKey) && (e.key === 'k' || e.key === 'K')) {
       e.preventDefault();
-      const names = ['workbench', 'general', 'lan', 'plugins', 'update', 'uninstall'];
-      const label = '⌘K 跳转：' + names.map((n) => paletteNames[n]).join(' / ');
-      // 用一个轻量原生提示即可（真实命令面板见二期；此处给键盘可达性）
       const cur = [...tabs].find((t) => t.classList.contains('active'));
-      const idx = cur ? names.indexOf(cur.dataset.tab) : 0;
-      const next = names[(idx + 1) % names.length];
-      selectTab(next);
-      const statusEl = document.querySelector('.panel.active .status');
-      if (statusEl) { statusEl.textContent = label; statusEl.className = 'status'; setTimeout(() => (statusEl.textContent = ''), 1600); }
+      const idx = cur ? TAB_NAMES.indexOf(cur.dataset.tab) : 0;
+      selectTab(TAB_NAMES[(idx + 1) % TAB_NAMES.length]);
     }
-    // Esc：管理页返回工作台
     if (e.key === 'Escape') {
       const activePanel = document.querySelector('.panel.active');
       if (activePanel) selectTab('workbench');
@@ -55,7 +50,9 @@
   // ---------------- 工作台 iframe ----------------
   const wb = $('workbenchFrame');
   const wbPlaceholder = $('wbPlaceholder');
+  const setupView = $('setupView');
   let lastUrl = '';
+  let setupActive = false; // 引导视图是否正覆盖工作台
 
   function showPlaceholder() {
     // 先清内联 display 再取消 hidden（hidden=false 但残留 inline display:none
@@ -72,14 +69,14 @@
 
   // 占位层是绝对定位覆盖在 iframe 之上：在 iframe 真正绘制完成（onload）前
   // 一直盖住，把"白屏/空白 iframe"阶段用 spinner 遮住，直到 onload 才撤。
-  // 这修复了"loding 没了 → 白屏 → 又 loding"的闪烁根因：不再 src 一赋值就
-  // 立刻撤占位（此时 iframe 尚未来得及绘制，露出白底）。
   wb.addEventListener('load', () => hidePlaceholder());
   wb.addEventListener('error', () => showPlaceholder());
 
   function loadWorkbench(url) {
     if (!url || url === lastUrl) return;
     lastUrl = url;
+    // dsh:url 事件 = 工作台就绪（引导安装成功后 boot 会发）→ 收起引导视图
+    if (setupActive) hideSetupView();
     showPlaceholder(); // 换端口/重载路径：先盖住，onload 后撤
     wb.src = url;
     wb.focus();
@@ -106,141 +103,312 @@
     } catch (e) { /* 能力缺失/超时：轮询已兜底 */ }
   })();
 
-  // ---------------- 常规 ----------------
-  const cwdEl = $('cwd');
-  const loginBtn = $('btnLogin');
+  // ---------------- 首次引导（dsh 闭包未安装） ----------------
+  const setupStage = $('setupStage');
+  const setupMeta = $('setupMeta');
+  const setupProgress = $('setupProgress');
+  const setupStageArea = $('setupStageArea');
+  const setupError = $('setupError');
+  const setupErrTitle = $('setupErrTitle');
+  const setupErrMsg = $('setupErrMsg');
+  const btnSetupInstall = $('btnSetupInstall');
+  const btnSetupCancel = $('btnSetupCancel');
+  const btnSetupRetry = $('btnSetupRetry');
+  const setupReg = $('setupReg');
+  const setupVer = $('setupVer');
+  const setupAdv = $('setupAdv');
+  let setupCancelled = false;
 
-  function setLoginLabel(on) {
-    loginBtn.textContent = on ? '关闭登录自启' : '开启登录自启';
+  function showSetupView() {
+    setupActive = true;
+    hidePlaceholder();
+    setupView.hidden = false;
+    loadSetupVersions(); // 预填版本下拉（失败仅提示，不阻塞安装主流程）
+  }
+  function hideSetupView() {
+    setupActive = false;
+    setupView.hidden = true;
+    if (!lastUrl) showPlaceholder(); // 引导收起但工作台未就绪：恢复占位 spinner
+  }
+  function setSetupPhase(phase) {
+    // phase: 'stage'（进行中）/ 'error'（失败或取消，可重试）
+    setupStageArea.hidden = phase !== 'stage';
+    setupError.hidden = phase !== 'error';
+  }
+  function showSetupError(title, msg) {
+    setupErrTitle.textContent = title;
+    setupErrMsg.textContent = msg;
+    setSetupPhase('error');
   }
 
-  (async () => {
+  async function loadSetupVersions() {
+    setupVer.innerHTML = '<option value="">加载中…</option>';
+    let list = [];
     try {
-      const st = await invoke('get_shell_state');
-      cwdEl.textContent = st.cwd || '（默认）';
-      setLoginLabel(!!st.login_on);
-    } catch (e) { /* ignore */ }
-  })();
-
-  $('btnChooseWs').addEventListener('click', async () => {
-    try {
-      const st = await invoke('choose_workspace_cmd');
-      cwdEl.textContent = st || '（默认）';
-    } catch (e) { /* user cancelled */ }
-  });
-  $('btnOpenWs').addEventListener('click', () => invoke('open_workspace_cmd').catch(() => {}));
-  $('btnRestart').addEventListener('click', () => invoke('restart_dsh_cmd').catch(() => {}));
-  $('btnOpenLogs').addEventListener('click', () => invoke('open_logs_cmd').catch(() => {}));
-  $('btnBrowser').addEventListener('click', () => invoke('open_browser_cmd').catch(() => {}));
-
-  loginBtn.addEventListener('click', async () => {
-    const next = loginBtn.textContent.indexOf('关闭') === 0 ? false : true;
-    try {
-      await invoke('set_login_cmd', { enable: next });
-      setLoginLabel(next);
-    } catch (e) {
-      showNotify('登录自启设置失败', e.message || e);
+      list = await invoke('list_dsh_versions_cmd');
+    } catch (e) { /* 网络失败：下方给提示项 */ }
+    if (Array.isArray(list) && list.length) {
+      setupVer.innerHTML = '';
+      list.forEach((v) => {
+        const o = document.createElement('option');
+        o.value = v;
+        o.textContent = 'v' + v;
+        setupVer.appendChild(o);
+      });
+    } else {
+      setupVer.innerHTML = '<option value="">未获取到版本列表（检查网络后重试）</option>';
     }
-  });
-
-  // ---------------- 网络（扫码远程连接） ----------------
-  const lanStatus = $('lanStatus');
-  const lanQrBox = $('lanQrBox');
-  const lanQrEl = $('lanQr');
-  const lanAddrRow = $('lanAddrRow');
-  const lanAddrEl = $('lanAddr');
-  const lanTokenRow = $('lanTokenRow');
-  const lanTokenEl = $('lanToken');
-  const lanCopyAddr = $('lanCopyAddr');
-  const lanCopyToken = $('lanCopyToken');
-  const btnLanToggle = $('btnLanToggle');
-  let lanBusy = false;
-
-  function copyText(t) {
-    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).catch(() => {});
   }
-  function renderQr(url) {
-    let ok = false;
-    if (url && window.qrcode) {
-      try {
-        const qr = qrcode(0, 'M');
-        qr.addData(url);
-        qr.make();
-        lanQrEl.innerHTML = qr.createImgTag(6, 8);
-        ok = true;
-      } catch (e) { /* fallthrough */ }
+
+  async function runSetup() {
+    const ver = setupVer.value;
+    if (!ver) {
+      showSetupError('无法开始安装', '版本列表为空。请检查网络连接或更换 Registry 源后重试。');
+      return;
     }
-    if (!ok) lanQrEl.innerHTML = '';
-    return ok;
-  }
-  async function refreshLan() {
-    lanBusy = true;
-    btnLanToggle.disabled = true;
+    const registry = setupReg.value.trim() || 'https://registry.npmjs.org';
+    setupCancelled = false;
+    // 进入进行中态：进度条 + 取消按钮出现，安装按钮锁定
+    setupProgress.hidden = false;
+    btnSetupInstall.disabled = true;
+    btnSetupCancel.hidden = false;
+    btnSetupCancel.disabled = false;
+    btnSetupCancel.textContent = '取消安装';
+    setupAdv.open = false;
+    setupStage.textContent = '正在连接 registry…';
+    setupMeta.textContent = '首次安装约 300MB，请耐心等待';
     try {
-      const st = await invoke('lan_state');
-      const on = !!st.enabled;
-      lanStatus.textContent = on ? '已开启' : '未开启';
-      lanStatus.className = 'status ' + (on ? 'ok' : '');
-      btnLanToggle.textContent = on ? '关闭手机远程连接' : '开启手机远程连接';
-      btnLanToggle.classList.toggle('off', !on);
-      lanQrBox.hidden = !on;
-      lanAddrRow.hidden = !on;
-      lanTokenRow.hidden = !on;
-      lanCopyAddr.hidden = !on;
-      lanCopyToken.hidden = !on;
-      if (on) {
-        renderQr(st.qr_url || '');
-        lanAddrEl.textContent = 'http://' + st.ip + ':' + st.port;
-        lanTokenEl.textContent = st.token || '';
+      await invoke('setup_dsh_cmd', { ver, registry });
+      // 成功：后端 boot 会 emit dsh:url → loadWorkbench 自动切回工作台
+      if (!setupCancelled) {
+        setupStage.textContent = '安装完成，正在启动工作台…';
+        setupMeta.textContent = '';
+        btnSetupCancel.disabled = true;
       }
     } catch (e) {
-      lanStatus.textContent = '读取状态失败：' + (e.message || e);
-      lanStatus.className = 'status err';
-    } finally {
-      lanBusy = false;
-      btnLanToggle.disabled = false;
+      const msg = (e && e.message) || String(e);
+      if (setupCancelled) {
+        showSetupError('已取消', '安装已取消，可重试或调整高级选项后再次安装。');
+      } else {
+        showSetupError('安装失败', msg);
+      }
     }
   }
-  btnLanToggle.addEventListener('click', async () => {
-    if (lanBusy) return;
-    const enable = btnLanToggle.textContent.indexOf('开启') === 0;
-    try {
-      lanStatus.textContent = enable ? '正在开启…' : '正在关闭…';
-      lanStatus.className = 'status';
-      await invoke('lan_toggle', { enable });
-      await refreshLan();
-    } catch (e) {
-      lanStatus.textContent = '操作失败：' + (e.message || e);
-      lanStatus.className = 'status err';
-    }
-  });
-  lanCopyAddr.addEventListener('click', () => copyText(lanAddrEl.textContent));
-  lanCopyToken.addEventListener('click', () => copyText(lanTokenEl.textContent));
 
-  // ---------------- 插件 ----------------
+  btnSetupInstall.addEventListener('click', () => runSetup());
+  btnSetupRetry.addEventListener('click', () => runSetup());
+  setupReg.addEventListener('keydown', (e) => { if (e.key === 'Enter') runSetup(); });
+
+  btnSetupCancel.addEventListener('click', () => {
+    setupCancelled = true;
+    btnSetupCancel.disabled = true;
+    btnSetupCancel.textContent = '正在取消…';
+    setupStage.textContent = '正在取消安装…';
+    invoke('setup_cancel_cmd').catch(() => {});
+  });
+
+  // 进度：后端以阶段文本推送（npm 输出不流式），进度条为不确定态流动动画
+  T.event.listen('dsh:setup-progress', (e) => {
+    if (setupActive) setupStage.textContent = String(e.payload || '');
+  }).catch(() => {});
+
+  // 辅助触发（防竞态兜底）：boot 里未装闭包会发 dsh:need-setup；webview 挂
+  // 监听前发出也不怕——初始化 setup_state_cmd 探测是主通道。
+  T.event.listen('dsh:need-setup', () => {
+    if (!lastUrl && !setupActive) showSetupView();
+  }).catch(() => {});
+
+  // ---------------- dsh 页（版本管理） ----------------
+  const curVersion = $('curVersion');
+  const curBadge = $('curBadge');
+  const dshStatus = $('dshStatus');
+  const updateSection = $('updateSection');
+  const updateVer = $('updateVer');
+  const btnUpdateLatest = $('btnUpdateLatest');
+  const dshVersionsEl = $('dshVersions');
+  const registryVal = $('registryVal');
+  let dshLatest = null;
+
+  function setDshStatus(text, kind) {
+    dshStatus.textContent = text;
+    dshStatus.className = 'status ' + (kind || '');
+  }
+
+  async function refreshDsh() {
+    try {
+      const st = await invoke('get_dsh_state');
+      // st: { current, latest, versions, installing }
+      const current = st.current || '未安装';
+      dshLatest = st.latest || null;
+      curVersion.textContent = current;
+      curBadge.hidden = !current || current === '未安装';
+
+      const hasUpdate = !!dshLatest && dshLatest !== current && current !== '未安装';
+      updateSection.hidden = !hasUpdate;
+      if (hasUpdate) updateVer.textContent = 'v' + dshLatest;
+      btnUpdateLatest.disabled = !!st.installing;
+
+      renderVersions(st.versions || [], current, dshLatest, !!st.installing);
+
+      if (st.installing) {
+        setDshStatus('正在安装新版本…安装完成后工作台自动重启', 'run');
+      } else if (hasUpdate) {
+        setDshStatus('发现新版本 v' + dshLatest + '，可更新', 'acc');
+      } else if (!dshLatest) {
+        // LATEST_DSH 为启动时一次查询的缓存；空 = 离线或检查失败，如实提示
+        setDshStatus('暂无法确认最新版本（离线或启动时检查失败）', 'warn');
+      } else {
+        setDshStatus('已是最新版本', 'ok');
+      }
+    } catch (e) {
+      setDshStatus('读取 dsh 状态失败：' + (e.message || e), 'err');
+    }
+  }
+
+  function renderVersions(versions, current, latest, installing) {
+    dshVersionsEl.innerHTML = '';
+    if (!versions.length) {
+      const empty = document.createElement('div');
+      empty.className = 'empty';
+      empty.textContent = '未获取到可用版本（检查网络或 Registry 源）';
+      dshVersionsEl.appendChild(empty);
+      return;
+    }
+    versions.forEach((v) => {
+      const row = document.createElement('div');
+      row.className = 'list-row';
+
+      const grow = document.createElement('div');
+      grow.className = 'grow';
+      const title = document.createElement('span');
+      title.className = 'row-title mono';
+      title.textContent = 'v' + v;
+      grow.appendChild(title);
+      if (latest && v === latest) {
+        const b = document.createElement('span');
+        b.className = 'badge badge-latest';
+        b.textContent = '最新';
+        grow.appendChild(b);
+      }
+      if (v === current) {
+        const b = document.createElement('span');
+        b.className = 'badge badge-current';
+        b.textContent = '当前';
+        grow.appendChild(b);
+      }
+      row.appendChild(grow);
+
+      const btn = document.createElement('button');
+      btn.className = 'sm';
+      if (v === current) {
+        btn.textContent = '当前版本';
+        btn.disabled = true;
+      } else {
+        btn.textContent = '安装';
+        btn.addEventListener('click', () => updateDsh(v));
+        btn.disabled = installing;
+      }
+      row.appendChild(btn);
+      dshVersionsEl.appendChild(row);
+    });
+  }
+
+  async function updateDsh(ver) {
+    setDshStatus('正在安装 dsh v' + ver + '…（约 300MB，可能较久）', 'run');
+    btnUpdateLatest.disabled = true;
+    try {
+      await invoke('update_dsh_cmd', { ver });
+      // 后端安装成功 → 自动重启工作台（dsh:url 事件驱动 iframe 重载）
+      setDshStatus('安装完成，工作台正在重启…', 'ok');
+    } catch (e) {
+      setDshStatus('安装失败：' + (e.message || e), 'err');
+    } finally {
+      refreshDsh(); // 复位 installing 状态并重渲染列表
+    }
+  }
+
+  $('btnCheckUpdate').addEventListener('click', () => refreshDsh());
+  btnUpdateLatest.addEventListener('click', () => { if (dshLatest) updateDsh(dshLatest); });
+
+  async function refreshRegistry() {
+    try {
+      const st = await invoke('get_shell_state');
+      registryVal.textContent = st.registry || 'https://registry.npmjs.org';
+    } catch (e) {
+      registryVal.textContent = '未知';
+    }
+  }
+
+  // ---------------- 插件页 ----------------
   const pkgEl = $('pkg');
   const btnInstall = $('btnInstall');
   const btnRemove = $('btnRemove');
   const pluginStatus = $('pluginStatus');
   const pluginOutput = $('pluginOutput');
-  let unlistenPlugin = null;
+  const pluginListEl = $('pluginList');
+  const pluginCountEl = $('pluginCount');
+  const pluginEmpty = $('pluginEmpty');
+  const logClear = $('logClear');
+  let pluginBusy = false;
 
   function setPluginStatus(text, kind) {
     pluginStatus.textContent = text;
     pluginStatus.className = 'status ' + (kind || '');
   }
   function setPluginBusy(busy) {
+    pluginBusy = busy;
     btnInstall.disabled = busy;
     btnRemove.disabled = busy;
     pkgEl.disabled = busy;
   }
-  try {
-    T.event.listen('dsh:plugin-output', (e) => {
-      pluginOutput.hidden = false;
-      pluginOutput.textContent += e.payload + '\n';
-      pluginOutput.scrollTop = pluginOutput.scrollHeight;
-    }).then((fn) => { unlistenPlugin = fn; }).catch(() => {});
-  } catch (e) { /* 降级 */ }
+
+  async function refreshPlugins() {
+    try {
+      const list = await invoke('plugin_list_cmd');
+      const arr = Array.isArray(list) ? list : [];
+      pluginListEl.innerHTML = '';
+      pluginCountEl.textContent = arr.length + ' 个插件';
+      pluginEmpty.hidden = arr.length > 0;
+      arr.forEach((p) => {
+        const row = document.createElement('div');
+        row.className = 'list-row';
+
+        const grow = document.createElement('div');
+        grow.className = 'grow';
+        const title = document.createElement('span');
+        title.className = 'row-title mono';
+        title.textContent = p.name;
+        grow.appendChild(title);
+        if (p.installed) {
+          const b = document.createElement('span');
+          b.className = 'badge badge-installed';
+          b.textContent = '已安装';
+          grow.appendChild(b);
+        }
+        row.appendChild(grow);
+
+        const meta = document.createElement('span');
+        meta.className = 'row-meta mono';
+        meta.textContent = p.version ? 'v' + p.version : '';
+        row.appendChild(meta);
+        pluginListEl.appendChild(row);
+      });
+    } catch (e) {
+      pluginCountEl.textContent = '读取失败';
+      setPluginStatus('读取插件列表失败：' + (e.message || e), 'err');
+    }
+  }
+
+  // 实时输出：插件构建脚本的行级推送（后端已自动重启工作台）
+  T.event.listen('dsh:plugin-output', (e) => {
+    pluginOutput.hidden = false;
+    pluginOutput.textContent += String(e.payload || '') + '\n';
+    pluginOutput.scrollTop = pluginOutput.scrollHeight;
+  }).catch(() => {});
+  logClear.addEventListener('click', () => { pluginOutput.textContent = ''; });
+  logClear.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); pluginOutput.textContent = ''; }
+  });
 
   async function runPlugin(op) {
     const name = pkgEl.value.trim();
@@ -252,81 +420,134 @@
     try {
       const text = await invoke('plugin_op', { op, pkg: name });
       pluginOutput.textContent = text;
-      setPluginStatus(op === 'add' ? '安装完成，请重启工作台生效' : '卸载完成，请重启工作台生效', 'ok');
+      setPluginStatus('已完成，工作台正在重启…', 'ok');
     } catch (e) {
       const msg = typeof e === 'string' ? e : (e && e.message) || String(e);
       pluginOutput.textContent = msg;
       setPluginStatus('操作失败，详见下方输出', 'err');
     } finally {
       setPluginBusy(false);
+      refreshPlugins();
     }
   }
   btnInstall.addEventListener('click', () => runPlugin('add'));
   btnRemove.addEventListener('click', () => runPlugin('remove'));
   pkgEl.addEventListener('keydown', (e) => { if (e.key === 'Enter') runPlugin('add'); });
 
-  // ---------------- 更新 ----------------
-  const curVersion = $('curVersion');
-  const updateStatus = $('updateStatus');
-  (async () => {
+  // ---------------- 关于页（App 更新 / 卸载） ----------------
+  const appVersion = $('appVersion');
+  const appStatus = $('appStatus');
+  const btnCheckApp = $('btnCheckApp');
+  const btnAppDownload = $('btnAppDownload');
+  let appLatest = null;
+
+  function setAppStatus(text, kind) {
+    appStatus.textContent = text;
+    appStatus.className = 'status about-status ' + (kind || '');
+  }
+
+  async function refreshApp() {
     try {
       const st = await invoke('get_shell_state');
-      curVersion.textContent = st.dsh_version || '未知';
-    } catch (e) { curVersion.textContent = '未知'; }
-  })();
-  $('btnCheckUpdate').addEventListener('click', async () => {
-    updateStatus.textContent = '正在检查…';
-    updateStatus.className = 'status';
+      appVersion.textContent = 'v' + st.app_version;
+    } catch (e) {
+      appVersion.textContent = '未知';
+    }
+  }
+
+  $('btnCheckApp').addEventListener('click', async () => {
+    btnCheckApp.disabled = true;
+    setAppStatus('正在检查更新…');
     try {
-      const r = await invoke('check_update_cmd');
-      if (r === 'updating') {
-        updateStatus.textContent = '发现新版本，已开始更新';
-        updateStatus.className = 'status ok';
-      } else if (r === 'cancelled') {
-        updateStatus.textContent = '已取消更新';
-        updateStatus.className = 'status';
+      const v = await invoke('check_app_update_cmd');
+      if (v) {
+        appLatest = v;
+        btnAppDownload.disabled = false;
+        btnAppDownload.textContent = '下载并安装 v' + v;
+        setAppStatus('发现新版本 v' + v, 'acc');
       } else {
-        updateStatus.textContent = '已是最新版本';
-        updateStatus.className = 'status ok';
+        appLatest = null;
+        btnAppDownload.disabled = true;
+        btnAppDownload.textContent = '下载并安装更新';
+        setAppStatus('已是最新版本', 'ok');
       }
     } catch (e) {
-      updateStatus.textContent = '检查更新失败：' + (e.message || e);
-      updateStatus.className = 'status err';
+      setAppStatus('检查更新失败：' + (e.message || e), 'err');
+    } finally {
+      btnCheckApp.disabled = false;
     }
   });
 
-  // ---------------- 卸载 ----------------
+  btnAppDownload.addEventListener('click', async () => {
+    btnAppDownload.disabled = true;
+    setAppStatus('正在下载并安装更新…安装完成后应用将自动重启');
+    try {
+      await invoke('app_update_cmd');
+      // 成功即退出当前实例（安装器/新版负责启动）；无需刷新
+    } catch (e) {
+      setAppStatus('更新失败：' + (e.message || e), 'err');
+      btnAppDownload.disabled = !appLatest;
+    }
+  });
+
+  $('btnOpenReleases').addEventListener('click', () => {
+    invoke('open_browser_cmd').catch((e) => setAppStatus('打开下载页失败：' + (e.message || e), 'err'));
+  });
+
+  // ---------------- 卸载（两档 + 行内确认） ----------------
+  const btnUninstallKeep = $('btnUninstallKeep');
+  const btnUninstallWipe = $('btnUninstallWipe');
+  const uninstallConfirm = $('uninstallConfirm');
+  const confirmText = $('confirmText');
   const uninstallStatus = $('uninstallStatus');
-  async function runUninstall(wipe) {
+  let uninstallMode = null; // 'keep' | 'wipe'
+
+  function askUninstall(mode) {
+    uninstallMode = mode;
+    confirmText.textContent = mode === 'wipe'
+      ? '确认完全卸载？将删除 ~/.dsh 全部数据，此操作不可撤销。'
+      : '确认卸载应用？将保留 ~/.dsh 配置与数据。';
+    uninstallConfirm.hidden = false;
+  }
+  $('confirmNo').addEventListener('click', () => { uninstallConfirm.hidden = true; });
+
+  function runUninstall() {
+    const wipe = uninstallMode === 'wipe';
+    uninstallConfirm.hidden = true;
     uninstallStatus.textContent = '正在卸载…';
     uninstallStatus.className = 'status';
     [btnUninstallKeep, btnUninstallWipe].forEach((b) => { b.disabled = true; });
-    try {
-      await invoke('uninstall_run', { wipe });
-      // App 即将退出；此处不再刷新
-    } catch (e) {
+    invoke('uninstall_run', { wipe }).catch((e) => {
       uninstallStatus.textContent = '卸载未完成：' + (e.message || e);
       uninstallStatus.className = 'status err';
       [btnUninstallKeep, btnUninstallWipe].forEach((b) => { b.disabled = false; });
-    }
+    });
   }
-  $('btnUninstallKeep').addEventListener('click', () => runUninstall(false));
-  $('btnUninstallWipe').addEventListener('click', () => runUninstall(true));
+  $('confirmYes').addEventListener('click', () => runUninstall());
+  btnUninstallKeep.addEventListener('click', () => askUninstall('keep'));
+  btnUninstallWipe.addEventListener('click', () => askUninstall('wipe'));
 
-  function showNotify(msg, kind) {
-    const s = document.querySelector('.panel.active .status') || $('updateStatus') || $('lanStatus') || $('pluginStatus');
-    if (s) { s.textContent = msg; s.className = 'status ' + (kind || 'err'); }
-  }
+  // ---------------- 初始渲染 + 引导探测 ----------------
+  (async () => {
+    // 引导状态探测（主通道）：current 为 None → 显示引导视图。
+    // dsh:need-setup 事件可能在 webview 挂监听前发出而丢失，仅作辅助。
+    try {
+      const st = await invoke('setup_state_cmd');
+      if (!st.current) showSetupView();
+    } catch (e) { /* 探测失败：依赖 dsh:need-setup 事件与工作台轮询兜底 */ }
 
-  // 初始渲染（网络状态）
-  refreshLan();
+    // 各页初始数据
+    refreshDsh();
+    refreshRegistry();
+    refreshApp();
+    refreshPlugins();
+  })();
 
-  // 暴露给主进程：从托盘/命令面板打开指定 Tab
-  window.__openShellTab = selectTab;
+  // 主进程经 shell:tab 事件切 Tab（托盘「管理台」→ dsh）
   try {
     T.event.listen('shell:tab', (ev) => {
       const n = ev.payload;
-      if (n && paletteNames[n]) selectTab(n);
+      if (n && tabLabels[n]) selectTab(n);
     });
   } catch (e) { /* 忽略 */ }
 })();
