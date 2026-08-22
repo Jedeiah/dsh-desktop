@@ -88,7 +88,7 @@ apps/desktop/src-tauri/src/
   update.rs      # 删除（逻辑并入 dsh.rs）
   # main.rs 中 LAN 相关逻辑一并删除：LAN_CHILD/LAN_ON/LAN_GEN/LAN_ITEM、
   # mdns 子进程、lan_* settings 字段及对应 command（无独立 lan 文件）
-ui/
+ui/                 # 实际位于 apps/desktop/ui/（tauri.conf.json frontendDist: ../ui）
   shell.html/js  # 主壳页：Tab = 工作台 / dsh / 插件 / 关于
   setup.html/js  # 首次引导页：下载安装进度、高级版本选择
   theme.css      # 共享设计系统（视觉稿由 open-design 生成后落地）

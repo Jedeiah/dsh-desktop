@@ -127,12 +127,27 @@ pub fn cmp_versions(a: &str, b: &str) -> Ordering {
         Ordering::Equal => {}
         o => return o,
     }
-    // release (no suffix) > pre-release
+    // release (no suffix) > pre-release; pre-release suffix compared with
+    // numeric segment awareness: rc.10 > rc.9 (string compare would say rc.9
+    // > rc.10, which mis-orders real version lists)
     match (asuf.is_empty(), bsuf.is_empty()) {
         (true, true) => Ordering::Equal,
         (true, false) => Ordering::Greater,
         (false, true) => Ordering::Less,
-        (false, false) => asuf.cmp(&bsuf),
+        (false, false) => {
+            let an: Vec<&str> = asuf.split('.').collect();
+            let bn: Vec<&str> = bsuf.split('.').collect();
+            for (x, y) in an.iter().zip(bn.iter()) {
+                match (x.parse::<u64>(), y.parse::<u64>()) {
+                    (Ok(a), Ok(b)) if a != b => return a.cmp(&b),
+                    _ => match x.cmp(y) {
+                        Ordering::Equal => {}
+                        o => return o,
+                    },
+                }
+            }
+            an.len().cmp(&bn.len())
+        }
     }
 }
 
@@ -257,10 +272,11 @@ mod tests {
     fn installed_versions_lists_desc() {
         let root = tmp().join("installed");
         let _ = std::fs::remove_dir_all(&root);
+        // 规格 4.3 布局：闭包在 <app-data>/dsh/v<ver>/
         for v in ["v0.1.0-rc.7", "v0.1.1-rc.1", "v0.1.1-rc.2"] {
-            std::fs::create_dir_all(root.join(v)).unwrap();
+            std::fs::create_dir_all(root.join("dsh").join(v)).unwrap();
         }
-        std::fs::create_dir_all(root.join("npm-cache")).unwrap(); // 非 v* 应忽略
+        std::fs::create_dir_all(root.join("dsh/npm-cache")).unwrap(); // 非 v* 应忽略
         let p = crate::Paths {
             resources: tmp(),
             app_data: root.clone(),
@@ -276,14 +292,20 @@ mod tests {
     fn current_closure_requires_valid_dir() {
         let root = tmp().join("current_marker");
         let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(root.join("v0.1.1-rc.2")).unwrap();
-        std::fs::write(root.join("current"), "v0.1.1-rc.2\n").unwrap();
+        // current 标记 + 闭包目录 + node_modules/@deepseek-ai/dsh 三者齐备才算有效
+        let ver_dir = root.join("dsh/v0.1.1-rc.2");
+        std::fs::create_dir_all(ver_dir.join("node_modules/@deepseek-ai/dsh")).unwrap();
+        std::fs::create_dir_all(root.join("dsh/npm-cache")).unwrap();
+        std::fs::write(root.join("dsh/current"), "v0.1.1-rc.2\n").unwrap();
         let p = crate::Paths { resources: tmp(), app_data: root.clone() };
         assert_eq!(
             current_closure(&p).unwrap().file_name().unwrap().to_string_lossy(),
             "v0.1.1-rc.2"
         );
-        std::fs::write(root.join("current"), "v0.9.9\n").unwrap(); // 指向不存在 → None
+        std::fs::write(root.join("dsh/current"), "v0.9.9\n").unwrap(); // 指向不存在 → None
+        assert!(current_closure(&p).is_none());
+        std::fs::write(root.join("dsh/current"), "v0.1.1-rc.2\n").unwrap();
+        std::fs::remove_dir_all(ver_dir.join("node_modules")).unwrap(); // 无 node_modules → None
         assert!(current_closure(&p).is_none());
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -330,10 +352,24 @@ pub fn install_version(
     progress("正在校验新版本…");
     std::fs::write(tmp.join("VERSION"), ver).map_err(|e| format!("写版本标记失败: {e}"))?;
 
+    // promote tmp -> v<ver> with overwrite safety: the existing dir is moved
+    // aside first, so any failure below never leaves the running install
+    // half-removed (spec 6: 任何失败不动当前可用版本)。
+    let old = dsh_dir.join(format!("v{ver}.old"));
     if final_dir.exists() {
-        std::fs::remove_dir_all(&final_dir).map_err(|e| format!("清理旧版本目录失败: {e}"))?;
+        let _ = std::fs::remove_dir_all(&old);
+        std::fs::rename(&final_dir, &old).map_err(|e| format!("移开旧版本目录失败: {e}"))?;
     }
-    std::fs::rename(&tmp, &final_dir).map_err(|e| format!("发布新版本目录失败: {e}"))?;
+    if let Err(e) = std::fs::rename(&tmp, &final_dir) {
+        // 恢复被移开的旧目录，保证当前版本仍然可用
+        if old.exists() {
+            let _ = std::fs::rename(&old, &final_dir);
+        }
+        return Err(format!("发布新版本目录失败: {e}"));
+    }
+    if old.exists() {
+        let _ = std::fs::remove_dir_all(&old);
+    }
 
     let cur_marker = dsh_dir.join("current");
     let prev_ver = std::fs::read_to_string(&cur_marker)
@@ -350,7 +386,7 @@ pub fn install_version(
     if let Ok(entries) = std::fs::read_dir(&dsh_dir) {
         for e in entries.flatten() {
             let name = e.file_name().to_string_lossy().to_string();
-            if !name.starts_with('v') || name.ends_with("-tmp") {
+            if !name.starts_with('v') || name.ends_with("-tmp") || name.ends_with(".old") {
                 continue;
             }
             let keep = name == format!("v{ver}") || Some(&name) == prev_ver.as_ref();
@@ -368,6 +404,27 @@ pub fn install_version(
 `install_and_verify`（迁移自 update.rs，加 `progress` 回调；其余逻辑原样）：
 
 ```rust
+/// The npm install child PID while an install is running (for cancel).
+static SETUP_CHILD: Mutex<Option<u32>> = Mutex::new(None);
+
+/// Cancel a running install (kill the npm child; install_version then fails,
+/// cleans tmp, and the caller can retry). Best-effort per platform.
+pub fn cancel_install() {
+    let pid = SETUP_CHILD.lock().unwrap().take();
+    if let Some(pid) = pid {
+        #[cfg(unix)]
+        {
+            let _ = unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM) };
+        }
+        #[cfg(windows)]
+        {
+            let _ = std::process::Command::new("taskkill")
+                .args(["/PID", &pid.to_string(), "/T", "/F"])
+                .spawn();
+        }
+    }
+}
+
 fn install_and_verify(
     p: &Paths,
     target: &Path,
@@ -388,7 +445,7 @@ fn install_and_verify(
     {
         cmd = crate::no_console(cmd);
     }
-    let status = cmd
+    let mut child = cmd
         .arg(&npm)
         .arg("install")
         .arg("--prefix")
@@ -403,8 +460,12 @@ fn install_and_verify(
         .current_dir(target)
         .stdout(Stdio::null())
         .stderr(Stdio::inherit())
-        .status()
+        .spawn()
         .map_err(|e| format!("运行内置 npm 失败: {e}"))?;
+    // 记录子进程 PID 供 setup_cancel_cmd 取消；wait 结束后清除
+    *SETUP_CHILD.lock().unwrap() = child.id();
+    let status = child.wait().map_err(|e| format!("等待内置 npm 失败: {e}"))?;
+    *SETUP_CHILD.lock().unwrap() = None;
     if !status.success() {
         return Err(format!("npm install @deepseek-ai/dsh@{ver} 失败 (exit {status})"));
     }
@@ -501,13 +562,20 @@ pub fn check_update(
 
 - [ ] **Step 4: 改造 main.rs 引用并删除 update.rs**
 
-1. `mod update;` → `mod dsh;`
-2. 全部 `update::` 引用改 `crate::dsh::`（`update::app_data_from_home`、`update::closure_version`、`update::check_update`、`update::registry_url`、`update::apply_update`、`update::notify`）。
+1. `mod update;` → `mod dsh;`；`use std::process::{Command, Stdio};` 保留在 dsh.rs。
+2. `update::` 引用逐一改写：
+   - `update::app_data_from_home`（main.rs:141/309）→ `crate::dsh::app_data_from_home`
+   - `update::closure_version`（main.rs:1457）→ `crate::dsh::closure_version`
+   - `update::check_update`（main.rs:1542/1704/2580）→ `crate::dsh::check_update`
+   - `update::registry_url`（main.rs:1551/2594）→ `crate::registry::registry_url`
+   - `update::apply_update`（main.rs:1552/2595）→ `crate::dsh::install_version(&p, &ver, &reg, &|_msg| {})`（`check_update_cmd` 与 24h 检查的「装完重启」行为在 Task 4 的 `update_dsh_cmd` 统一承载；本任务先以 `install_version` 替换、保持编译与运行语义：装完调用 `restart_dsh` 的重启逻辑保留在 `check_update_cmd` 内）
+   - `update::notify`（main.rs:1554/1557/1645/1672/1681/1705/2012/2017/2266/2457）→ `notify`（迁入 main.rs 的 `pub(crate) fn notify`，内容原样）
 3. `notify` 函数从 update.rs 迁入 main.rs（改成 `pub(crate) fn notify(title: &str, body: &str)`，内容原样），main.rs 内原 `update::notify(...)` 调用改 `notify(...)`。
-4. main.rs 中 `active_closure`、`resolve_closure`、`closure_marker` 三个函数删除（已被 `dsh::current_closure` 替代）；调用点（`get_shell_state`、`check_update_cmd` 等）改 `crate::dsh::current_closure`。
-5. 让 `paths_from_app`/`paths_from_cli`/`node_bin`/`no_console`/`mlock`/`logln`/`home_dir` 以及 `boot`/`spawn_dsh`/`kill_dsh`/`restart_dsh`/`reveal_main_window`/`WINDOW_LABEL`/`APP_ID` 变为 `pub(crate)`（供 dsh.rs、plugin.rs、appupdate.rs 使用）。
-6. 删除 `apps/desktop/src-tauri/src/update.rs`。
-7. 此时 `check_update_cmd`（main.rs 1538 行附近）与 24h 定时检查、卸载处的 `check_update`/`apply_update`/`notify` 调用全部保持原逻辑（引用已改），**编译通过即可**——这些 command 的最终形态在 Task 4/7 处理。
+4. main.rs 中 `active_closure`、`resolve_closure`、`closure_marker`、`resolve_current`（main.rs:545）四个函数删除（已被 `dsh::current_closure` 替代）；调用点改 `crate::dsh::current_closure`。
+5. 让 `paths_from_app`/`paths_from_cli`/`node_bin`/`no_console`/`mlock`/`logln`/`home_dir` 以及 `boot`/`spawn_dsh`/`kill_dsh`/`restart_dsh`/`reveal_main_window`/`WINDOW_LABEL`/`APP_ID` 变为 `pub(crate)`（供 dsh.rs、plugin.rs、appupdate.rs 使用）。`logln` 宏（main.rs:205 `macro_rules! logln`）定义在 `mod` 声明之后、跨模块不可见——**外部模块一律用 `crate::logln(&format!(...))` 函数形式**，不依赖宏导出。
+6. `run_cli_hooks`（main.rs:2576）改写：`--self-update-check` → `crate::dsh::check_update`（输出格式不变）；`--self-apply-update` → `crate::dsh::install_version(&p, &ver, &reg, &|_msg| {})`（输出 `APPLIED {ver}` 不变）。`--self-login-item` 分支与 `set_login_item_core` 保留到 Task 7 随登录自启一并删除。保留理由：README 记录的无头验证工具，App 内版本管理上线后仍可用于脚本化验证。
+7. 删除 `apps/desktop/src-tauri/src/update.rs`。
+8. 此时 `check_update_cmd`（main.rs 1538 行附近）与 24h 定时检查、卸载处的调用全部保持原逻辑（引用已改），**编译通过即可**——这些 command 的最终形态在 Task 4/7 处理。
 
 - [ ] **Step 5: 编译 + 测试**
 
@@ -536,7 +604,8 @@ git commit -m "refactor: update.rs 迁移为 dsh.rs 闭包管理（install_versi
   - `#[tauri::command] async fn setup_dsh_cmd(app: AppHandle, ver: String, registry: String) -> Result<(), String>` — 安装指定版本；进度经 `app.emit("dsh:setup-progress", msg)` 推送；成功后 `boot(app)` 启动工作台
   - `#[tauri::command] fn setup_state_cmd(app: AppHandle) -> SetupState` — `{ installing: bool, current: Option<String> }`（installing 为全局 `SETUP_BUSY` 状态）
   - `#[tauri::command] fn list_dsh_versions_cmd(app: AppHandle) -> Vec<String>` — `registry::list_versions`（失败返回空 vec）
-- 事件：`"dsh:need-setup"`（payload `()`）——boot 发现无闭包时发出
+  - `#[tauri::command] fn setup_cancel_cmd()` — 调用 `crate::dsh::cancel_install()` 终止进行中的 npm 安装（规格 5.1「可取消」）；取消后安装返回 Err → tmp 清理 → 引导页可重试
+- 事件：`"dsh:need-setup"`（payload `()`）——boot 发现无闭包时发出（仅辅助；shell.js 初始化先查 `setup_state_cmd`，见 Task 9，避免事件在监听前发出而丢失）
 - 全局状态：`static SETUP_BUSY: AtomicBool`（防重复安装）
 
 - [ ] **Step 1: 修复资源根探测（瘦壳后无 `resources/dsh` 目录）**
@@ -598,9 +667,10 @@ async fn setup_dsh_cmd(app: AppHandle, ver: String, registry: String) -> Result<
             let _ = app2.emit("dsh:setup-progress", msg);
         })
     })
-    .await
-    .map_err(|e| format!("安装线程异常：{e}"))?;
+    .await;
+    // join 失败（线程 panic）也必须在返回前释放锁，否则永久锁死（审查项）
     SETUP_BUSY.store(false, Ordering::SeqCst);
+    result.map_err(|e| format!("安装线程异常：{e}"))??;
     if let Err(e) = result {
         return Err(e);
     }
@@ -717,10 +787,10 @@ async fn update_dsh_cmd(app: AppHandle, ver: String) -> Result<(), String> {
         let reg = crate::registry::registry_url(load_settings_at(&p.app_data).registry.as_deref());
         crate::dsh::install_version(&p, &ver, &reg, &|_msg| {})
     })
-    .await
-    .map_err(|e| format!("安装线程异常：{e}"))?;
+    .await;
+    // join 失败（线程 panic）也必须在返回前释放锁（审查项）
     SETUP_BUSY.store(false, Ordering::SeqCst);
-    result?;
+    result.map_err(|e| format!("安装线程异常：{e}"))??;
     // 自动重启工作台（新版本生效）
     let app2 = app.clone();
     let _ = app2.run_on_main_thread(move || restart_dsh(&app2));
@@ -862,8 +932,10 @@ pub fn list_installed_plugins(profile_dir: &std::path::Path) -> Vec<PluginInfo> 
 // 以下从 main.rs 迁移（内容原样，仅改 crate 路径与自动重启）：
 //   valid_pkg_name, ensure_pnpm_workspace, extract_pkg_names,
 //   prepend_path, bundled_pnpm_file_name, clean_empty_dirs_under,
-//   remove_empty_tree, run_dsh_plugin
+//   remove_empty_tree, tail_text（run_dsh_plugin 依赖，必须一并迁移！）, run_dsh_plugin
 // 迁移后这些函数保持私有（fn 而非 pub），plugin_op 内部使用。
+// 注意：logln 宏跨模块不可见（宏定义在 main.rs 的 mod 声明之后），
+// 本模块内一律用 `crate::logln(&format!(...))` 函数形式。
 ```
 
 `plugin_op`（迁移后改造尾部）：
@@ -900,7 +972,7 @@ pub async fn plugin_op(
             if extra.is_empty() {
                 break;
             }
-            crate::logln!("[plugin] auto-approving build scripts: {extra:?}");
+            crate::logln(&format!("[plugin] auto-approving build scripts: {extra:?}"));
             (output, success) = run_dsh_plugin(&app, &op, &pkg, &extra)?;
         }
         if !success {
@@ -988,11 +1060,20 @@ mod tests {
 
     #[test]
     fn asset_url_built_per_platform() {
-        let url = asset_url("0.3.1").unwrap();
-        #[cfg(target_os = "macos")]
-        assert!(url.contains("DeepSeek.Harness_0.3.1_") && url.ends_with(".dmg"), "macOS: {url}");
+        // macOS CI 仅出 arm64 产物；x86_64 mac 无产物 → None（手动兜底）
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        {
+            let url = asset_url("0.3.1").unwrap();
+            assert!(url.contains("DeepSeek.Harness_0.3.1_aarch64.dmg"), "macOS arm64: {url}");
+        }
+        #[cfg(all(target_os = "macos", not(target_arch = "aarch64")))]
+        assert!(asset_url("0.3.1").is_none(), "macOS x86_64 无 CI 产物");
         #[cfg(target_os = "windows")]
-        assert!(url.ends_with("DeepSeek.Harness_0.3.1_x64-setup.exe"), "Windows: {url}");
+        assert!(
+            asset_url("0.3.1").unwrap().ends_with("DeepSeek.Harness_0.3.1_x64-setup.exe"),
+            "Windows: {}",
+            asset_url("0.3.1").unwrap()
+        );
     }
 }
 ```
@@ -1023,19 +1104,18 @@ pub fn parse_tag_from_effective_url(final_url: &str) -> Option<String> {
 
 /// Download URL for the current platform's installer (naming mirrors
 /// release.yml + scripts/install.sh: GitHub replaces spaces with dots).
+/// macOS CI 仅构建 arm64（macos-14 runner）——x86_64 无对应产物，返回 None，
+/// 用户走「关于页手动下载」兜底（规格 5.3）。
 pub fn asset_url(ver: &str) -> Option<String> {
     let base = format!("https://github.com/{REPO}/releases/download/v{ver}");
-    #[cfg(target_os = "macos")]
-    let name = {
-        #[cfg(target_arch = "aarch64")]
-        let arch = "aarch64";
-        #[cfg(target_arch = "x86_64")]
-        let arch = "x86_64";
-        format!("DeepSeek.Harness_{ver}_{arch}.dmg")
-    };
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    let name = format!("DeepSeek.Harness_{ver}_aarch64.dmg");
     #[cfg(target_os = "windows")]
     let name = format!("DeepSeek.Harness_{ver}_x64-setup.exe");
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    #[cfg(not(any(
+        all(target_os = "macos", target_arch = "aarch64"),
+        target_os = "windows"
+    )))]
     let name = return None;
     Some(format!("{base}/{name}"))
 }
@@ -1052,15 +1132,27 @@ pub fn latest_app_version() -> Result<String, String> {
         .ok_or_else(|| format!("无法从响应 URL 解析版本：{final_url}"))
 }
 
-/// Stream-download `url` to `dest`; returns bytes written. Refuses >2GB.
+/// Stream-download `url` to `dest`; verifies size against Content-Length when
+/// the server provides it (规格 5.3：校验大小与 asset 一致；缺失/不符即失败清理，
+/// 杜绝静默截断)。大文件下载用 30 分钟总超时——ureq 的 timeout 覆盖整个请求，
+/// 数十秒的默认值必然中断数百 MB 的安装包下载。
 pub fn download_installer(url: &str, dest: &Path) -> Result<u64, String> {
     let resp = ureq::get(url)
-        .timeout(Duration::from_secs(30))
+        .timeout(Duration::from_secs(1800))
         .call()
         .map_err(|e| format!("下载失败: {e}"))?;
+    let expected = resp
+        .header("Content-Length")
+        .and_then(|s| s.parse::<u64>().ok());
     let mut reader = resp.into_reader().take(2 << 30);
     let mut f = std::fs::File::create(dest).map_err(|e| format!("创建临时文件失败: {e}"))?;
     let n = std::io::copy(&mut reader, &mut f).map_err(|e| format!("写入失败: {e}"))?;
+    if let Some(exp) = expected {
+        if n != exp {
+            let _ = std::fs::remove_file(dest);
+            return Err(format!("下载不完整: 期望 {exp} 字节, 实际 {n}"));
+        }
+    }
     Ok(n)
 }
 
@@ -1129,10 +1221,12 @@ fn install_macos(dmg: &Path) -> Result<(), String> {
     // 3. copy (plain first; escalate via osascript if permission denied)
     let cp = Command::new("ditto").arg(&src).arg(&dst).status();
     if !matches!(cp, Ok(s) if s.success()) {
+        // 路径含单引号时按 shell 单引号规则转义（' → '\''），防提权脚本损坏
+        let esc = |p: &Path| p.display().to_string().replace('\'', "'\\''");
         let script = format!(
             "do shell script \"ditto '{}' '{}'\" with administrator privileges",
-            src.display(),
-            dst.display()
+            esc(&src),
+            esc(&dst)
         );
         let ok = Command::new("osascript")
             .args(["-e", &script])
@@ -1185,7 +1279,7 @@ git commit -m "feat: App 自身更新（Releases 检查 + DMG/EXE 下载安装�
 ### Task 7: 功能清理（LAN / 常规 / settings / 资源 / CI / 依赖）
 
 **Files:**
-- Modify: `apps/desktop/src-tauri/src/main.rs`、`apps/desktop/src-tauri/Cargo.toml`、`scripts/prepare-resources.sh`、`scripts/prepare-resources.ps1`、`.github/workflows/release.yml`、`apps/desktop/ui/shell.html`、`apps/desktop/ui/shell.js`
+- Modify: `apps/desktop/src-tauri/src/main.rs`、`apps/desktop/src-tauri/Cargo.toml`、`scripts/prepare-resources.sh`、`scripts/prepare-resources.ps1`、`.github/workflows/release.yml`
 - Delete: `.github/workflows/upstream-check.yml`、`dsh.version`、`apps/desktop/src-tauri/lan-proxy.js`、`apps/desktop/src-tauri/mdns-advertise.js`、`apps/desktop/src-tauri/qrcode.js`、`apps/desktop/src-tauri/resources/lan-proxy.js`、`apps/desktop/src-tauri/resources/mdns-advertise.js`、`apps/desktop/src-tauri/resources/qrcode.js`、`apps/desktop/ui/qrcode.js`、`apps/desktop/src-tauri/resources/dsh/`（整个目录）
 - Test: `cargo test` 全绿 + `cargo build` 无未使用告警
 
@@ -1195,7 +1289,7 @@ git commit -m "feat: App 自身更新（Releases 检查 + DMG/EXE 下载安装�
 
 - [ ] **Step 2: main.rs 删除「常规」相关**
 
-删除：`login_item_enabled`/`set_login_item` 及登录自启逻辑、`choose_workspace_cmd`、`open_workspace_cmd`、`open_logs_cmd`、`restart_dsh_cmd`、`set_login_cmd`（**保留内部** `kill_dsh`/`restart_dsh`/`spawn_dsh`/`boot`/`open_browser_cmd`）；`Settings` 中 `default_cwd`/`login_on` 字段与读写；`ShellState` 精简为：
+删除：`login_item_enabled`/`set_login_item`/`set_login_item_core` 及登录自启逻辑、`choose_workspace_cmd`、`open_workspace_cmd`、`open_logs_cmd`、`restart_dsh_cmd`、`set_login_cmd`（**保留内部** `kill_dsh`/`restart_dsh`/`spawn_dsh`/`boot`/`open_browser_cmd`）；`run_cli_hooks` 中 `--self-login-item` 分支删除；`Settings` 中 `default_cwd` 字段与读写；`ShellState` 中 `login_on` 字段（注意：`login_on` 是 ShellState 的字段，不在 Settings 里）与读写；`ShellState` 精简为：
 
 ```rust
 #[derive(Serialize)]
@@ -1287,13 +1381,13 @@ git commit -m "design: 壳页 UI 设计稿（open-design）— 工作台/dsh/插
 - Test: 手动回归（浏览器打开 `ui/shell.html` 无法独立跑——依赖 Tauri IPC；验收 = `cargo tauri build` 产物运行 + 回归清单）
 
 **Interfaces:**
-- Consumes: `get_dsh_state`、`update_dsh_cmd`、`setup_dsh_cmd`、`setup_state_cmd`、`list_dsh_versions_cmd`、`plugin_op`、`plugin_list_cmd`、`check_app_update_cmd`、`app_update_cmd`、`get_shell_state`、`get_dsh_url`、`uninstall_run`、事件 `dsh:url`、`dsh:need-setup`、`dsh:setup-progress`、`dsh:plugin-output`、`shell:tab`
+- Consumes: `get_dsh_state`、`update_dsh_cmd`、`setup_dsh_cmd`、`setup_state_cmd`、`setup_cancel_cmd`、`list_dsh_versions_cmd`、`plugin_op`、`plugin_list_cmd`、`check_app_update_cmd`、`app_update_cmd`、`get_shell_state`、`get_dsh_url`、`open_browser_cmd`、`uninstall_run`、事件 `dsh:url`、`dsh:need-setup`、`dsh:setup-progress`、`dsh:plugin-output`、`shell:tab`
 
 - [ ] **Step 1: shell.html 重构为 4 Tab + 引导视图**
 
 - Tab 列表改为：`工作台 / dsh / 插件 / 关于`（删 `常规`、`网络`、`更新`、`卸载` Tab；卸载入口移入关于页）
-- 工作台 activity 区内新增引导视图 `#setupView`（与 `#wbPlaceholder` 同层）：标题、阶段进度文案、进度条、错误区（`#setupError` + 重试按钮）、高级区（registry 输入 + 版本下拉 + 安装按钮）
-- 关于页包含：App 版本、`检查更新`/`下载并安装` 按钮 + 状态、卸载两档按钮
+- 工作台 activity 区内新增引导视图 `#setupView`（与 `#wbPlaceholder` 同层）：标题、阶段进度文案、进度条、错误区（`#setupError` + 重试按钮）、「取消安装」按钮（→ `setup_cancel_cmd`，规格 5.1 可取消）、高级区（registry 输入 + 版本下拉 + 安装按钮）
+- 关于页包含：App 版本、`检查更新`/`下载并安装` 按钮 + 状态、**「在浏览器打开下载页」按钮**（`open_browser_cmd` 打开 GitHub releases 页——规格 5.3 手动下载兜底入口）、卸载两档按钮
 - dsh 页包含：当前版本、`检查更新`、版本列表（每行：版本号 + latest 徽标 + 安装/切换到该版本按钮）、registry 源设置
 - 插件页包含：插件列表（名称/版本/状态徽标）、安装输入 + 安装/卸载按钮、实时输出 `pre.out`
 - 按 Task 8 设计稿调整结构类名与布局
@@ -1301,7 +1395,7 @@ git commit -m "design: 壳页 UI 设计稿（open-design）— 工作台/dsh/插
 - [ ] **Step 2: shell.js 重写**
 
 - Tab 切换表 `['workbench','dsh','plugins','about']`；`⌘K` 循环 + Esc 回工作台保留
-- 引导流程：监听 `dsh:need-setup` → 隐藏 iframe/占位 → 显示 `#setupView` → 调 `setup_state_cmd`/`list_dsh_versions_cmd` 预填 → 点安装 → `setup_dsh_cmd` → 监听 `dsh:setup-progress` 更新进度 → 成功后（`dsh:url` 事件）自动切回工作台；错误显示 + 重试
+- 引导流程：**初始化先调 `setup_state_cmd`，`current` 为 None 即直接显示 `#setupView`**（`dsh:need-setup` 事件可能在 webview 挂监听前发出而丢失，仅作辅助触发）→ 调 `list_dsh_versions_cmd` 预填版本下拉 → 点安装 → `setup_dsh_cmd` → 监听 `dsh:setup-progress` 更新进度 → 成功后（`dsh:url` 事件）自动切回工作台；错误显示 + 重试；「取消安装」→ `setup_cancel_cmd`（取消后回到可重试状态）
 - 工作台加载：保留现有轮询 `get_dsh_url` + `dsh:url` 事件逻辑
 - dsh 页：`get_dsh_state` 渲染（current/latest/versions/installing）；有新版（`latest > current`）显示「更新到 vX」按钮 → `update_dsh_cmd(latest)`；版本列表每行「安装」→ `update_dsh_cmd(ver)`（当前版本行显示「当前」徽标、禁用）；`installing` 期间全部禁用 + 状态文案
 - 插件页：进入时 `plugin_list_cmd` 渲染列表；安装/卸载沿用 `plugin_op` + `dsh:plugin-output` 实时输出；完成后无需手动重启（后端已自动重启，状态文案改为「已完成，工作台正在重启…」）
@@ -1343,7 +1437,7 @@ git commit -m "feat: 壳页重构（工作台/dsh/插件/关于 + 首次引导�
 
 - [ ] **Step 2: 编写回归清单（docs/regression-checklist.md）**
 
-覆盖：首次引导安装（含断网/失败重试、指定版本）、dsh 更新到 latest、指定版本安装、回滚到上一版本、插件列表展示/安装/卸载 + 自动重启、App 更新检查（有新版/无新版/断网）、卸载两档、崩溃自愈、托盘/单实例、Windows 路径（taskkill/NSIS 静默安装）。
+覆盖：首次引导安装（含断网/失败重试、指定版本、**安装中取消**）、dsh 更新到 latest、指定版本安装、回滚到上一版本、插件列表展示/安装/卸载 + 自动重启、App 更新检查（有新版/无新版/断网）、**macOS x86_64 上 App 更新走「关于页手动下载」兜底**（无 CI 产物）、卸载两档、崩溃自愈、托盘/单实例、Windows 路径（taskkill/NSIS 静默安装）。
 
 - [ ] **Step 3: 全量验证**
 
@@ -1370,3 +1464,23 @@ git commit -m "docs: 瘦壳 README 重写 + 回归清单"
 - **规格覆盖**：瘦壳（Task 7 资源/CI 清理 + Task 3 引导）、dsh 版本管理/指定版本/回滚（Task 2/4）、App 更新（Task 6）、插件列表+装/卸+自动重启（Task 5）、砍 LAN/常规（Task 7）、UI 4 Tab + 引导页（Task 8/9）、README（Task 10）、错误处理（各任务内嵌 tmp→自检→原子切换 + 静默失败）、registry 可配（Task 1/4/9）。
 - **占位符**：无 TBD/TODO；Task 8 的 open-design 连接失败降级路径已写明。
 - **类型一致性**：`install_version(p, ver, registry, progress)` 在 Task 2 定义、Task 3/4 消费一致；`current_closure`/`closure_version`/`installed_versions` 签名一致；`registry::cmp_versions/registry_url/list_versions/latest_version` 跨任务一致；command 名与 shell.js 调用一一对应。
+
+## 审查修正记录（2026-08-22，review 技能审查后）
+
+按 review 结果逐项修正，全部已落实到上文任务正文：
+
+**Blocking（不修必挂）**
+1. Task 1 `cmp_versions`：prerelease 后缀改为数字段感知比较（`rc.10 > rc.9`），修正字符串比较排序错误。
+2. Task 2 两个测试与实现目录结构对齐：闭包目录统一 `<app-data>/dsh/v<ver>/`，`current` 标记在 `dsh/current`，`current_closure` 要求 `node_modules/@deepseek-ai/dsh` 存在（补「无 node_modules → None」断言）。
+
+**Should-fix**
+3. Task 2 Step 4 改写清单补全：`update::registry_url` → `crate::registry::registry_url`；`update::apply_update` 调用点 → `install_version(&p,&ver,&reg,&|_|{})`；`run_cli_hooks`（`--self-update-check`/`--self-apply-update`）改写为调新接口并保留（README 无头验证工具），`--self-login-item` 随 Task 7 删除；`resolve_current`（main.rs:545）加入删除清单。
+4. Task 5 迁移清单补 `tail_text`（`run_dsh_plugin` 依赖）；`crate::logln!` 宏跨模块不可见（宏定义在 `mod` 声明之后）→ 一律用 `crate::logln(&format!(...))` 函数形式。
+5. Task 2 `install_version` promote 改为「旧目录移开 → rename → 失败恢复旧目录」（rename final→`v<ver>.old`，GC 跳过 `.old`），满足规格失败安全。
+6. Task 2/3/4 新增安装取消：`dsh.rs` 记录 npm 子进程 PID（`SETUP_CHILD`）+ `cancel_install()`（unix SIGTERM / windows taskkill），`setup_cancel_cmd` command；`SETUP_BUSY` 在 `spawn_blocking` join 失败路径也释放（`result.map_err(...)??` 前先复位）。
+7. Task 6：下载总超时 30s → 1800s（数百 MB 安装包）；`Content-Length` 缺失/不符即失败清理（规格 5.3 大小校验）；`asset_url` 限 macOS aarch64（CI 仅 macos-14 arm64 产物，x86_64 返回 None 走手动兜底），测试按平台 cfg 断言；osascript 提权路径单引号转义。
+8. Task 9：引导视图加「取消安装」按钮；初始化先查 `setup_state_cmd`（`dsh:need-setup` 事件可能先于监听发出而丢失，只作辅助）；关于页加「在浏览器打开下载页」手动兜底（规格 5.3）；Interfaces 补 `setup_cancel_cmd`/`open_browser_cmd`。
+9. Task 10 回归清单补「安装中取消」「macOS x86_64 App 更新手动兜底」。
+10. Task 7 nits：Files 去掉 shell.html/js（Task 9 才动）；`login_on` 归属修正（ShellState 字段，非 Settings）；规格模块树补 `apps/desktop/` 前缀。
+
+**已验证为正面的事实**：asset 命名与 install.sh:42/install.ps1:42 一致；计划引用的 main.rs 行号与代码相符；`use tauri::Emitter` 已存在（main.rs:45）；Paths/Settings 字段与清理清单吻合；无新增第三方依赖。
