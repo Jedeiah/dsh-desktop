@@ -1,0 +1,94 @@
+/* ============================================================
+ * DSh Desktop · Design Tokens v1.0
+ * 深色玻璃拟态 · DeepSeek Harness 桌面壳
+ * 用途：工程落地的 token 清单，直接复制 / @import 使用。
+ * 品牌源：主色 #7B7FE8（蓝紫）、辅助渐变（紫→粉→蓝光斑）、
+ *         背景 #10121A、成功 #3FB950、错误 #F85149。
+ * ============================================================ */
+
+:root {
+  color-scheme: dark;
+
+  /* ---------- 颜色：中性背景 ---------- */
+  --dsh-bg:          #10121A;  /* 应用最深背景 */
+  --dsh-bg-deep:     #0C0E14;  /* WebView 预览区 / 日志输出区背景 */
+  --dsh-bg-elevated: #171A29;  /* 悬浮层 / 弹层背景 */
+
+  /* ---------- 颜色：玻璃表面（白色叠加） ---------- */
+  --dsh-surface:        rgba(255, 255, 255, 0.04); /* 卡片基底 ≈ 4% 白 */
+  --dsh-surface-strong: rgba(255, 255, 255, 0.06); /* 强调卡片 / hover */
+  --dsh-surface-soft:   rgba(255, 255, 255, 0.025);/* 弱化表面 */
+  --dsh-border:         rgba(255, 255, 255, 0.09); /* 1px 细边框 */
+  --dsh-border-strong:  rgba(255, 255, 255, 0.16); /* 输入框 / 按钮描边 */
+
+  /* ---------- 颜色：文字 ---------- */
+  --dsh-fg:        #E9EBF4;   /* 主文字（对 #10121A 对比度 > 12:1） */
+  --dsh-fg-muted:  #A4A9BF;   /* 次级文字（≈ 7.5:1） */
+  --dsh-fg-subtle: #8388A3;   /* 弱化 / 占位符（≥ 4.5:1） */
+
+  /* ---------- 颜色：品牌 ---------- */
+  --dsh-accent:        #7B7FE8;  /* 品牌主色：蓝紫。焦点环 / 徽标 / 激活态 / 链接 */
+  --dsh-accent-strong: #6268D9;  /* 实心按钮底色（白字对比度 ≈ 4.7:1，勿直接用浅紫做按钮底） */
+  --dsh-accent-hover:  #5A60D2;  /* 实心按钮 hover：L 略降，保证白字对比不降 */
+  --dsh-accent-active: #4F55C5;  /* 实心按钮按下 */
+  --dsh-accent-soft:   rgba(123, 127, 232, 0.15); /* 选中底色（Tab / 徽标） */
+  --dsh-accent-ring:   rgba(123, 127, 232, 0.55); /* 焦点光环 */
+
+  /* ---------- 颜色：语义 ---------- */
+  --dsh-success:      #3FB950;  /* 成功 */
+  --dsh-success-soft: rgba(63, 185, 80, 0.13);
+  --dsh-danger:       #F85149;  /* 危险 */
+  --dsh-danger-strong:#D63A34;  /* 实心危险按钮底（白字 ≥ 4.6:1） */
+  --dsh-danger-soft:  rgba(248, 81, 73, 0.11);
+  --dsh-warning:      #D29922;  /* 警告 */
+
+  /* ---------- 光斑渐变（紫→粉→蓝，低透明度装饰光源） ---------- */
+  --dsh-glow-purple: rgba(123, 127, 232, 0.18);
+  --dsh-glow-pink:   rgba(218, 112, 214, 0.13);
+  --dsh-glow-blue:   rgba(88, 166, 255, 0.14);
+
+  /* ---------- 圆角 ---------- */
+  --dsh-radius-sm: 8px;   /* 小元素 / 徽标 / 输入框 */
+  --dsh-radius-md: 10px;  /* 按钮 / 列表行 */
+  --dsh-radius-lg: 14px;  /* 卡片 */
+
+  /* ---------- 间距（4px 基准） ---------- */
+  --dsh-space-1:  4px;
+  --dsh-space-2:  8px;
+  --dsh-space-3:  12px;
+  --dsh-space-4:  16px;
+  --dsh-space-5:  20px;
+  --dsh-space-6:  24px;
+  --dsh-space-8:  32px;
+  --dsh-space-10: 40px;
+  --dsh-space-12: 48px;
+
+  /* ---------- 字体 ---------- */
+  --dsh-font-ui: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC",
+                 "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+  --dsh-font-mono: ui-monospace, "SF Mono", "JetBrains Mono", "Menlo",
+                   "Cascadia Code", Consolas, monospace;
+
+  /* ---------- 字号（壳层 UI） ---------- */
+  --dsh-text-xs: 12px;  /* 辅助说明 / 状态行 */
+  --dsh-text-sm: 13px;  /* 次要正文 */
+  --dsh-text-md: 14px;  /* 正文 / 按钮 */
+  --dsh-text-lg: 17px;  /* 区块标题 */
+  --dsh-text-xl: 26px;  /* 版本大数字 */
+
+  /* ---------- 阴影 ---------- */
+  --dsh-shadow-card: 0 1px 2px rgba(0, 0, 0, 0.30),
+                     inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  --dsh-shadow-pop:  0 12px 32px rgba(0, 0, 0, 0.45);
+  --dsh-glow-accent: 0 0 0 2px rgba(123, 127, 232, 0.25),
+                     0 0 18px rgba(123, 127, 232, 0.18);
+
+  /* ---------- 动效 ---------- */
+  --dsh-dur: 150ms;
+  --dsh-ease: cubic-bezier(0.2, 0.75, 0.3, 1);
+
+  /* ---------- 组件尺寸 ---------- */
+  --dsh-topbar-h: 46px;   /* 顶栏高度 */
+  --dsh-control-h: 34px;  /* 输入框 / 按钮高度 */
+  --dsh-touch: 44px;      /* 最小可点击高度 */
+}

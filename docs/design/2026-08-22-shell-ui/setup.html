@@ -1,0 +1,347 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DeepSeek Harness · 首次引导</title>
+<link rel="stylesheet" href="tokens.css">
+<style>
+/* ============ 基础 ============ */
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: 100%; }
+body {
+  background: var(--dsh-bg);
+  color: var(--dsh-fg);
+  font-family: var(--dsh-font-ui);
+  font-size: var(--dsh-text-md);
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+  display: grid; place-items: center; padding: 24px;
+}
+body::before {
+  content: ""; position: fixed; inset: 0; z-index: 0; pointer-events: none;
+  background:
+    radial-gradient(620px 420px at 14% -10%, var(--dsh-glow-purple), transparent 62%),
+    radial-gradient(700px 460px at 92% -6%, var(--dsh-glow-blue), transparent 60%),
+    radial-gradient(560px 440px at 86% 98%, var(--dsh-glow-pink), transparent 62%),
+    radial-gradient(480px 420px at 6% 82%, var(--dsh-glow-blue), transparent 60%);
+}
+.mono { font-family: var(--dsh-font-mono); }
+:focus-visible { outline: 2px solid var(--dsh-accent); outline-offset: 2px; }
+main { position: relative; z-index: 1; width: 100%; max-width: 440px; }
+
+/* ============ 卡片 ============ */
+.card {
+  border-radius: 16px;
+  border: 1px solid var(--dsh-border-strong);
+  background: linear-gradient(180deg, rgba(255,255,255,0.06), rgba(255,255,255,0.035));
+  box-shadow: var(--dsh-shadow-pop), inset 0 1px 0 rgba(255,255,255,0.06);
+  padding: 28px;
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+}
+.head { display: flex; align-items: center; gap: 16px; margin-bottom: 26px; }
+.logo {
+  width: 44px; height: 44px; flex: none; border-radius: 12px;
+  display: grid; place-items: center;
+  background: linear-gradient(135deg, #7B7FE8, #C471ED 55%, #58A6FF);
+  box-shadow: 0 6px 20px rgba(123,127,232,.35), inset 0 1px 0 rgba(255,255,255,.35);
+}
+.logo svg { width: 22px; height: 22px; }
+.head h1 { font-size: 18px; font-weight: 650; letter-spacing: .2px; }
+.head p { margin-top: 2px; font-size: 12.5px; color: var(--dsh-fg-muted); }
+
+/* ============ 进度 ============ */
+.stage-line { font-size: 13.5px; font-weight: 600; color: var(--dsh-fg); min-height: 22px; }
+.progress {
+  position: relative; height: 4px; border-radius: 999px; margin: 14px 0 10px;
+  background: rgba(255,255,255,0.08); overflow: hidden;
+}
+.progress-fill {
+  position: absolute; inset: 0 auto 0 0; width: 0%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #7B7FE8, #C471ED, #58A6FF);
+  box-shadow: 0 0 12px rgba(123,127,232,.55);
+  transition: width .38s var(--dsh-ease);
+}
+.progress-fill::after {
+  content: ""; position: absolute; inset: 0;
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,.45), transparent);
+  transform: translateX(-100%);
+  animation: sheen 1.6s ease-in-out infinite;
+}
+@keyframes sheen { 60% { transform: translateX(100%); } 100% { transform: translateX(100%); } }
+.meta-line { display: flex; justify-content: space-between; align-items: center; font-size: 12px; color: var(--dsh-fg-subtle); }
+#pct { font-family: var(--dsh-font-mono); font-size: 12px; color: var(--dsh-fg-muted); }
+.actions { margin-top: 22px; display: flex; justify-content: center; }
+.actions .btn { min-width: 120px; }
+
+/* ============ 按钮 ============ */
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+  height: var(--dsh-control-h); padding: 0 18px; border-radius: 9px;
+  font: inherit; font-size: 13.5px; font-weight: 600; text-decoration: none;
+  border: 1px solid transparent; cursor: pointer; user-select: none; white-space: nowrap;
+  transition: background var(--dsh-dur) var(--dsh-ease), border-color var(--dsh-dur) var(--dsh-ease),
+              color var(--dsh-dur) var(--dsh-ease), box-shadow var(--dsh-dur) var(--dsh-ease),
+              transform var(--dsh-dur) var(--dsh-ease);
+}
+.btn:disabled { opacity: .42; cursor: not-allowed; pointer-events: none; }
+.btn-primary { background: var(--dsh-accent-strong); color: #fff; border-color: rgba(123,127,232,0.4); }
+.btn-primary:hover:not(:disabled) { background: var(--dsh-accent-hover); box-shadow: 0 2px 10px rgba(0,0,0,.3); }
+.btn-primary:active:not(:disabled) { background: var(--dsh-accent-active); transform: translateY(1px); }
+.btn-ghost { background: rgba(255,255,255,0.03); color: var(--dsh-fg); border-color: var(--dsh-border-strong); }
+.btn-ghost:hover:not(:disabled) { background: rgba(255,255,255,0.07); border-color: rgba(255,255,255,0.24); }
+.btn-ghost:active:not(:disabled) { background: rgba(255,255,255,0.05); transform: translateY(1px); }
+
+/* ============ 输入框 / 选择 ============ */
+.input {
+  height: var(--dsh-control-h); padding: 0 12px; border-radius: 9px; width: 100%;
+  background: rgba(255,255,255,0.04); border: 1px solid var(--dsh-border-strong);
+  color: var(--dsh-fg); font: inherit; font-size: 13.5px;
+  transition: border-color var(--dsh-dur) var(--dsh-ease), box-shadow var(--dsh-dur) var(--dsh-ease);
+}
+.input::placeholder { color: var(--dsh-fg-subtle); }
+.input:hover { border-color: rgba(255,255,255,0.24); }
+.input:focus { outline: none; border-color: var(--dsh-accent); box-shadow: 0 0 0 3px rgba(123,127,232,0.22); }
+select.input { appearance: auto; cursor: pointer; }
+label.field { display: block; margin-bottom: 14px; }
+label.field .label-text { display: block; font-size: 12.5px; font-weight: 600; color: var(--dsh-fg-muted); margin-bottom: 7px; }
+
+/* ============ 失败态 ============ */
+.err-box {
+  display: flex; gap: 12px; padding: 14px 16px; border-radius: 10px;
+  background: var(--dsh-danger-soft); border: 1px solid rgba(248,81,73,0.4);
+}
+.err-icon { width: 18px; height: 18px; flex: none; margin-top: 1px; }
+.err-title { font-size: 13.5px; font-weight: 650; color: #F98C86; }
+.err-msg { margin-top: 2px; font-size: 12.5px; color: #F0B9B6; line-height: 1.6; }
+
+/* ============ 完成态 ============ */
+.done-icon {
+  width: 46px; height: 46px; margin: 0 auto 14px; border-radius: 50%;
+  display: grid; place-items: center;
+  background: rgba(63,185,80,0.14); border: 1px solid rgba(63,185,80,0.45);
+  box-shadow: 0 0 22px rgba(63,185,80,.3);
+}
+.done-icon svg { width: 22px; height: 22px; }
+.done-title { text-align: center; font-size: 17px; font-weight: 650; letter-spacing: .2px; }
+.done-msg { text-align: center; margin-top: 4px; font-size: 13px; color: var(--dsh-fg-muted); }
+
+/* ============ 高级选项 ============ */
+.adv { margin-top: 22px; border-top: 1px solid var(--dsh-border); padding-top: 6px; }
+.adv summary {
+  list-style: none; display: flex; align-items: center; gap: 8px;
+  padding: 10px 0; cursor: pointer; font-size: 12.5px; font-weight: 600; color: var(--dsh-fg-muted);
+  user-select: none;
+}
+.adv summary::-webkit-details-marker { display: none; }
+.adv summary .chev { transition: transform var(--dsh-dur) var(--dsh-ease); margin-left: 2px; }
+.adv[open] summary .chev { transform: rotate(90deg); }
+.adv summary:hover { color: var(--dsh-fg); }
+.adv-body { padding: 12px 0 2px; }
+.adv-note { margin-top: 12px; font-size: 11.5px; color: var(--dsh-fg-subtle); }
+
+/* ============ 页脚演示入口 ============ */
+.foot { margin-top: 18px; text-align: center; }
+.link-btn {
+  background: none; border: none; cursor: pointer;
+  font: inherit; font-size: 11.5px; color: var(--dsh-fg-subtle);
+  padding: 6px 10px; border-radius: 6px;
+  transition: color var(--dsh-dur), background var(--dsh-dur);
+}
+.link-btn:hover { color: var(--dsh-fg-muted); background: rgba(255,255,255,0.04); }
+</style>
+</head>
+<body>
+
+<main data-od-id="setup-card">
+  <div class="card">
+    <div class="head">
+      <div class="logo">
+        <svg viewBox="0 0 22 22" aria-hidden="true">
+          <path d="M7 7.5h8M7 11h8M7 14.5h5" stroke="#fff" stroke-width="2" stroke-linecap="round" opacity=".95"/>
+        </svg>
+      </div>
+      <div>
+        <h1>准备 dsh 运行时</h1>
+        <p>DeepSeek Harness 桌面壳 · 首次启动</p>
+      </div>
+    </div>
+
+    <!-- 进行中 -->
+    <div class="stage-area" id="stage-area">
+      <div class="stage-line" id="stage-line">正在连接 registry…</div>
+      <div class="progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-label="安装进度" id="progress"><div class="progress-fill" id="progress-fill"></div></div>
+      <div class="meta-line">
+        <span id="pct">0%</span>
+        <span id="sub-line">下载中</span>
+      </div>
+      <div class="actions">
+        <button class="btn btn-ghost" id="btn-cancel">取消</button>
+      </div>
+    </div>
+
+    <!-- 失败 / 取消 -->
+    <div id="fail-area" hidden>
+      <div class="err-box">
+        <svg class="err-icon" viewBox="0 0 18 18" aria-hidden="true">
+          <circle cx="9" cy="9" r="7.5" fill="none" stroke="#F85149" stroke-width="1.6"/>
+          <path d="M6.5 6.5l5 5M11.5 6.5l-5 5" stroke="#F85149" stroke-width="1.6" stroke-linecap="round"/>
+        </svg>
+        <div>
+          <div class="err-title" id="err-title">安装失败</div>
+          <div class="err-msg" id="err-msg"></div>
+        </div>
+      </div>
+      <div class="actions">
+        <button class="btn btn-primary" id="btn-retry">重试</button>
+      </div>
+    </div>
+
+    <!-- 完成 -->
+    <div id="done-area" hidden>
+      <div class="done-icon">
+        <svg viewBox="0 0 18 18" aria-hidden="true">
+          <path d="M4 9.5l3.2 3.2L14 5.5" stroke="#3FB950" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </div>
+      <div class="done-title">安装完成</div>
+      <div class="done-msg mono" id="done-msg">dsh v0.21.0 已就绪</div>
+      <div class="actions">
+        <a class="btn btn-primary" id="btn-launch" href="index.html">进入工作台</a>
+      </div>
+    </div>
+
+    <!-- 高级选项 -->
+    <details class="adv" id="adv">
+      <summary>
+        <svg class="chev" width="10" height="10" viewBox="0 0 10 10" aria-hidden="true">
+          <path d="M3.5 1.5l3.5 3.5-3.5 3.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        高级选项
+      </summary>
+      <div class="adv-body">
+        <label class="field">
+          <span class="label-text">Registry 源</span>
+          <input class="input mono" id="reg-input" value="https://registry.npmjs.org" spellcheck="false">
+        </label>
+        <label class="field">
+          <span class="label-text">版本</span>
+          <select class="input" id="ver-select">
+            <option value="0.21.0">最新版 · v0.21.0</option>
+            <option value="0.20.3">v0.20.3</option>
+            <option value="0.20.2">v0.20.2</option>
+            <option value="0.19.9">v0.19.9</option>
+          </select>
+        </label>
+        <p class="adv-note">更改将应用于本次下载。Registry 源建议保持默认。</p>
+      </div>
+    </details>
+  </div>
+
+  <footer class="foot">
+    <button class="link-btn" id="btn-demo-fail">演示 · 模拟失败</button>
+  </footer>
+</main>
+
+<script>
+"use strict";
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const $ = id => document.getElementById(id);
+
+let timer = null;
+let cancelled = false;
+
+/* ---------- 阶段定义 ---------- */
+const STAGES = [
+  { min: 0,  max: 8,   dur: 700,  label: '正在连接 registry…',              sub: '连接中' },
+  { min: 8,  max: 62,  dur: 2400, label: v => '正在下载 dsh v' + v + ' · 4.2 MB', sub: '下载中' },
+  { min: 62, max: 84,  dur: 1400, label: '正在校验完整性（SHA-256）…',      sub: '校验中' },
+  { min: 84, max: 100, dur: 1600, label: v => '正在切换到 v' + v + '…',      sub: '切换中' },
+];
+
+function setProgress(pct) {
+  $('progress-fill').style.width = pct + '%';
+  $('pct').textContent = pct + '%';
+  $('progress').setAttribute('aria-valuenow', pct);
+}
+function show(id) {
+  ['stage-area', 'fail-area', 'done-area'].forEach(a => $(a).hidden = a !== id);
+}
+
+async function runInstall() {
+  clearTimeout(timer);
+  cancelled = false;
+  show('stage-area');
+  $('btn-cancel').disabled = false;
+  $('btn-cancel').textContent = '取消';
+  $('adv').open = false;
+
+  let pct = 0;
+  const ver = selectedVersion();
+  for (const s of STAGES) {
+    if (cancelled) return;
+    $('stage-line').textContent = typeof s.label === 'function' ? s.label(ver) : s.label;
+    $('sub-line').textContent = s.sub;
+    const step = s.max - s.min;
+    const steps = Math.max(2, Math.round(step / 4));
+    const inc = step / steps;
+    for (let i = 0; i < steps; i++) {
+      if (cancelled) return;
+      await sleep(s.dur / steps);
+      pct = Math.min(s.max, pct + inc);
+      setProgress(Math.round(pct));
+    }
+    setProgress(s.max);
+  }
+  if (cancelled) return;
+  finish();
+}
+
+function finish() {
+  if (cancelled) return;
+  const ver = selectedVersion();
+  $('done-msg').textContent = 'dsh v' + ver + ' 已就绪';
+  show('done-area');
+}
+function selectedVersion() {
+  const el = $('ver-select');
+  return el ? el.value : '0.21.0';
+}
+
+function fail(title, msg) {
+  clearTimeout(timer);
+  cancelled = true;
+  $('err-title').textContent = title;
+  $('err-msg').textContent = msg;
+  show('fail-area');
+}
+
+/* ---------- 事件 ---------- */
+$('btn-cancel').addEventListener('click', async function () {
+  const btn = this;
+  btn.disabled = true; btn.textContent = '正在取消…';
+  cancelled = true;
+  clearTimeout(timer);
+  await sleep(600);
+  fail('已取消', '安装已取消，可重试以重新开始。');
+});
+
+$('btn-retry').addEventListener('click', () => runInstall());
+
+$('btn-demo-fail').addEventListener('click', () => {
+  fail('安装失败', '下载失败：网络请求超时。请检查网络连接或 registry 源后重试。');
+});
+
+$('ver-select').addEventListener('change', () => {
+  if (!$('stage-area').hidden) {
+    const ver = selectedVersion();
+    $('stage-line').textContent = '正在下载 dsh v' + ver + ' · 4.2 MB';
+  }
+});
+
+runInstall();
+</script>
+</body>
+</html>

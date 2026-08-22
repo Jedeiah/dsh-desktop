@@ -1,0 +1,864 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DeepSeek Harness · 桌面壳</title>
+<link rel="stylesheet" href="tokens.css">
+<style>
+/* ============ 基础 ============ */
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: 100%; }
+body {
+  background: var(--dsh-bg);
+  color: var(--dsh-fg);
+  font-family: var(--dsh-font-ui);
+  font-size: var(--dsh-text-md);
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+}
+body::before {
+  content: ""; position: fixed; inset: 0; z-index: 0; pointer-events: none;
+  background:
+    radial-gradient(560px 380px at 10% -8%, var(--dsh-glow-purple), transparent 62%),
+    radial-gradient(680px 440px at 90% -4%, var(--dsh-glow-blue), transparent 60%),
+    radial-gradient(540px 420px at 84% 96%, var(--dsh-glow-pink), transparent 62%),
+    radial-gradient(460px 400px at 6% 78%, var(--dsh-glow-blue), transparent 60%);
+}
+.mono { font-family: var(--dsh-font-mono); }
+:focus-visible { outline: 2px solid var(--dsh-accent); outline-offset: 2px; }
+
+/* ============ 壳层骨架 ============ */
+.shell { height: 100vh; display: flex; flex-direction: column; position: relative; z-index: 1; }
+.stage { flex: 1; min-height: 0; position: relative; }
+.view { display: none; height: 100%; overflow-y: auto; }
+.view.active { display: block; animation: fadeUp .18s var(--dsh-ease); }
+@keyframes fadeUp { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+#view-workspace { overflow: hidden; }
+#view-workspace.active { display: flex; flex-direction: column; }
+
+/* ============ 顶栏 ============ */
+.topbar {
+  height: var(--dsh-topbar-h); flex: none;
+  display: flex; align-items: center; gap: 18px;
+  padding: 0 16px;
+  border-bottom: 1px solid var(--dsh-border);
+  background: rgba(16, 18, 26, 0.82);
+  backdrop-filter: blur(18px) saturate(1.4);
+  -webkit-backdrop-filter: blur(18px) saturate(1.4);
+  position: relative; z-index: 5;
+}
+.brand { display: flex; align-items: center; gap: 10px; min-width: 0; flex: none; }
+.brand-name { font-size: 13.5px; font-weight: 650; letter-spacing: .2px; color: var(--dsh-fg); white-space: nowrap; }
+.tabs { flex: 1; display: flex; justify-content: center; gap: 4px; min-width: 0; }
+.tab {
+  height: 32px; padding: 0 15px; border-radius: 9px;
+  display: inline-flex; align-items: center; gap: 7px;
+  font: inherit; font-size: 13.5px; font-weight: 500; color: var(--dsh-fg-muted);
+  background: transparent; border: 1px solid transparent; cursor: pointer;
+  transition: background var(--dsh-dur) var(--dsh-ease), color var(--dsh-dur) var(--dsh-ease);
+}
+.tab:hover { color: var(--dsh-fg); background: rgba(255, 255, 255, 0.05); }
+.tab.active { color: #C9CDF5; background: var(--dsh-accent-soft); border-color: rgba(123, 127, 232, 0.28); }
+.tab .tab-dot { width: 5px; height: 5px; border-radius: 50%; background: var(--dsh-accent); opacity: 0; transform: scale(.4); transition: opacity var(--dsh-dur), transform var(--dsh-dur); }
+.tab.active .tab-dot { opacity: 1; transform: scale(1); }
+.kbd-hint { flex: none; display: flex; align-items: center; gap: 6px; color: var(--dsh-fg-subtle); font-size: 12px; }
+kbd {
+  border: 1px solid var(--dsh-border-strong); border-bottom-width: 2px;
+  background: rgba(255, 255, 255, 0.04); border-radius: 6px;
+  padding: 1px 6px; font-family: inherit; font-size: 11.5px; color: var(--dsh-fg-muted);
+}
+.hint-label { white-space: nowrap; }
+@media (max-width: 880px) { .hint-label { display: none; } }
+
+/* ============ 内容容器 ============ */
+.container { max-width: 1020px; margin: 0 auto; padding: 28px 32px 56px; display: flex; flex-direction: column; gap: 16px; }
+
+/* ============ 卡片 ============ */
+.card {
+  position: relative;
+  border-radius: var(--dsh-radius-lg);
+  border: 1px solid var(--dsh-border);
+  background: linear-gradient(180deg, rgba(255,255,255,0.05), rgba(255,255,255,0.03));
+  box-shadow: var(--dsh-shadow-card);
+  padding: 20px 22px;
+}
+.card-header { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
+.card-header h2 { font-size: 15px; font-weight: 650; letter-spacing: .2px; color: var(--dsh-fg); }
+.card-hint { font-size: var(--dsh-text-xs); color: var(--dsh-fg-subtle); }
+.card-title { font-size: 15px; font-weight: 650; letter-spacing: .2px; }
+.card-label { font-size: 11.5px; font-weight: 600; color: var(--dsh-fg-muted); text-transform: uppercase; letter-spacing: .9px; }
+.card-row { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+
+/* ============ 按钮 ============ */
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+  height: var(--dsh-control-h); padding: 0 16px; border-radius: 9px;
+  font: inherit; font-size: 13.5px; font-weight: 600;
+  border: 1px solid transparent; cursor: pointer; user-select: none; white-space: nowrap;
+  transition: background var(--dsh-dur) var(--dsh-ease), border-color var(--dsh-dur) var(--dsh-ease),
+              color var(--dsh-dur) var(--dsh-ease), box-shadow var(--dsh-dur) var(--dsh-ease),
+              transform var(--dsh-dur) var(--dsh-ease);
+}
+.btn:disabled { opacity: .42; cursor: not-allowed; pointer-events: none; }
+.btn-primary { background: var(--dsh-accent-strong); color: #fff; border-color: rgba(123,127,232,0.4); }
+.btn-primary:hover:not(:disabled) { background: var(--dsh-accent-hover); box-shadow: 0 2px 10px rgba(0,0,0,.3); }
+.btn-primary:active:not(:disabled) { background: var(--dsh-accent-active); transform: translateY(1px); }
+.btn-ghost { background: rgba(255,255,255,0.03); color: var(--dsh-fg); border-color: var(--dsh-border-strong); }
+.btn-ghost:hover:not(:disabled) { background: rgba(255,255,255,0.07); border-color: rgba(255,255,255,0.24); }
+.btn-ghost:active:not(:disabled) { background: rgba(255,255,255,0.05); transform: translateY(1px); }
+.btn-danger { background: var(--dsh-danger-strong); color: #fff; border-color: rgba(248,81,73,0.35); }
+.btn-danger:hover:not(:disabled) { background: #C5312B; }
+.btn-danger:active:not(:disabled) { background: #B42C26; transform: translateY(1px); }
+.btn-danger-ghost { background: transparent; color: var(--dsh-danger); border-color: rgba(248,81,73,0.45); }
+.btn-danger-ghost:hover:not(:disabled) { background: var(--dsh-danger-soft); border-color: rgba(248,81,73,0.68); }
+.btn-danger-ghost:active:not(:disabled) { transform: translateY(1px); }
+.btn-sm { height: 28px; padding: 0 12px; font-size: 12.5px; border-radius: 7px; }
+
+/* ============ 输入框 ============ */
+.input {
+  height: var(--dsh-control-h); padding: 0 12px; border-radius: 9px;
+  background: rgba(255,255,255,0.04); border: 1px solid var(--dsh-border-strong);
+  color: var(--dsh-fg); font: inherit; font-size: 13.5px;
+  transition: border-color var(--dsh-dur) var(--dsh-ease), box-shadow var(--dsh-dur) var(--dsh-ease);
+}
+.input::placeholder { color: var(--dsh-fg-subtle); }
+.input:hover { border-color: rgba(255,255,255,0.24); }
+.input:focus { outline: none; border-color: var(--dsh-accent); box-shadow: 0 0 0 3px rgba(123,127,232,0.22); }
+.field-row { display: flex; gap: 10px; align-items: center; }
+.field-row .input { flex: 1; min-width: 220px; }
+.field-status { margin-top: 10px; font-size: var(--dsh-text-xs); color: var(--dsh-fg-muted); min-height: 18px; }
+
+/* ============ 状态行 / 徽标 ============ */
+.status { display: inline-flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--dsh-fg-muted); }
+.status.ok { color: var(--dsh-success); }
+.status.warn { color: var(--dsh-warning); }
+.status.acc { color: #AEB3F0; }
+.dot { width: 7px; height: 7px; border-radius: 50%; flex: none; }
+.dot-success { background: var(--dsh-success); box-shadow: 0 0 8px rgba(63,185,80,.55); }
+.dot-accent  { background: var(--dsh-accent); box-shadow: 0 0 8px rgba(123,127,232,.65); }
+.dot-warn    { background: var(--dsh-warning); box-shadow: 0 0 8px rgba(210,153,34,.5); }
+.dot-busy    { background: var(--dsh-fg-muted); animation: pulse 1s ease-in-out infinite; }
+@keyframes pulse { 50% { opacity: .3; } }
+
+.badge {
+  display: inline-flex; align-items: center; height: 20px; padding: 0 8px;
+  border-radius: 6px; font-size: 11px; font-weight: 650; letter-spacing: .3px; white-space: nowrap;
+}
+.badge-current  { color: #C9CDF5; background: var(--dsh-accent-soft); border: 1px solid rgba(123,127,232,0.32); }
+.badge-latest   { color: #4CCD67; background: var(--dsh-success-soft); border: 1px solid rgba(63,185,80,0.32); }
+.badge-installed{ color: var(--dsh-fg-muted); background: rgba(255,255,255,0.05); border: 1px solid var(--dsh-border); }
+.badge-fresh    { color: #AEB3F0; background: rgba(123,127,232,0.1); border: 1px solid rgba(123,127,232,0.28); }
+
+/* ============ 列表 ============ */
+.list { display: flex; flex-direction: column; }
+.list-row {
+  display: flex; align-items: center; gap: 14px; padding: 11px 14px;
+  border-radius: 10px; border: 1px solid transparent;
+  transition: background var(--dsh-dur) var(--dsh-ease), border-color var(--dsh-dur) var(--dsh-ease);
+}
+.list-row:hover { background: rgba(255,255,255,0.045); border-color: rgba(255,255,255,0.07); }
+.list-row + .list-row { margin-top: 2px; }
+.list-row .grow { flex: 1; min-width: 0; display: flex; align-items: center; gap: 10px; }
+.row-title { font-size: 13.5px; font-weight: 600; color: var(--dsh-fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.row-sub { font-size: var(--dsh-text-xs); color: var(--dsh-fg-muted); white-space: nowrap; }
+.row-meta { font-size: 12px; color: var(--dsh-fg-subtle); display: flex; align-items: center; gap: 8px; flex: none; }
+.empty {
+  padding: 28px 16px; text-align: center; border-radius: 10px;
+  border: 1px dashed var(--dsh-border-strong); color: var(--dsh-fg-subtle); font-size: 13px;
+}
+
+/* ============ dsh 面板 ============ */
+.hero { display: flex; align-items: center; justify-content: space-between; gap: 20px; flex-wrap: wrap; }
+.hero-main { min-width: 260px; }
+.hero-version { display: flex; align-items: center; gap: 12px; margin-top: 8px; flex-wrap: wrap; }
+.version-num { font-size: var(--dsh-text-xl); font-weight: 650; letter-spacing: -0.5px; color: var(--dsh-fg); line-height: 1.1; }
+.hero .status { margin-top: 10px; }
+.hero-actions { display: flex; align-items: center; gap: 10px; }
+.update-card { border-color: rgba(123,127,232,0.32); background: linear-gradient(180deg, rgba(123,127,232,0.12), rgba(123,127,232,0.05) 46%, rgba(255,255,255,0.03)); }
+.update-desc { margin-top: 4px; font-size: 13px; color: var(--dsh-fg-muted); }
+.update-desc b { color: var(--dsh-fg); font-weight: 650; }
+.update-icon {
+  width: 34px; height: 34px; flex: none; border-radius: 9px;
+  display: grid; place-items: center;
+  background: linear-gradient(135deg, #7B7FE8, #C471ED, #58A6FF);
+  box-shadow: 0 0 14px rgba(123,127,232,.4);
+}
+.update-icon svg { width: 16px; height: 16px; }
+
+/* ============ 插件面板 ============ */
+.log {
+  margin: 0; padding: 14px 16px; border-radius: 10px;
+  background: var(--dsh-bg-deep); border: 1px solid var(--dsh-border);
+  font-family: var(--dsh-font-mono); font-size: 12.5px; line-height: 1.75;
+  color: #C4C9DE; white-space: pre-wrap; word-break: break-all;
+  min-height: 150px; max-height: 280px; overflow-y: auto;
+}
+.log .l-time { color: #565B76; margin-right: 8px; }
+.log .l-ok   { color: var(--dsh-success); }
+.log .l-err  { color: var(--dsh-danger); }
+.log .l-warn { color: var(--dsh-warning); }
+.log .l-acc  { color: #9FA4EE; }
+#log-clear { cursor: pointer; user-select: none; }
+#log-clear:hover { color: var(--dsh-fg); }
+
+/* ============ 关于面板 ============ */
+.about-main { display: flex; align-items: center; gap: 18px; flex-wrap: wrap; }
+.app-logo {
+  width: 52px; height: 52px; flex: none; border-radius: 13px;
+  display: grid; place-items: center;
+  background: linear-gradient(135deg, #7B7FE8, #C471ED 55%, #58A6FF);
+  box-shadow: 0 6px 20px rgba(123,127,232,.35), inset 0 1px 0 rgba(255,255,255,.35);
+}
+.app-logo svg { width: 26px; height: 26px; }
+.about-title { font-size: 17px; font-weight: 650; letter-spacing: .2px; }
+.about-meta { margin-top: 2px; font-size: 12.5px; color: var(--dsh-fg-muted); }
+.about-meta .mono { color: var(--dsh-fg); }
+.about-actions { margin-top: 16px; display: flex; gap: 10px; flex-wrap: wrap; }
+.about-status { margin-top: 12px; }
+
+.card-danger { border-color: rgba(248,81,73,0.28); }
+.card-danger .card-header h2 { color: #F98C86; }
+.uninstall-row {
+  display: flex; align-items: center; gap: 16px; justify-content: space-between; flex-wrap: wrap;
+  padding: 14px 16px; border-radius: 10px; border: 1px solid var(--dsh-border);
+  background: rgba(255,255,255,0.02);
+}
+.uninstall-row + .uninstall-row { margin-top: 10px; }
+.opt-title { font-size: 13.5px; font-weight: 600; }
+.opt-desc { margin-top: 2px; font-size: 12.5px; color: var(--dsh-fg-muted); }
+.uninstall-confirm {
+  margin-top: 12px; padding: 12px 16px; border-radius: 10px;
+  background: var(--dsh-danger-soft); border: 1px solid rgba(248,81,73,0.35);
+  display: flex; align-items: center; justify-content: space-between; gap: 14px; flex-wrap: wrap;
+  font-size: 13px; color: #F4B3AF;
+}
+.uninstall-confirm .btn-group { display: flex; gap: 8px; }
+.uninstall-done { padding: 22px; text-align: center; color: var(--dsh-fg-muted); font-size: 13.5px; }
+.uninstall-done b { color: var(--dsh-fg); }
+
+/* ============ 工作台视图 ============ */
+.workspace-wrap { flex: 1; min-height: 0; padding: 20px 24px 24px; display: flex; }
+.frame {
+  flex: 1; min-width: 0; display: flex; flex-direction: column;
+  border-radius: 12px; border: 1px solid var(--dsh-border-strong);
+  background: var(--dsh-bg-deep); overflow: hidden;
+  box-shadow: var(--dsh-shadow-pop), inset 0 1px 0 rgba(255,255,255,0.05);
+}
+.frame-bar {
+  flex: none; height: 38px; display: flex; align-items: center; gap: 12px;
+  padding: 0 14px; border-bottom: 1px solid var(--dsh-border);
+  background: rgba(255,255,255,0.03);
+}
+.lights { display: flex; gap: 7px; flex: none; }
+.lights i { width: 11px; height: 11px; border-radius: 50%; }
+.lights i:nth-child(1) { background: #FF5F57; }
+.lights i:nth-child(2) { background: #FEBC2E; }
+.lights i:nth-child(3) { background: #28C840; }
+.frame-url {
+  flex: 1; min-width: 0; text-align: center; font-size: 12px; color: var(--dsh-fg-subtle);
+  background: rgba(255,255,255,0.03); border: 1px solid var(--dsh-border);
+  border-radius: 999px; padding: 3px 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.frame-body { flex: 1; min-height: 0; position: relative; display: grid; place-items: center; }
+.frame-foot {
+  flex: none; height: 26px; display: flex; align-items: center; justify-content: center; gap: 8px;
+  border-top: 1px solid var(--dsh-border); font-size: 11.5px; color: var(--dsh-fg-subtle);
+}
+.boot-state, .ready-state { display: grid; place-items: center; gap: 16px; padding: 24px; text-align: center; }
+.spinner {
+  width: 30px; height: 30px; border-radius: 50%;
+  border: 2px solid rgba(123,127,232,0.18); border-top-color: #9FA4EE;
+  animation: spin .8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+.boot-text { font-size: 13.5px; color: var(--dsh-fg-muted); }
+.boot-text .dots i { font-style: normal; animation: blink 1.4s infinite; }
+.boot-text .dots i:nth-child(2) { animation-delay: .2s; }
+.boot-text .dots i:nth-child(3) { animation-delay: .4s; }
+@keyframes blink { 0%,100% { opacity: .25; } 50% { opacity: 1; } }
+.ready-state h2 { font-size: 17px; font-weight: 650; letter-spacing: .2px; }
+.ready-state p { font-size: 13px; color: var(--dsh-fg-muted); max-width: 360px; }
+.ready-logo {
+  width: 46px; height: 46px; border-radius: 12px; display: grid; place-items: center;
+  background: linear-gradient(135deg, #7B7FE8, #C471ED 55%, #58A6FF);
+  box-shadow: 0 6px 20px rgba(123,127,232,.35);
+}
+.ready-logo svg { width: 23px; height: 23px; }
+.ready-actions { display: flex; gap: 10px; margin-top: 4px; }
+iframe#dsh-frame { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; display: none; }
+
+/* ============ 卸载确认（全局） ============ */
+.btn-mini { height: 28px; padding: 0 12px; font-size: 12.5px; border-radius: 7px; }
+</style>
+</head>
+<body>
+
+<div class="shell">
+  <!-- ===== 顶栏 ===== -->
+  <header class="topbar" data-od-id="topbar">
+    <div class="brand">
+      <svg width="22" height="22" viewBox="0 0 22 22" aria-hidden="true" style="flex:none">
+        <defs>
+          <linearGradient id="g-brand" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0" stop-color="#7B7FE8"/><stop offset=".55" stop-color="#C471ED"/><stop offset="1" stop-color="#58A6FF"/>
+          </linearGradient>
+        </defs>
+        <rect width="22" height="22" rx="6.5" fill="url(#g-brand)"/>
+        <path d="M7 7.5h8M7 11h8M7 14.5h5" stroke="#fff" stroke-width="2" stroke-linecap="round" opacity=".95"/>
+      </svg>
+      <span class="brand-name">DeepSeek Harness</span>
+    </div>
+
+    <nav class="tabs" role="tablist" aria-label="主导航" data-od-id="tabs">
+      <button class="tab active" id="tab-workspace" role="tab" aria-selected="true" aria-controls="view-workspace" data-tab="workspace" tabindex="0"><span class="tab-dot"></span>工作台</button>
+      <button class="tab" id="tab-dsh" role="tab" aria-selected="false" aria-controls="view-dsh" data-tab="dsh" tabindex="-1"><span class="tab-dot"></span>dsh</button>
+      <button class="tab" id="tab-plugins" role="tab" aria-selected="false" aria-controls="view-plugins" data-tab="plugins" tabindex="-1"><span class="tab-dot"></span>插件</button>
+      <button class="tab" id="tab-about" role="tab" aria-selected="false" aria-controls="view-about" data-tab="about" tabindex="-1"><span class="tab-dot"></span>关于</button>
+    </nav>
+
+    <div class="kbd-hint" aria-hidden="true">
+      <span class="hint-label">切换视图</span>
+      <kbd>⌘</kbd><kbd>K</kbd>
+    </div>
+  </header>
+
+  <main class="stage">
+    <!-- ===== 工作台 ===== -->
+    <section id="view-workspace" class="view active" role="tabpanel" aria-labelledby="tab-workspace">
+      <div class="workspace-wrap">
+        <div class="frame" data-od-id="workbench-frame">
+          <div class="frame-bar">
+            <div class="lights" aria-hidden="true"><i></i><i></i><i></i></div>
+            <div class="frame-url mono">dsh · localhost:8787</div>
+            <button class="btn btn-ghost btn-sm" id="btn-reload-bar">重新加载</button>
+          </div>
+          <div class="frame-body">
+            <iframe id="dsh-frame" title="dsh 工作台占位" tabindex="-1" aria-hidden="true"></iframe>
+            <div class="boot-state" id="boot-state" role="status" aria-live="polite">
+              <div class="spinner"></div>
+              <p class="boot-text">正在启动 dsh 工作台<span class="dots"><i>.</i><i>.</i><i>.</i></span></p>
+            </div>
+            <div class="ready-state" id="ready-state" hidden>
+              <div class="ready-logo">
+                <svg viewBox="0 0 22 22" aria-hidden="true">
+                  <path d="M7 7.5h8M7 11h8M7 14.5h5" stroke="#fff" stroke-width="2" stroke-linecap="round" opacity=".95"/>
+                </svg>
+              </div>
+              <h2>工作台已就绪</h2>
+              <p>dsh web 工作台已在此加载，当前为预览占位视图。<br><span class="mono" style="color:var(--dsh-fg-muted)" id="frame-version">dsh v0.20.3</span></p>
+              <div class="ready-actions">
+                <button class="btn btn-ghost btn-sm" id="btn-reload-ready">重新加载</button>
+              </div>
+            </div>
+          </div>
+          <div class="frame-foot">WebView 已连接 · 桌面壳 v0.20.3</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===== dsh 面板 ===== -->
+    <section id="view-dsh" class="view" role="tabpanel" aria-labelledby="tab-dsh">
+      <div class="container">
+
+        <div class="card hero" data-od-id="dsh-current-version">
+          <div class="hero-main">
+            <div class="card-label">当前版本</div>
+            <div class="hero-version">
+              <span class="version-num mono" id="dsh-current-ver">0.20.3</span>
+              <span class="badge badge-current">当前</span>
+            </div>
+            <div class="status" id="dsh-status" role="status" aria-live="polite">
+              <span class="dot dot-success"></span><span>已是最新版本</span>
+            </div>
+          </div>
+          <div class="hero-actions">
+            <button class="btn btn-ghost" id="btn-check-update">检查更新</button>
+          </div>
+        </div>
+
+        <div class="card update-card" id="update-section" hidden data-od-id="dsh-update">
+          <div class="card-row">
+            <div class="update-icon" aria-hidden="true">
+              <svg viewBox="0 0 16 16" fill="none">
+                <path d="M8 3v6m0 0 2.5-2.5M8 9 5.5 6.5M4 10.5h8" stroke="#fff" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+            </div>
+            <div class="grow">
+              <div class="card-title">更新到最新</div>
+              <div class="update-desc">发现新版本 <b class="mono">v0.21.0</b> · 包含性能改进与稳定性修复</div>
+            </div>
+            <button class="btn btn-primary" id="btn-apply-update">更新到 v0.21.0</button>
+          </div>
+        </div>
+
+        <div class="card" data-od-id="dsh-version-list">
+          <div class="card-header">
+            <h2>版本列表</h2>
+            <span class="card-hint">已安装的历史版本可直接切换</span>
+          </div>
+          <div class="list" id="version-list"></div>
+        </div>
+
+        <div class="card" data-od-id="dsh-registry">
+          <div class="card-header">
+            <h2>Registry 源</h2>
+            <span class="card-hint">安装与更新 dsh 时使用的下载源</span>
+          </div>
+          <div class="field-row">
+            <input class="input mono" id="registry-input" value="https://registry.npmjs.org" spellcheck="false" aria-label="Registry 源地址">
+            <button class="btn btn-ghost" id="btn-save-registry">保存</button>
+          </div>
+          <div class="field-status" id="registry-status" role="status" aria-live="polite">默认源 · 当前配置未修改</div>
+        </div>
+
+      </div>
+    </section>
+
+    <!-- ===== 插件面板 ===== -->
+    <section id="view-plugins" class="view" role="tabpanel" aria-labelledby="tab-plugins">
+      <div class="container">
+
+        <div class="card" data-od-id="plugins-installed">
+          <div class="card-header">
+            <h2>已安装插件</h2>
+            <span class="card-hint" id="plugin-count">3 个插件</span>
+          </div>
+          <div class="list" id="plugin-list"></div>
+          <div class="empty" id="plugin-empty" hidden>尚未安装插件 · 在下方输入包名开始安装</div>
+        </div>
+
+        <div class="card" data-od-id="plugins-install">
+          <div class="card-header">
+            <h2>安装插件</h2>
+            <span class="card-hint">支持 npm 包名或 scoped 包名</span>
+          </div>
+          <div class="field-row">
+            <input class="input mono" id="plugin-input" placeholder="例如 @dsh/theme-aurora" spellcheck="false" aria-label="插件包名">
+            <button class="btn btn-primary" id="btn-install-plugin" disabled>安装</button>
+          </div>
+          <div class="field-status" id="plugin-install-status" role="status" aria-live="polite"></div>
+        </div>
+
+        <div class="card" data-od-id="plugins-output">
+          <div class="card-header">
+            <h2>输出</h2>
+            <span class="card-hint mono" id="log-clear" role="button" tabindex="0" aria-label="清空输出">清空</span>
+          </div>
+          <pre class="log" id="log" role="log" aria-live="polite"></pre>
+        </div>
+
+      </div>
+    </section>
+
+    <!-- ===== 关于面板 ===== -->
+    <section id="view-about" class="view" role="tabpanel" aria-labelledby="tab-about">
+      <div class="container">
+
+        <div class="card" data-od-id="about-app">
+          <div class="about-main">
+            <div class="app-logo">
+              <svg viewBox="0 0 22 22" aria-hidden="true">
+                <path d="M7 7.5h8M7 11h8M7 14.5h5" stroke="#fff" stroke-width="2" stroke-linecap="round" opacity=".95"/>
+              </svg>
+            </div>
+            <div>
+              <div class="about-title">DeepSeek Harness Desktop</div>
+              <div class="about-meta">版本 <span class="mono">v0.20.3</span> · stable · 桌面壳（Tauri 2.0）</div>
+              <div class="status about-status" id="app-status" role="status" aria-live="polite">
+                <span class="dot dot-success"></span><span>已是最新版本</span>
+              </div>
+            </div>
+          </div>
+          <div class="about-actions">
+            <button class="btn btn-ghost" id="btn-check-app">检查更新</button>
+            <button class="btn btn-primary" id="btn-app-download" disabled>下载并安装更新</button>
+            <button class="btn btn-ghost" id="btn-open-releases">在浏览器打开下载页</button>
+          </div>
+          <div class="field-status" id="app-status-line" role="status" aria-live="polite"></div>
+        </div>
+
+        <div class="card card-danger" data-od-id="about-uninstall">
+          <div class="card-header">
+            <h2>卸载</h2>
+            <span class="card-hint">此操作不可撤销</span>
+          </div>
+          <div id="uninstall-body">
+            <div class="uninstall-row" data-mode="keep">
+              <div>
+                <div class="opt-title">仅卸载应用</div>
+                <div class="opt-desc">保留 ~/.dsh 配置与数据，便于将来重装</div>
+              </div>
+              <button class="btn btn-danger-ghost btn-uninstall" data-mode="keep">卸载（保留数据）</button>
+            </div>
+            <div class="uninstall-row" data-mode="all">
+              <div>
+                <div class="opt-title">完整卸载</div>
+                <div class="opt-desc">同时删除 ~/.dsh 中全部配置、插件与版本数据</div>
+              </div>
+              <button class="btn btn-danger btn-uninstall" data-mode="all">完全卸载</button>
+            </div>
+          </div>
+          <div class="uninstall-confirm" id="uninstall-confirm" hidden>
+            <span id="confirm-text">确认卸载？此操作不可撤销。</span>
+            <div class="btn-group">
+              <button class="btn btn-danger btn-mini" id="confirm-yes">确认卸载</button>
+              <button class="btn btn-ghost btn-mini" id="confirm-no">取消</button>
+            </div>
+          </div>
+          <div class="uninstall-done" id="uninstall-done" hidden>
+            <b>应用已卸载（演示）</b><br>
+            <span id="done-detail">已保留 ~/.dsh 数据。</span>
+            <div style="margin-top:14px">
+              <button class="btn btn-ghost btn-sm" id="uninstall-reset">恢复演示</button>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </section>
+  </main>
+</div>
+
+<script>
+"use strict";
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const $ = id => document.getElementById(id);
+
+/* ============ Tab 切换 / 快捷键 ============ */
+const TABS = ['workspace', 'dsh', 'plugins', 'about'];
+let activeIndex = 0;
+
+function activate(i) {
+  i = (i + TABS.length) % TABS.length;
+  activeIndex = i;
+  document.querySelectorAll('.tab').forEach((b, j) => {
+    const on = j === i;
+    b.classList.toggle('active', on);
+    b.setAttribute('aria-selected', on);
+    b.tabIndex = on ? 0 : -1;
+  });
+  document.querySelectorAll('.view').forEach(v =>
+    v.classList.toggle('active', v.id === 'view-' + TABS[i]));
+  try { localStorage.setItem('dshActiveTab', String(i)); } catch (e) {}
+}
+document.querySelectorAll('.tab').forEach(b => {
+  b.addEventListener('click', () => activate(TABS.indexOf(b.dataset.tab)));
+});
+const tablist = document.querySelector('.tabs');
+tablist.addEventListener('keydown', e => {
+  if (e.key !== 'ArrowRight' && e.key !== 'ArrowLeft' && e.key !== 'Home' && e.key !== 'End') return;
+  e.preventDefault();
+  let i = activeIndex;
+  if (e.key === 'ArrowRight') i = (i + 1) % TABS.length;
+  if (e.key === 'ArrowLeft')  i = (i - 1 + TABS.length) % TABS.length;
+  if (e.key === 'Home') i = 0;
+  if (e.key === 'End')  i = TABS.length - 1;
+  activate(i);
+  document.querySelectorAll('.tab')[i].focus();
+});
+window.addEventListener('keydown', e => {
+  const t = e.target;
+  if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+  if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+    e.preventDefault();
+    activate(activeIndex + 1);
+  } else if (e.key === 'Escape') {
+    activate(0);
+  }
+});
+
+/* ============ 工作台引导 ============ */
+let bootTimer = null;
+function bootWorkbench() {
+  $('boot-state').hidden = false;
+  $('ready-state').hidden = true;
+  clearTimeout(bootTimer);
+  bootTimer = setTimeout(() => {
+    $('boot-state').hidden = true;
+    $('ready-state').hidden = false;
+  }, 2600);
+}
+$('btn-reload-bar').addEventListener('click', bootWorkbench);
+$('btn-reload-ready').addEventListener('click', bootWorkbench);
+function setFrameVersion() { $('frame-version').textContent = 'dsh v' + dshCurrentV; }
+
+/* ============ 状态工具 ============ */
+function setStatus(id, cls, text) {
+  const el = $(id);
+  el.className = 'status' + (cls ? ' ' + cls : '');
+  el.innerHTML = '<span class="dot dot-' + cls.replace('acc', 'accent') + '"></span><span>' + text + '</span>';
+}
+
+/* ============ dsh：版本管理 ============ */
+const VERSIONS = [
+  { v: '0.21.0', installed: false },
+  { v: '0.20.3', installed: true  },
+  { v: '0.20.2', installed: true  },
+  { v: '0.20.1', installed: false },
+  { v: '0.19.9', installed: false },
+];
+const LATEST_V = '0.21.0';
+let dshCurrentV = '0.20.3';
+let pendingUpdate = false;
+
+function prevInstalledBelow() {
+  const list = VERSIONS.filter(r => r.installed && r.v !== dshCurrentV).map(r => r.v).sort();
+  return list[list.length - 1] || null;
+}
+function rowBtnLabel(r) {
+  if (r.v === dshCurrentV) return '已安装';
+  if (r.installed) return r.v === prevInstalledBelow() ? '回滚到上一版本' : '切换到此版本';
+  return '安装';
+}
+function renderDshStatus() {
+  const st = $('dsh-status');
+  if (pendingUpdate) {
+    st.className = 'status acc';
+    st.innerHTML = '<span class="dot dot-accent"></span><span>发现新版本 v' + LATEST_V + ' · 可更新</span>';
+  } else {
+    st.className = 'status ok';
+    st.innerHTML = '<span class="dot dot-success"></span><span>已是最新版本</span>';
+  }
+  $('update-section').hidden = !pendingUpdate;
+  $('dsh-current-ver').textContent = dshCurrentV;
+  $('btn-apply-update').textContent = '更新到 v' + LATEST_V;
+}
+function renderVersions() {
+  const list = $('version-list');
+  list.innerHTML = '';
+  VERSIONS.forEach(r => {
+    const row = document.createElement('div');
+    row.className = 'list-row';
+    const isCurrent = r.v === dshCurrentV;
+
+    const meta = document.createElement('div');
+    meta.className = 'row-meta mono';
+    let badges = '';
+    if (r.v === LATEST_V) badges += '<span class="badge badge-latest">最新</span> ';
+    if (isCurrent) badges += '<span class="badge badge-current">当前</span> ';
+    if (r.installed && !isCurrent) badges += '<span class="badge badge-installed">已安装</span>';
+    meta.innerHTML = badges || '<span style="color:var(--dsh-fg-subtle)">未安装</span>';
+
+    const btn = document.createElement('button');
+    btn.className = 'btn btn-sm ' + (isCurrent ? 'btn-ghost' : 'btn-ghost');
+    btn.textContent = rowBtnLabel(r);
+    btn.disabled = isCurrent;
+    btn.setAttribute('data-v', r.v);
+    if (!isCurrent) btn.addEventListener('click', () => actVersion(r, btn));
+
+    row.innerHTML = '<span class="grow"><span class="row-title mono">v' + r.v + '</span></span>';
+    row.appendChild(meta);
+    row.appendChild(btn);
+    list.appendChild(row);
+  });
+}
+async function actVersion(r, btn) {
+  const busy = r.installed ? '切换中…' : '安装中…';
+  btn.disabled = true; btn.textContent = busy;
+  await sleep(2400);
+  VERSIONS.forEach(x => { if (x.v === dshCurrentV) x.installed = true; });
+  dshCurrentV = r.v;
+  if (dshCurrentV === LATEST_V) pendingUpdate = false;
+  renderVersions();
+  renderDshStatus();
+  setFrameVersion();
+}
+
+$('btn-check-update').addEventListener('click', async function () {
+  const btn = this;
+  btn.disabled = true; btn.textContent = '检查中…';
+  setStatus('dsh-status', 'busy', '正在检查更新…');
+  await sleep(1400);
+  pendingUpdate = true;
+  renderDshStatus();
+  btn.disabled = false; btn.textContent = '检查更新';
+});
+$('btn-apply-update').addEventListener('click', async function () {
+  const btn = this;
+  btn.disabled = true; btn.textContent = '更新中…';
+  await sleep(2600);
+  VERSIONS.forEach(x => { if (x.v === dshCurrentV) x.installed = true; });
+  dshCurrentV = LATEST_V;
+  pendingUpdate = false;
+  renderVersions();
+  renderDshStatus();
+  setFrameVersion();
+  btn.disabled = false; btn.textContent = '更新到 v' + LATEST_V;
+});
+
+/* ============ dsh：registry 源 ============ */
+$('btn-save-registry').addEventListener('click', async function () {
+  const val = $('registry-input').value.trim();
+  const st = $('registry-status');
+  if (!val) { st.textContent = '请输入有效的 registry 地址'; return; }
+  const btn = this;
+  btn.disabled = true; btn.textContent = '保存中…';
+  await sleep(700);
+  st.innerHTML = '<span style="color:var(--dsh-success)">✓ 已保存</span> · 后续安装将使用 <span class="mono">' + val + '</span>';
+  btn.disabled = false; btn.textContent = '保存';
+});
+
+/* ============ 插件 ============ */
+let PLUGINS = [
+  { name: '@dsh/theme-aurora', ver: '1.2.0' },
+  { name: 'dsh-plugin-kanban', ver: '0.4.1' },
+  { name: '@dsh/statusline',   ver: '0.3.0' },
+];
+const LOG = $('log');
+function nowT() {
+  const d = new Date(), p = n => String(n).padStart(2, '0');
+  return p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
+}
+function logLine(parts) {
+  const line = document.createElement('div');
+  const t = document.createElement('span'); t.className = 'l-time'; t.textContent = '[' + nowT() + '] ';
+  line.appendChild(t);
+  parts.forEach(p => {
+    const s = document.createElement('span');
+    s.className = p.cls || ''; s.textContent = p.t;
+    line.appendChild(s);
+  });
+  LOG.appendChild(line);
+  LOG.scrollTop = LOG.scrollHeight;
+}
+function seedLog() {
+  logLine([{ t: 'dsh 已连接 · registry: registry.npmjs.org' }]);
+  logLine([{ t: '已加载 ' + PLUGINS.length + ' 个插件' }]);
+  logLine([{ t: 'WebView 工作台就绪 · v', cls: '' }, { t: dshCurrentV, cls: 'l-acc' }]);
+}
+function renderPlugins() {
+  const list = $('plugin-list');
+  list.innerHTML = '';
+  PLUGINS.forEach(p => {
+    const row = document.createElement('div');
+    row.className = 'list-row';
+    const badges = '<span class="badge ' + (p.fresh ? 'badge-fresh' : 'badge-installed') + '">' + (p.fresh ? '新安装' : '已安装') + '</span>';
+    const btn = document.createElement('button');
+    btn.className = 'btn btn-danger-ghost btn-sm';
+    btn.textContent = '卸载';
+    btn.addEventListener('click', () => uninstallPlugin(p.name, btn));
+    row.innerHTML = '<span class="grow"><span class="row-title mono">' + p.name + '</span><span class="row-sub mono">' + (p.ver === 'latest' ? 'latest' : 'v' + p.ver) + '</span></span>';
+    const meta = document.createElement('div');
+    meta.className = 'row-meta';
+    meta.innerHTML = badges;
+    row.appendChild(meta);
+    row.appendChild(btn);
+    list.appendChild(row);
+  });
+  const empty = PLUGINS.length === 0;
+  $('plugin-empty').hidden = !empty;
+  list.hidden = empty;
+  $('plugin-count').textContent = empty ? '暂无插件' : PLUGINS.length + ' 个插件';
+}
+async function uninstallPlugin(name, btn) {
+  btn.disabled = true; btn.textContent = '卸载中…';
+  await sleep(1100);
+  PLUGINS = PLUGINS.filter(p => p.name !== name);
+  renderPlugins();
+  logLine([{ t: '已卸载 ', cls: '' }, { t: name, cls: 'l-warn' }]);
+}
+$('plugin-input').addEventListener('input', function () {
+  $('btn-install-plugin').disabled = this.value.trim().length === 0;
+});
+$('btn-install-plugin').addEventListener('click', async function () {
+  const name = $('plugin-input').value.trim();
+  const st = $('plugin-install-status');
+  if (!/^(@[\w-]+\/)?[\w.-]+$/.test(name)) {
+    st.innerHTML = '<span style="color:var(--dsh-danger)">包名格式无效</span>';
+    return;
+  }
+  if (PLUGINS.some(p => p.name === name)) {
+    st.innerHTML = '<span style="color:var(--dsh-warning)">该插件已安装</span>';
+    return;
+  }
+  const btn = this;
+  btn.disabled = true; btn.textContent = '安装中…';
+  st.textContent = '正在安装 ' + name + '…';
+  logLine([{ t: '正在解析 ', cls: '' }, { t: name, cls: 'l-acc' }, { t: ' …' }]);
+  await sleep(700);
+  logLine([{ t: '从 registry 下载 1.4 MB …' }]);
+  await sleep(1500);
+  logLine([{ t: '校验完整性（SHA-256）…' }]);
+  await sleep(900);
+  PLUGINS.push({ name, ver: 'latest', fresh: true });
+  renderPlugins();
+  logLine([{ t: '✓ 已安装 ', cls: 'l-ok' }, { t: name + ' @ latest', cls: 'l-acc' }]);
+  st.textContent = '';
+  $('plugin-input').value = '';
+  btn.disabled = true; btn.textContent = '安装';
+});
+$('log-clear').addEventListener('click', () => { LOG.innerHTML = ''; });
+$('log-clear').addEventListener('keydown', e => {
+  if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); LOG.innerHTML = ''; }
+});
+
+/* ============ 关于 ============ */
+$('btn-check-app').addEventListener('click', async function () {
+  const btn = this;
+  btn.disabled = true; btn.textContent = '检查中…';
+  $('app-status').className = 'status about-status';
+  $('app-status').innerHTML = '<span class="dot dot-busy"></span><span>正在检查更新…</span>';
+  await sleep(1300);
+  $('app-status').className = 'status about-status ok';
+  $('app-status').innerHTML = '<span class="dot dot-success"></span><span>已是最新版本</span>';
+  btn.disabled = false; btn.textContent = '检查更新';
+});
+$('btn-open-releases').addEventListener('click', function () {
+  $('app-status-line').textContent = '已打开下载页（预览）· 将跳转至 GitHub Releases';
+});
+$('btn-app-download').addEventListener('click', async function () {
+  const btn = this;
+  btn.disabled = true; btn.textContent = '下载中…';
+  $('app-status-line').textContent = '正在下载更新包…（预览）';
+  await sleep(2000);
+  $('app-status-line').textContent = '更新包已就绪 · 重启应用后生效（预览）';
+  btn.disabled = false; btn.textContent = '下载并安装更新';
+});
+
+/* ============ 卸载（关于） ============ */
+let uninstallMode = null;
+$('uninstall-body').addEventListener('click', e => {
+  const btn = e.target.closest('.btn-uninstall');
+  if (!btn) return;
+  uninstallMode = btn.dataset.mode;
+  $('confirm-text').textContent = uninstallMode === 'all'
+    ? '确认完全卸载？将删除 ~/.dsh 全部数据，此操作不可撤销。'
+    : '确认卸载？将保留 ~/.dsh 数据。';
+  $('uninstall-confirm').hidden = false;
+});
+$('confirm-no').addEventListener('click', () => { $('uninstall-confirm').hidden = true; });
+$('confirm-yes').addEventListener('click', async function () {
+  const btn = this;
+  btn.disabled = true; btn.textContent = '卸载中…';
+  await sleep(1400);
+  $('uninstall-confirm').hidden = true;
+  $('uninstall-body').hidden = true;
+  $('done-detail').textContent = uninstallMode === 'all'
+    ? '已删除 ~/.dsh 全部数据（演示）。'
+    : '已保留 ~/.dsh 数据（演示）。';
+  $('uninstall-done').hidden = false;
+  btn.disabled = false; btn.textContent = '确认卸载';
+});
+$('uninstall-reset').addEventListener('click', () => {
+  $('uninstall-done').hidden = true;
+  $('uninstall-body').hidden = false;
+});
+
+/* ============ 初始化 ============ */
+(function init() {
+  renderVersions();
+  renderDshStatus();
+  renderPlugins();
+  seedLog();
+  setFrameVersion();
+  bootWorkbench();
+  try {
+    const saved = parseInt(localStorage.getItem('dshActiveTab'), 10);
+    if (saved >= 0 && saved < TABS.length) activate(saved);
+  } catch (e) {}
+})();
+</script>
+</body>
+</html>
