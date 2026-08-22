@@ -26,6 +26,7 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod appupdate;
 mod dsh;
 mod plugin;
 mod registry;
@@ -2359,6 +2360,8 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             plugin::plugin_op,
             plugin::plugin_list_cmd,
+            appupdate::check_app_update_cmd,
+            appupdate::app_update_cmd,
             lan_state,
             lan_toggle,
             uninstall_run,
