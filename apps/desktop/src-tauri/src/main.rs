@@ -694,6 +694,56 @@ fn list_dsh_versions_cmd(app: AppHandle) -> Vec<String> {
     crate::registry::list_versions(&reg).unwrap_or_default()
 }
 
+/// dsh 版本管理状态（壳页「更新」Tab 查询）。
+#[derive(Serialize)]
+struct DshState {
+    current: String,
+    latest: Option<String>,
+    versions: Vec<String>,
+    installing: bool,
+}
+
+/// 启动时异步查询的 npm latest 缓存（离线/断网失败静默，latest 保持 None）。
+static LATEST_DSH: Mutex<Option<String>> = Mutex::new(None);
+
+#[tauri::command]
+fn get_dsh_state(app: AppHandle) -> DshState {
+    let p = paths_from_app(&app);
+    let reg = crate::registry::registry_url(load_settings_at(&p.app_data).registry.as_deref());
+    let current = crate::dsh::current_closure(&p)
+        .and_then(|d| crate::dsh::closure_version(&d))
+        .unwrap_or_else(|| "未安装".into());
+    DshState {
+        latest: mlock(&LATEST_DSH).clone(),
+        current,
+        versions: crate::registry::list_versions(&reg).unwrap_or_default(),
+        installing: SETUP_BUSY.load(Ordering::SeqCst),
+    }
+}
+
+/// 安装指定版本 dsh 并自动重启工作台（新版本生效）。
+#[tauri::command]
+async fn update_dsh_cmd(app: AppHandle, ver: String) -> Result<(), String> {
+    if SETUP_BUSY.swap(true, Ordering::SeqCst) {
+        return Err("已有一个安装正在进行中".to_string());
+    }
+    let app_after = app.clone(); // 供安装成功后切回主线程 restart_dsh（app 将被 move 进阻塞线程）
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        let p = paths_from_app(&app);
+        let reg = crate::registry::registry_url(load_settings_at(&p.app_data).registry.as_deref());
+        crate::dsh::install_version(&p, &ver, &reg, &|_msg| {})
+    })
+    .await;
+    // join 失败（线程 panic）也必须在返回前释放锁，否则永久锁死（审查项）
+    SETUP_BUSY.store(false, Ordering::SeqCst);
+    result.map_err(|e| format!("安装线程异常：{e}"))??;
+    // 安装成功 → 自动重启工作台（新版本生效）
+    let _ = app_after
+        .clone()
+        .run_on_main_thread(move || restart_dsh(&app_after));
+    Ok(())
+}
+
 pub(crate) fn boot(app: AppHandle) {
     // thin shell: no bundled closure — first run must install dsh first
     let p = paths_from_app(&app);
@@ -1591,46 +1641,6 @@ fn set_login_cmd(enable: bool) -> Result<(), String> {
     Ok(())
 }
 
-/// 检查更新：发现新版 → 自绘确认框 → 后台应用。
-/// 返回状态串：latest（已是最新）| updating（正开始更新）| cancelled（用户取消）。
-/// 必须 async + spawn_blocking：show_modal 要求后台线程（会阻塞等用户点击），
-/// 同步 command 走主线程会卡死主事件循环（弹窗开不出来、GUI 冻结）。
-#[tauri::command]
-async fn check_update_cmd(app: AppHandle) -> Result<String, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let p = paths_from_app(&app);
-        let settings = load_settings_at(&p.app_data);
-        match crate::dsh::check_update(&p, settings.registry.as_deref()) {
-            Ok(Some((_, latest))) => {
-                let msg = format!("发现新版本 v{latest}。是否现在更新？");
-                let yes = show_modal(&app, "DeepSeek Harness 更新", &msg, "yesno");
-                if yes {
-                    let app3 = app.clone();
-                    let p2 = p.clone();
-                    let reg = settings.registry.clone();
-                    std::thread::spawn(move || {
-                        let reg_url = crate::registry::registry_url(reg.as_deref());
-                        match crate::dsh::install_version(&p2, &latest, &reg_url, &|_msg| {}) {
-                            Ok(()) => {
-                                notify("更新完成", &format!("已升级到 v{latest}，正在重启 dsh"));
-                                restart_dsh(&app3);
-                            }
-                            Err(e) => notify("更新失败", &e),
-                        }
-                    });
-                    Ok("updating".into())
-                } else {
-                    Ok("cancelled".into())
-                }
-            }
-            Ok(None) => Ok("latest".into()),
-            Err(e) => Err(e),
-        }
-    })
-    .await
-    .map_err(|e| format!("检查更新线程异常：{e}"))?
-}
-
 /// 卸载确认窗口返回的状态。
 #[derive(Serialize)]
 struct LanState {
@@ -1747,31 +1757,6 @@ async fn uninstall_run(app: AppHandle, wipe: bool) -> Result<(), String> {
     }
     app.exit(0);
     Ok(())
-}
-
-// ---------------------------------------------------------------------------
-// Update flows (GUI)
-// ---------------------------------------------------------------------------
-// （P3：手动检查更新已并入壳页「更新」Tab，走 check_update_cmd command；
-//   check_for_updates 已删除，不再有托盘入口。）
-
-/// Silent periodic check: notify only (no dialog); the user updates via the menu.
-fn periodic_check(app: AppHandle) {
-    std::thread::spawn(move || {
-        std::thread::sleep(Duration::from_secs(6 * 3600));
-        loop {
-            let p = paths_from_app(&app);
-            let settings = load_settings(&app);
-            match crate::dsh::check_update(&p, settings.registry.as_deref()) {
-                Ok(Some((_, latest))) => notify(
-                    "有可用更新",
-                    &format!("DeepSeek Harness v{latest} 已发布，从托盘菜单更新"),
-                ),
-                _ => {}
-            }
-            std::thread::sleep(Duration::from_secs(24 * 3600));
-        }
-    });
 }
 
 // ---------------------------------------------------------------------------
@@ -2752,7 +2737,8 @@ fn main() {
             restart_dsh_cmd,
             open_browser_cmd,
             set_login_cmd,
-            check_update_cmd,
+            get_dsh_state,
+            update_dsh_cmd,
             setup_dsh_cmd,
             setup_state_cmd,
             setup_cancel_cmd,
@@ -2837,7 +2823,19 @@ fn main() {
                 reveal_main_window(&reveal_app, mlock(&DSH_URL).as_deref());
             });
             std::thread::spawn(move || boot(handle));
-            periodic_check(app.handle().clone());
+            // 启动时异步查一次 latest（替代旧 24h 定时检查）；离线/断网失败静默不打扰
+            {
+                let app = app.handle().clone();
+                std::thread::spawn(move || {
+                    let p = paths_from_app(&app);
+                    let reg = crate::registry::registry_url(
+                        load_settings_at(&p.app_data).registry.as_deref(),
+                    );
+                    if let Ok(v) = crate::registry::latest_version(&reg) {
+                        *mlock(&LATEST_DSH) = Some(v);
+                    }
+                });
+            }
             Ok(())
         })
         .build(tauri::generate_context!())
