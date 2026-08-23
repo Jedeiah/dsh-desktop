@@ -1281,6 +1281,9 @@ async fn uninstall_run(app: AppHandle, wipe: bool) -> Result<(), String> {
             );
         }
     }
+    // 卸载链完成：复位标志后退出（否则 app.exit 触发的 ExitRequested 会被
+    // 自身的 prevent_exit 拦截——从"退出但没卸载"变成"卸载了但不退出"）。
+    UNINSTALLING.store(false, Ordering::SeqCst);
     app.exit(0);
     Ok(())
 }
