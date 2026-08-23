@@ -1,7 +1,7 @@
 # DeepSeek Harness Desktop 桌面端（DSh Desktop）
 
 <p align="center">
-  <img src="apps/desktop/src-tauri/icons/icon-rounded-256.png" alt="DeepSeek Harness 图标" width="128">
+  <img src="apps/desktop/src-tauri/icons/icon-rounded-256.png" alt="DeepSeek Harness Desktop 图标" width="128">
 </p>
 
 一个 **macOS / Windows 桌面 App**：双击即用，把官方 DeepSeek Harness（`dsh web`）装进一个桌面 App 里。App 是**瘦壳**——不内置 dsh，首次运行自动安装；带 dsh 版本管理、App 内更新、插件管理、托盘与干净卸载。
@@ -168,7 +168,7 @@ cd apps/desktop/src-tauri && cargo run
 
 # 发布构建（产出 .app + DMG）
 cargo tauri build
-#   产物：target/release/bundle/macos/DeepSeek Harness.app
+#   产物：target/release/bundle/macos/DeepSeek Harness Desktop.app
 #        target/release/bundle/dmg/DeepSeek Harness Desktop_<版本>_aarch64.dmg
 ```
 
