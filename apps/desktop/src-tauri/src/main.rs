@@ -571,6 +571,9 @@ struct SetupState {
 /// 防止并发触发安装（防重复安装；取消/失败/成功都会复位）。
 static SETUP_BUSY: AtomicBool = AtomicBool::new(false);
 
+/// 卸载链进行中标志：ExitRequested 时 prevent_exit，防 teardown 被打断。
+static UNINSTALLING: AtomicBool = AtomicBool::new(false);
+
 /// 最近一次安装进度文本（setup_state_cmd 轮询读取；事件仅作增量）。
 static SETUP_PROGRESS: Mutex<Option<String>> = Mutex::new(None);
 
@@ -1214,6 +1217,10 @@ async fn confirm_uninstall_cmd(app: AppHandle, wipe: bool) -> Result<(), String>
 
 #[tauri::command]
 async fn uninstall_run(app: AppHandle, wipe: bool) -> Result<(), String> {
+    // 卸载链进行中：ExitRequested 必须 prevent_exit（见 run 循环），
+    // 否则 destroy 全部窗口会触发默认退出，teardown 永远来不及执行
+    //（0.3.0 卸载"程序退出但没卸载"根因）。
+    UNINSTALLING.store(true, Ordering::SeqCst);
     // 先销毁全部 WebView 窗口：释放 WebView2 用户数据目录（app_data 内）占用，
     // Windows 共享锁下不销毁则删除必然 oserror 32。
     for label in [WINDOW_LABEL, MODAL_LABEL] {
@@ -1668,7 +1675,14 @@ fn main() {
             RunEvent::Reopen { .. } => {
                 reveal_main_window(_app_handle, mlock(&DSH_URL).as_deref());
             }
-            RunEvent::ExitRequested { .. } | RunEvent::Exit => kill_dsh(),
+            RunEvent::ExitRequested { api, .. } => {
+                // 卸载链进行中：阻止默认退出，等 teardown/回收站完成后再手动退出
+                if UNINSTALLING.load(Ordering::SeqCst) {
+                    api.prevent_exit();
+                }
+                kill_dsh();
+            }
+            RunEvent::Exit => kill_dsh(),
             _ => {}
         });
 }

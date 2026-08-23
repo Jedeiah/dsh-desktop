@@ -60,6 +60,7 @@
   function showPlaceholder() {
     // 先清内联 display 再取消 hidden（hidden=false 但残留 inline display:none
     // 时仍会隐藏；反之先 hidden=false 再清 display 会出现一帧闪变）
+    clearTimeout(placeholderTimer);
     wbPlaceholder.style.display = '';
     wbPlaceholder.hidden = false;
   }
@@ -69,10 +70,16 @@
     wbPlaceholder.hidden = true;
     wbPlaceholder.style.display = 'none';
   }
+  let placeholderTimer = null;
 
   // 占位层是绝对定位覆盖在 iframe 之上：在 iframe 真正绘制完成（onload）前
-  // 一直盖住，把"白屏/空白 iframe"阶段用 spinner 遮住，直到 onload 才撤。
-  wb.addEventListener('load', () => hidePlaceholder());
+  // 一直盖住，把"白屏/空白 iframe"阶段用 spinner 遮住。onload 后**延迟淡出**
+  // ——dsh web 是 SPA，load 远早于工作台就绪，立刻撤会露出其白屏/与它自带
+  // loading 交叠（用户反馈的"卡一下/loading 重叠"）。延迟 900ms 让首帧渲染完成。
+  wb.addEventListener('load', () => {
+    clearTimeout(placeholderTimer);
+    placeholderTimer = setTimeout(() => hidePlaceholder(), 900);
+  });
   wb.addEventListener('error', () => showPlaceholder());
 
   function loadWorkbench(url) {
@@ -336,7 +343,12 @@
       dshVersionsEl.appendChild(empty);
       return;
     }
-    versions.forEach((v) => {
+    // 渐进披露：默认只渲染最近 20 个（dsh 迭代快，版本多了全量渲染既长又噪）；
+    // 底部「显示全部 N 个版本」展开剩余。
+    const VISIBLE = 20;
+    const showAll = versions.length <= VISIBLE;
+    const slice = showAll ? versions : versions.slice(0, VISIBLE);
+    const mkRow = (v) => {
       const row = document.createElement('div');
       row.className = 'list-row';
 
@@ -371,8 +383,19 @@
         btn.disabled = installing;
       }
       row.appendChild(btn);
-      dshVersionsEl.appendChild(row);
-    });
+      return row;
+    };
+    slice.forEach((v) => dshVersionsEl.appendChild(mkRow(v)));
+    if (!showAll) {
+      const more = document.createElement('button');
+      more.className = 'ghost sm more-versions';
+      more.textContent = '显示全部 ' + versions.length + ' 个版本';
+      more.addEventListener('click', () => {
+        dshVersionsEl.innerHTML = '';
+        versions.forEach((v) => dshVersionsEl.appendChild(mkRow(v)));
+      });
+      dshVersionsEl.appendChild(more);
+    }
   }
 
   async function updateDsh(ver) {
