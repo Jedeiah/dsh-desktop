@@ -208,6 +208,38 @@ fn install_and_verify(
     Ok(())
 }
 
+/// 把 `<app-data>/dsh/v<ver>` 原子切换为 current（写 current 标记 + GC 保留新
+/// 与上一个、删除更老）。装完新版本 promote 后、以及"复用已存在可用版本目录"
+/// 时共用，避免两处重复、保证切换语义一致。
+fn activate_closure(dsh_dir: &Path, ver: &str) -> Result<(), String> {
+    let cur_marker = dsh_dir.join("current");
+    let prev_ver = std::fs::read_to_string(&cur_marker)
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    let tmp_marker = dsh_dir.join("current.tmp");
+    std::fs::write(&tmp_marker, format!("v{ver}\n"))
+        .map_err(|e| format!("写 current 标记失败: {e}"))?;
+    std::fs::rename(&tmp_marker, &cur_marker)
+        .map_err(|e| format!("切换 current 标记失败: {e}"))?;
+
+    // GC: keep the new version + the previous one (rollback), drop older ones.
+    if let Ok(entries) = std::fs::read_dir(dsh_dir) {
+        for e in entries.flatten() {
+            let name = e.file_name().to_string_lossy().to_string();
+            if !name.starts_with('v') || name.ends_with("-tmp") || name.ends_with(".old") {
+                continue;
+            }
+            let keep = name == format!("v{ver}") || Some(&name) == prev_ver.as_ref();
+            if !keep && e.path().is_dir() {
+                let _ = std::fs::remove_dir_all(e.path());
+                eprintln!("[dsh] dropped stale closure {name}");
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Install `@deepseek-ai/dsh@ver` into the app-data dir and switch `current`
 /// to it atomically. `progress` is called at stage transitions so the shell
 /// UI can render meaningful steps (npm output is not streamed).
@@ -220,8 +252,23 @@ pub fn install_version(
     let dsh_dir = p.app_data.join("dsh");
     std::fs::create_dir_all(&dsh_dir).map_err(|e| format!("创建目录失败: {e}"))?;
 
-    let tmp = dsh_dir.join(format!("v{ver}-tmp"));
     let final_dir = dsh_dir.join(format!("v{ver}"));
+    // 目标版本目录已存在且可用（版本匹配 + 闭包入口完整）：直接复用，只切换 current，
+    // 不重跑 npm install——切回已安装版本是秒切，也避免超大依赖树全量 resolve 极慢。
+    // 校验含入口文件 lib/bin.js，防止"目录曾被破坏但 VERSION/包目录仍在"被误判可复用
+    //（校验不过 fall through 到下方 npm install,不会静默跳过一次真正的重装）。
+    let dsh_pkg = final_dir.join("node_modules/@deepseek-ai/dsh");
+    if final_dir.is_dir()
+        && closure_version(&final_dir).as_deref() == Some(ver)
+        && dsh_pkg.join("lib/bin.js").is_file()
+    {
+        progress(&format!("dsh v{ver} 已存在，直接切换…"));
+        activate_closure(&dsh_dir, ver)?;
+        progress("完成");
+        return Ok(());
+    }
+
+    let tmp = dsh_dir.join(format!("v{ver}-tmp"));
     if tmp.exists() {
         std::fs::remove_dir_all(&tmp).map_err(|e| format!("清理临时目录失败: {e}"))?;
     }
@@ -254,37 +301,13 @@ pub fn install_version(
         return Err(format!("发布新版本目录失败: {e}"));
     }
 
-    let cur_marker = dsh_dir.join("current");
-    let prev_ver = std::fs::read_to_string(&cur_marker)
-        .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty());
-    let tmp_marker = dsh_dir.join("current.tmp");
-    std::fs::write(&tmp_marker, format!("v{ver}\n"))
-        .map_err(|e| format!("写 current 标记失败: {e}"))?;
-    std::fs::rename(&tmp_marker, &cur_marker)
-        .map_err(|e| format!("切换 current 标记失败: {e}"))?;
-
+    // 切 current 标记 + GC（与「复用已存在版本目录」共用同一逻辑）。
+    // 若切换失败，current 未变、当前激活版本不受影响（规格 6）。
+    activate_closure(&dsh_dir, ver)?;
     // current 标记已原子切换成功：此刻起旧版本目录不再被 current 引用，
-    // 才可安全删除 .old。若切换失败（磁盘满/权限等），旧目录仍在原位
-    // （或可被恢复），保证任何失败都不动当前可用版本（规格 6）。
+    // 才可安全删除 .old（顺序：先切 current 再删 .old，失败时可回滚）。
     if old.exists() {
         let _ = std::fs::remove_dir_all(&old);
-    }
-
-    // GC: keep the new version + the previous one (rollback), drop older ones.
-    if let Ok(entries) = std::fs::read_dir(&dsh_dir) {
-        for e in entries.flatten() {
-            let name = e.file_name().to_string_lossy().to_string();
-            if !name.starts_with('v') || name.ends_with("-tmp") || name.ends_with(".old") {
-                continue;
-            }
-            let keep = name == format!("v{ver}") || Some(&name) == prev_ver.as_ref();
-            if !keep && e.path().is_dir() {
-                let _ = std::fs::remove_dir_all(e.path());
-                eprintln!("[dsh] dropped stale closure {name}");
-            }
-        }
     }
     progress("完成");
     Ok(())
