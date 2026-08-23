@@ -132,6 +132,7 @@
       await new Promise(r => setTimeout(r, 800));
     }
     // 2) 事件监听（增量/换端口用）：3s 超时，不再阻塞主流程。
+    //    监听器之后常驻,用于捕获工作台换端口/重启后的 dsh:url(有意保留,非泄漏)。
     try {
       await Promise.race([
         T.event.listen('dsh:url', (ev) => loadWorkbench(ev.payload)),
@@ -257,11 +258,14 @@
         btnSetupCancel.disabled = true;
         let recovered = false;
         (async () => {
-          for (let i = 0; i < 36 && setupActive && !setupCancelled && !recovered; i++) {
+          // 轮询覆盖 ≥30s(38×800ms≈30.4s > setupDoneTimer 30s),避免 URL 恰在
+          // 30s 附近就绪被误判「启动失败」;单次 get_dsh_url 异常只跳过本次
+          // (continue)而非放弃剩余轮询。
+          for (let i = 0; i < 38 && setupActive && !setupCancelled && !recovered; i++) {
             try {
               const url = await invoke('get_dsh_url');
               if (url) { loadWorkbench(url, true); recovered = true; break; }
-            } catch (e) { break; }
+            } catch (e) { /* 单次失败忽略,继续下一轮 */ }
             await new Promise((r) => setTimeout(r, 800));
           }
         })();
