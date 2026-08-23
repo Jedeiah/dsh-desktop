@@ -114,6 +114,10 @@
     lastUrl = url;
     // dsh:url 事件 = 工作台就绪（引导安装成功后 boot 会发）→ 收起引导视图
     if (setupActive) hideSetupView();
+    // 自动切回工作台 tab：**仅安装/更新主动恢复（force）时**——用户在 dsh tab
+    // 点安装,装完要看到工作台加载;纯换端口/后台重启(dsh:url 事件)不带 force,
+    // 不打扰用户当前所在的 tab（避免把正在 dsh/plugins 操作的用户强拉回工作台）。
+    if (force) selectTab('workbench');
     showPlaceholder(); // 换端口/重载路径：先盖住，onload 后撤
     wb.src = url;
     wb.focus();
@@ -157,7 +161,9 @@
   const setupVer = $('setupVer');
   const setupAdv = $('setupAdv');
   let setupCancelled = false;
-  let setupDoneTimer = null; // 安装成功但 dsh:url 未达（boot 失败）时的恢复定时器
+  // 装完等待工作台就绪态：此时「取消」按钮语义为「放弃等待」（回初始页、不调
+  // setup_cancel_cmd——安装已完成无进程可取消）；区别于安装中的「取消安装」。
+  let setupInstalled = false;
   let setupProgressTimer = null; // 安装进度轮询（setup_state_cmd 兜底）
 
   function showSetupView() {
@@ -169,7 +175,6 @@
   function hideSetupView() {
     setupActive = false;
     setupView.hidden = true;
-    clearTimeout(setupDoneTimer); // 已切回工作台：取消「启动失败」恢复定时器
     clearInterval(setupProgressTimer); // 进度轮询停止
     if (!lastUrl) showPlaceholder(); // 引导收起但工作台未就绪：恢复占位 spinner
   }
@@ -231,7 +236,6 @@
     setupStarting = false; // 进入正常安装（此后由按钮禁用保护，不会重入）
     setupCancelled = false;
     setSetupPhase('stage'); // 从错误视图重试进入时，确保回到进行中视图（幂等）
-    clearTimeout(setupDoneTimer);
     // 每次安装重置进度状态（fetch 计数/去重/元信息），取消重装不残留旧值
     setupFetchCount = 0;
     setupLastProgress = null;
@@ -247,38 +251,13 @@
     startSetupProgressPolling();
     try {
       await invoke('setup_dsh_cmd', { ver, registry });
-      clearInterval(setupProgressTimer);
       // 成功：后端 boot 已在后台拉起 dsh（冷启动约 5-30s）。**不依赖 dsh:url
-      // 事件**（本环境实测会丢失）——主动轮询 get_dsh_url（等价「点重试」前半
-      // 段）拿到地址立即进入工作台加载页；30s 内仍拿不到才提示可重试（错误页
-      // 的「重试」会先直接拉起工作台，失败则重新安装）。
+      // 事件**（本环境实测会丢失）——装完后让 startSetupProgressPolling 继续跑，
+      // 它轮询 dsh_url 就绪 → loadWorkbench（现在会自动切回工作台 tab）。
+      // 不设 30s 定时报错兜底：dsh 刚装完正在冷启动,主动 showSetupError 会打断
+      // 一个本可能成功的启动（用户判定该兜底不合理）——只需耐心等到 dsh_url 就绪。
       if (!setupCancelled) {
-        setupStage.textContent = '安装完成，正在启动工作台…';
-        setupMeta.textContent = '冷启动约需 5-30 秒，请稍候…';
-        btnSetupCancel.disabled = true;
-        let recovered = false;
-        (async () => {
-          // 轮询覆盖 ≥30s(38×800ms≈30.4s > setupDoneTimer 30s),避免 URL 恰在
-          // 30s 附近就绪被误判「启动失败」;单次 get_dsh_url 异常只跳过本次
-          // (continue)而非放弃剩余轮询。
-          for (let i = 0; i < 38 && setupActive && !setupCancelled && !recovered; i++) {
-            try {
-              const url = await invoke('get_dsh_url');
-              if (url) { loadWorkbench(url, true); recovered = true; break; }
-            } catch (e) { /* 单次失败忽略,继续下一轮 */ }
-            await new Promise((r) => setTimeout(r, 800));
-          }
-        })();
-        setupDoneTimer = setTimeout(() => {
-          if (setupActive && !setupCancelled && !recovered) {
-            // 30s 余量：实测 dsh 冷启动（node 拉起 + 初始化）约 5s 才输出工作台
-            // URL；4s 超时会误报「启动失败」（0.3.0 现场日志实证）。
-            showSetupError(
-              '安装完成，等待工作台启动',
-              'dsh 已安装，工作台正在启动（冷启动约需 5-30 秒）。若长时间无响应，可重试：将先尝试直接拉起工作台，失败则重新安装。'
-            );
-          }
-        }, 30000);
+        markSetupInstalled(); // 工作台正在启动 + 取消按钮「放弃等待」（闭环出口）
       }
     } catch (e) {
       // 若已有更新的 run（用户重新发起），本 run 的取消/失败残留不得覆盖新 UI
@@ -313,10 +292,12 @@
       if (!setupActive || setupCancelled) { clearInterval(setupProgressTimer); return; }
       try {
         const st = await invoke('setup_state_cmd');
-        if (st.dsh_url && st.dsh_url !== lastUrl) {
+        if (st.dsh_url) {
           waitBusyReset = false;
           clearInterval(setupProgressTimer);
-          loadWorkbench(st.dsh_url);
+          // force=true：绕过 same-URL 守卫（重装/更新可能复用上次端口,URL 与
+          // lastUrl 相同）,并自动切回工作台 tab（装完可来自 dsh tab 触发）。
+          loadWorkbench(st.dsh_url, true);
           return;
         }
         // 撞 BUSY 后（waitBusyReset）：后端收尾结束（installing=false 且无 URL，
@@ -335,8 +316,8 @@
   // 回到初始引导页：清进度/错误/取消态，恢复「安装」按钮（取消后可重新安装）
   function resetSetupInitial() {
     setupCancelled = false;
+    setupInstalled = false; // 退出"装完等待"态（装完后点"放弃等待"也走这里回初始）
     waitBusyReset = false;
-    clearTimeout(setupDoneTimer);
     clearInterval(setupProgressTimer); // 幂等：所有回初始的路径都停轮询，防空转泄漏
     setupProgress.hidden = true;
     setSetupPhase('stage');            // 隐藏错误视图，显示 stage 区
@@ -349,6 +330,18 @@
     setupAdv.open = false;
     setupFetchCount = 0;
     setupLastProgress = null;
+  }
+
+  // 装完成后进入"等待工作台就绪"态：引导页显示"工作台正在启动"，取消按钮
+  // 变为「放弃等待」（点它回初始页重装/重试，不调 setup_cancel_cmd——无进程可取消）。
+  // runSetup（引导页安装）与 updateDsh（dsh tab 安装,首次同步引导）装完共用,
+  // 避免两处重复；就绪后 startSetupProgressPolling 检测 dsh_url → loadWorkbench。
+  function markSetupInstalled() {
+    setupInstalled = true;
+    setupStage.textContent = '工作台正在启动，请稍候…';
+    setupMeta.textContent = '冷启动约需 5-30 秒，请稍候…';
+    btnSetupCancel.disabled = false;
+    btnSetupCancel.textContent = '放弃等待';
   }
 
   // 高级区：Registry 源右侧「刷新版本」→ 按当前输入值重新获取可用版本
@@ -367,7 +360,7 @@
     for (let i = 0; i < 5; i++) {
       try {
         const url = await invoke('get_dsh_url');
-        if (url) { loadWorkbench(url); return; }
+        if (url) { loadWorkbench(url, true); return; } // force:重试直接拉起并切回工作台
       } catch (e) { break; }
       await new Promise((r) => setTimeout(r, 800));
     }
@@ -388,6 +381,9 @@
     // 撞 BUSY 后（waitBusyReset）其实没有"真安装"在跑（是上次取消的收尾）：
     // 点取消没有可取消对象，直接回初始页，避免永久卡「正在取消安装…」
     if (waitBusyReset) { resetSetupInitial(); return; }
+    // 装完等待工作台就绪态：取消=「放弃等待」，回初始页（安装已完成,无进程
+    // 可取消,不调 setup_cancel_cmd、不走"正在取消"流程）。
+    if (setupInstalled) { resetSetupInitial(); return; }
     setupCancelled = true;
     btnSetupCancel.disabled = true;
     btnSetupCancel.textContent = '正在取消…';
@@ -592,21 +588,17 @@
     try {
       await invoke('update_dsh_cmd', { ver });
       clearInterval(progressTimer);
-      // 后端安装成功 → 自动重启工作台（dsh:url 事件驱动 iframe 重载）
-      setDshStatus('安装完成，工作台正在重启…', 'ok');
-      // 首次安装同步过引导:若 30s 内 dsh_url 未就绪(重启失败/崩溃/自愈放弃),
-      // 停引导进度轮询并提示重试,防 setupProgressTimer 永久空转、setupView 卡死。
+      // 后端安装成功 → 自动重启工作台（dsh:url 事件驱动 iframe 重载）。
+      // 首次安装同步过引导时,由 syncSetup 已启动的 startSetupProgressPolling
+      // 检测 dsh_url 就绪 → loadWorkbench（自动切回工作台）；不设 30s 定时报错
+      // 兜底（同 runSetup,不打断正在冷启动的工作台）。
+      setDshStatus('工作台正在启动，请稍候…', 'ok');
+      // 首次安装同步过引导:若用户已切回 workbench 点了「取消安装」(setupCancelled),
+      // 轮询会因 setupCancelled 自停——回初始页而非停在"工作台正在启动"无检测通道；
+      // 否则 markSetupInstalled 进入等待态(轮询继续等 dsh_url → loadWorkbench 切回)。
       if (syncSetup) {
-        clearTimeout(setupDoneTimer);
-        setupDoneTimer = setTimeout(() => {
-          if (setupActive && !setupCancelled) {
-            clearInterval(setupProgressTimer);
-            showSetupError(
-              '安装完成，等待工作台启动',
-              'dsh 已安装，工作台正在启动（冷启动约需 5-30 秒）。若长时间无响应，可重试：将先尝试直接拉起工作台，失败则重新安装。'
-            );
-          }
-        }, 30000);
+        if (setupCancelled) { resetSetupInitial(); }
+        else { markSetupInstalled(); }
       }
     } catch (e) {
       clearInterval(progressTimer);
