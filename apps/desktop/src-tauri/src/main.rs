@@ -1242,6 +1242,9 @@ async fn uninstall_run(app: AppHandle, wipe: bool) -> Result<(), String> {
         // 复位标志：否则后续 ExitRequested 一直被 prevent_exit 拦截，用户无法退出。
         UNINSTALLING.store(false, Ordering::SeqCst);
         notify("卸载未完成", &e);
+        // 窗口已全毁：重建主窗口让用户有恢复入口（否则无窗口可操作，只能强杀）
+        let app2 = app.clone();
+        let _ = app2.clone().run_on_main_thread(move || reveal_main_window(&app2, None));
         return Err(e);
     }
     // teardown 成功：移入回收站 / 引导系统卸载，然后退出

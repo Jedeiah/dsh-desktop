@@ -334,6 +334,8 @@
     }
   }
 
+  // 渐进披露：展开态记忆标志（模块级，refreshDsh 重渲染不折叠）
+  const versionsExpanded = { value: false };
   function renderVersions(versions, current, latest, installing) {
     dshVersionsEl.innerHTML = '';
     if (!versions.length) {
@@ -344,9 +346,9 @@
       return;
     }
     // 渐进披露：默认只渲染最近 20 个（dsh 迭代快，版本多了全量渲染既长又噪）；
-    // 底部「显示全部 N 个版本」展开剩余。
+    // 底部「显示全部 N 个版本」展开剩余。展开态记忆：refreshDsh 重渲染不折叠。
     const VISIBLE = 20;
-    const showAll = versions.length <= VISIBLE;
+    const showAll = versionsExpanded.value || versions.length <= VISIBLE;
     const slice = showAll ? versions : versions.slice(0, VISIBLE);
     const mkRow = (v) => {
       const row = document.createElement('div');
@@ -379,7 +381,7 @@
         btn.disabled = true;
       } else {
         btn.textContent = '安装';
-        btn.addEventListener('click', () => updateDsh(v));
+        btn.addEventListener('click', () => { btn.disabled = true; updateDsh(v); });
         btn.disabled = installing;
       }
       row.appendChild(btn);
@@ -391,6 +393,7 @@
       more.className = 'ghost sm more-versions';
       more.textContent = '显示全部 ' + versions.length + ' 个版本';
       more.addEventListener('click', () => {
+        versionsExpanded.value = true;
         dshVersionsEl.innerHTML = '';
         versions.forEach((v) => dshVersionsEl.appendChild(mkRow(v)));
       });
