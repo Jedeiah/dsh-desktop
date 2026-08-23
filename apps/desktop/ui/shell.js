@@ -775,7 +775,8 @@
   });
 
   // 关于页「项目主页」链接 → 系统默认浏览器
-  $('aboutRepo').addEventListener('click', () => {
+  $('aboutRepo').addEventListener('click', (e) => {
+    e.preventDefault();
     invoke('open_repo_cmd').catch((e) => setAppStatus('打开项目主页失败：' + (e.message || e), 'err'));
   });
 
