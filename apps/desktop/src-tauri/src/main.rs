@@ -1438,9 +1438,6 @@ with open(p,'wb') as f: plistlib.dump(d, f, fmt=plistlib.FMT_BINARY)
     let _ = std::fs::remove_file(&tmp);
 }
 
-#[cfg(not(target_os = "macos"))]
-fn clear_dock_recents() {}
-
 /// Ask the user how to uninstall. Returns:
 /// Move the running app to the trash / recycle bin. Returns true on success.
 #[cfg(target_os = "macos")]
