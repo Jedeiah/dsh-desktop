@@ -120,6 +120,9 @@ pub fn latest_version(registry: &str) -> Result<String, String> {
 }
 
 /// List every published version of `@deepseek-ai/dsh`, newest first.
+/// 为支持「搜索全部版本」需完整文档；上限放宽到 16MB（原 4MB 在版本非常多时
+/// 会被截断 → parse_versions 静默丢版本/为空）。截断仍是兜底,超限会解析失败返回空,
+/// 前端提示"未获取到可用版本"。
 pub fn list_versions(registry: &str) -> Result<Vec<String>, String> {
     let url = format!("{registry}/{PKG}");
     let resp = ureq::get(&url)
@@ -128,7 +131,7 @@ pub fn list_versions(registry: &str) -> Result<Vec<String>, String> {
         .map_err(|e| format!("查询 {url} 失败: {e}"))?;
     let mut body = String::new();
     resp.into_reader()
-        .take(4 << 20)
+        .take(16 << 20)
         .read_to_string(&mut body)
         .map_err(|e| format!("读取 registry 响应失败: {e}"))?;
     Ok(parse_versions(&body))

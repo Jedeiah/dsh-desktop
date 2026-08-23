@@ -428,6 +428,7 @@
   const updateVer = $('updateVer');
   const btnUpdateLatest = $('btnUpdateLatest');
   const dshVersionsEl = $('dshVersions');
+  const dshVersionSearch = $('dshVersionSearch');
   const regInput = $('regInput');
   const btnSaveRegistry = $('btnSaveRegistry');
   const regStatus = $('regStatus');
@@ -478,9 +479,15 @@
     }
   }
 
-  // 渐进披露：展开态记忆标志（模块级，refreshDsh 重渲染不折叠）
-  const versionsExpanded = { value: false };
+  // 版本列表渲染缓存：记录最近一次数据，供搜索框本地过滤（避免每次搜索重新网络拉取）。
+  // 默认列表只展示最近 5 个；搜索框输入时从**全部已发布版本**中过滤。
+  const dshRender = { versions: [], current: '', latest: null, installing: false, installed: [] };
   function renderVersions(versions, current, latest, installing, installed = []) {
+    dshRender.versions = versions;
+    dshRender.current = current;
+    dshRender.latest = latest;
+    dshRender.installing = installing;
+    dshRender.installed = installed;
     dshVersionsEl.innerHTML = '';
     if (!versions.length) {
       const empty = document.createElement('div');
@@ -489,11 +496,11 @@
       dshVersionsEl.appendChild(empty);
       return;
     }
-    // 渐进披露：默认只渲染最近 20 个（dsh 迭代快，版本多了全量渲染既长又噪）；
-    // 底部「显示全部 N 个版本」展开剩余。展开态记忆：refreshDsh 重渲染不折叠。
-    const VISIBLE = 20;
-    const showAll = versionsExpanded.value || versions.length <= VISIBLE;
-    const slice = showAll ? versions : versions.slice(0, VISIBLE);
+    // 默认只展示最近 5 个；搜索框输入时从**全部已发布版本**中过滤（搜的是全部版本,非当前列表）。
+    const RECENT = 5;
+    const q = (dshVersionSearch.value || '').trim().toLowerCase();
+    const matching = q ? versions.filter((v) => v.toLowerCase().includes(q)) : versions;
+    const slice = q ? matching : versions.slice(0, RECENT);
     const mkRow = (v) => {
       const row = document.createElement('div');
       row.className = 'list-row';
@@ -534,18 +541,23 @@
       return row;
     };
     slice.forEach((v) => dshVersionsEl.appendChild(mkRow(v)));
-    if (!showAll) {
-      const more = document.createElement('button');
-      more.className = 'ghost sm more-versions';
-      more.textContent = '显示全部 ' + versions.length + ' 个版本';
-      more.addEventListener('click', () => {
-        versionsExpanded.value = true;
-        dshVersionsEl.innerHTML = '';
-        versions.forEach((v) => dshVersionsEl.appendChild(mkRow(v)));
-      });
-      dshVersionsEl.appendChild(more);
+    // 搜索无匹配 / 默认仅显示最近 5 个的提示
+    const tip = document.createElement('div');
+    tip.className = 'empty';
+    if (q && !matching.length) {
+      tip.textContent = '没有匹配 “' + dshVersionSearch.value.trim() + '” 的版本，换个关键词试试';
+    } else if (!q && versions.length > slice.length) {
+      tip.textContent = '共 ' + versions.length + ' 个版本，默认展示最近 ' + slice.length + ' 个；用上方搜索框查找全部版本';
+    } else {
+      tip.textContent = '';
     }
+    if (tip.textContent) dshVersionsEl.appendChild(tip);
   }
+
+  // 搜索框输入 → 用缓存数据本地过滤重渲（不重新网络拉取）
+  dshVersionSearch.addEventListener('input', () => {
+    renderVersions(dshRender.versions, dshRender.current, dshRender.latest, dshRender.installing, dshRender.installed);
+  });
 
   async function updateDsh(ver) {
     // 点击即锁定全部安装入口（防连点/其他版本并发）：版本行按钮、更新到最新、
