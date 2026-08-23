@@ -184,6 +184,10 @@
     const registry = setupReg.value.trim() || 'https://registry.npmjs.org';
     setupCancelled = false;
     clearTimeout(setupDoneTimer);
+    // 每次安装重置进度状态（fetch 计数/去重/元信息），取消重装不残留旧值
+    setupFetchCount = 0;
+    setupLastProgress = null;
+    setupMeta.textContent = '首次安装约 300MB，请耐心等待';
     // 进入进行中态：进度条 + 取消按钮出现，安装按钮锁定
     setupProgress.hidden = false;
     btnSetupInstall.disabled = true;
@@ -192,18 +196,14 @@
     btnSetupCancel.textContent = '取消安装';
     setupAdv.open = false;
     setupStage.textContent = '正在连接 registry…';
-    setupMeta.textContent = '首次安装约 300MB，请耐心等待';
     // 进度轮询（主通道）：dsh:setup-progress 事件在部分环境不可靠
     // （T.event.listen 曾实测挂起），1s 轮询 setup_state_cmd.progress 兜底。
-    let lastProgress = null;
+    // 去重统一走 applySetupProgress 内部的 setupLastProgress（事件/轮询双通道共用）。
     setupProgressTimer = setInterval(async () => {
       if (!setupActive || setupCancelled) { clearInterval(setupProgressTimer); return; }
       try {
         const st = await invoke('setup_state_cmd');
-        if (st.progress && st.progress !== lastProgress) {
-          lastProgress = st.progress;
-          applySetupProgress(st.progress);
-        }
+        if (st.progress) applySetupProgress(st.progress);
       } catch (e) { /* 轮询失败忽略，事件通道兜底 */ }
     }, 1000);
     try {
@@ -270,8 +270,11 @@
   // 进度：阶段文本（setupStage）+ npm fetch 行计数（setupMeta 显示"已下载 N 个
   // 依赖包"，不刷屏）；进度条为不确定态流动动画。
   let setupFetchCount = 0;
+  let setupLastProgress = null; // 模块级去重：事件与轮询双通道共用，防同一行双计
   function applySetupProgress(text) {
     if (!text) return;
+    if (text === setupLastProgress) return; // 双通道同一行只处理一次
+    setupLastProgress = text;
     // npm --loglevel=info 的 fetch 行形如 "npm http fetch GET 200 <url> <ms>"：
     // 只计数，不逐行刷 stage（否则满屏 url）。
     if (/^npm (http )?fetch/.test(text)) {

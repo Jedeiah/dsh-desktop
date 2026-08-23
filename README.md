@@ -68,8 +68,8 @@ powershell -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.c
 3. 若提示"已损坏，无法打开"（Chrome 下载的未签名 App 常见）：`xattr -dr com.apple.quarantine "/Applications/DeepSeek Harness Desktop.app"`
 
 **Windows 手动安装：**
-- 下载 Release 里的 `DeepSeek.Harness_<版本>_x64-setup.exe` 双击安装（无需管理员权限，装到当前用户）。
-- 或下载 `DeepSeek-Harness-Windows-x64.zip` 解压后双击 `dsh-desktop.exe` 直接运行（便携版，同样内置 node + npm + pnpm）。
+- 下载 Release 里的 `DeepSeek.Harness.Desktop_<版本>_x64-setup.exe` 双击安装（无需管理员权限，装到当前用户）。
+- 或下载 `DeepSeek-Harness-Desktop-Windows-x64.zip` 解压后双击 `dsh-desktop.exe` 直接运行（便携版，同样内置 node + npm + pnpm）。
 
 ### 3.2 首次使用
 
@@ -183,7 +183,7 @@ cargo install tauri-cli --locked
 # 发布构建（产出 NSIS 安装器；加 --bundles msi 得到 MSI）
 cd apps/desktop/src-tauri
 cargo tauri build --bundles nsis
-#   产物：target/release/bundle/nsis/DeepSeek Harness_<版本>_x64-setup.exe
+#   产物：target/release/bundle/nsis/DeepSeek Harness Desktop_<版本>_x64-setup.exe
 #        （+ target/release/dsh-desktop.exe 与 resources/ 即为便携版）
 ```
 

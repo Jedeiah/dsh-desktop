@@ -40,7 +40,7 @@ try {
     }
     $Version = $Tag.Substring(1)
     # release 工作流上传时把空格替换为点号 → 固定命名拼安装器地址（绕开 API）
-    $SetupUrl = "https://github.com/$Repo/releases/download/$Tag/DeepSeek.Harness_${Version}_x64-setup.exe"
+    $SetupUrl = "https://github.com/$Repo/releases/download/$Tag/DeepSeek.Harness.Desktop_${Version}_x64-setup.exe"
     Write-Host "==> 最新版本: $Tag"
 
     # --- 退出已运行的实例 ------------------------------------------------

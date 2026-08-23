@@ -604,8 +604,10 @@ async fn setup_dsh_cmd(app: AppHandle, ver: String, registry: String) -> Result<
     SETUP_BUSY.store(false, Ordering::SeqCst);
     *mlock(&SETUP_PROGRESS) = None;
     result.map_err(|e| format!("安装线程异常：{e}"))??;
-    // 安装成功 → 启动工作台（boot 会 emit dsh:url，壳页自动切入工作台）
-    let _ = app_after.clone().run_on_main_thread(move || boot(app_after));
+    // 安装成功 → 启动工作台。必须放后台线程：boot() 内部阻塞读 dsh 的 stdout
+    // 直到其退出（0.3.0 首次安装完成后"程序无响应"根因——run_on_main_thread
+    // 会把 boot 放到主线程占死 UI；正常启动/崩溃自愈/restart 均为 thread::spawn）。
+    std::thread::spawn(move || boot(app_after));
     Ok(())
 }
 
