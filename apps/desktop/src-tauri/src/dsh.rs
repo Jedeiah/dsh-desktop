@@ -109,6 +109,7 @@ fn install_and_verify(
     target: &Path,
     ver: &str,
     registry: &str,
+    progress: &dyn Fn(&str),
 ) -> Result<(), String> {
     let node = crate::node_bin(&p.resources);
     let npm = p.resources.join("npm/bin/npm-cli.js");
@@ -124,25 +125,48 @@ fn install_and_verify(
     {
         cmd = crate::no_console(cmd);
     }
+    // npm 输出流式转发（真实进度行让用户看到"正在下载/解析依赖"而非无反馈等待）：
+    // --loglevel=info 输出 fetch/reify 行；每行经 progress 回调推送 UI 与 SETUP_PROGRESS。
     let mut child = cmd
         .arg(&npm)
         .arg("install")
         .arg("--prefix")
         .arg(target)
         .arg(format!("@deepseek-ai/dsh@{ver}"))
-        .args(["--ignore-scripts", "--no-audit", "--no-fund", "--loglevel=error"])
+        .args(["--ignore-scripts", "--no-audit", "--no-fund", "--loglevel=info"])
         .arg("--registry")
         .arg(registry)
         .arg("--cache")
         .arg(p.app_data.join("dsh/npm-cache"))
         .env("NODE_OPTIONS", "--max-old-space-size=6144")
         .current_dir(target)
-        .stdout(Stdio::null())
-        .stderr(Stdio::inherit())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| format!("运行内置 npm 失败: {e}"))?;
     // 记录子进程 PID 供 setup_cancel_cmd 取消；无论 wait 成败都先清空
     *SETUP_CHILD.lock().unwrap() = Some(child.id());
+    // 流式读 stderr（npm 进度/警告输出地；stdout 同读，先到为准）
+    if let Some(mut err) = child.stderr.take() {
+        let mut lines = String::new();
+        let mut buf = [0u8; 4096];
+        loop {
+            match std::io::Read::read(&mut err, &mut buf) {
+                Ok(0) => break,
+                Ok(n) => {
+                    lines.push_str(&String::from_utf8_lossy(&buf[..n]));
+                    while let Some(i) = lines.find('\n') {
+                        let line = lines[..i].trim().to_string();
+                        lines.drain(..=i);
+                        if !line.is_empty() {
+                            progress(&line);
+                        }
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+    }
     let wait = child.wait();
     *SETUP_CHILD.lock().unwrap() = None;
     let status = wait.map_err(|e| format!("等待内置 npm 失败: {e}"))?;
@@ -207,7 +231,7 @@ pub fn install_version(
     // 安装（下载）文案覆盖 install_and_verify 内的 npm install 阶段；
     // 自检在安装成功后进行，故先提示再进入双重自检。
     progress("正在校验新版本…");
-    if let Err(e) = install_and_verify(p, &tmp, ver, registry) {
+    if let Err(e) = install_and_verify(p, &tmp, ver, registry, progress) {
         let _ = std::fs::remove_dir_all(&tmp);
         return Err(e);
     }

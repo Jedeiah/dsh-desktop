@@ -563,12 +563,19 @@ pub(crate) fn spawn_dsh(app: &AppHandle) -> std::io::Result<Child> {
 struct SetupState {
     installing: bool,
     current: Option<String>,
+    /// 最近一次安装进度文本（轮询兜底用：dsh:setup-progress 事件
+    /// 在部分环境不可靠——T.event.listen 曾实测挂起，见工作台 URL 的教训）。
+    progress: Option<String>,
 }
 
 /// 防止并发触发安装（防重复安装；取消/失败/成功都会复位）。
 static SETUP_BUSY: AtomicBool = AtomicBool::new(false);
 
-/// 安装指定版本 dsh；进度经 `dsh:setup-progress` 推送；成功后 `boot(app)` 启动工作台。
+/// 最近一次安装进度文本（setup_state_cmd 轮询读取；事件仅作增量）。
+static SETUP_PROGRESS: Mutex<Option<String>> = Mutex::new(None);
+
+/// 安装指定版本 dsh；进度经 `dsh:setup-progress` 推送（并写入
+/// SETUP_PROGRESS 供轮询兜底）；成功后 `boot(app)` 启动工作台。
 #[tauri::command]
 async fn setup_dsh_cmd(app: AppHandle, ver: String, registry: String) -> Result<(), String> {
     // M2：入口白名单校验，防止任意字符串（npm 参数注入）进入安装流程
@@ -578,11 +585,13 @@ async fn setup_dsh_cmd(app: AppHandle, ver: String, registry: String) -> Result<
     if SETUP_BUSY.swap(true, Ordering::SeqCst) {
         return Err("已有一个安装正在进行中".to_string());
     }
+    *mlock(&SETUP_PROGRESS) = Some("准备安装…".to_string());
     let app_after = app.clone(); // 供安装成功后切回主线程 boot（app 将被 move 进阻塞线程）
     let result = tauri::async_runtime::spawn_blocking(move || {
         let p = paths_from_app(&app);
         let reg = crate::registry::registry_url(Some(&registry));
         crate::dsh::install_version(&p, &ver, &reg, &|msg| {
+            *mlock(&SETUP_PROGRESS) = Some(msg.to_string());
             let _ = app.emit("dsh:setup-progress", msg);
         })
     })
@@ -608,17 +617,22 @@ fn setup_state_cmd(app: AppHandle) -> SetupState {
     SetupState {
         installing: SETUP_BUSY.load(Ordering::SeqCst),
         current: crate::dsh::current_closure(&p).and_then(|d| crate::dsh::closure_version(&d)),
+        progress: mlock(&SETUP_PROGRESS).clone(),
     }
 }
 
+/// 查询 registry 版本列表（registry=None 时用设置值；壳页「刷新版本」传 UI 输入）。
 #[tauri::command]
-async fn list_dsh_versions_cmd(app: AppHandle) -> Vec<String> {
+async fn list_dsh_versions_cmd(app: AppHandle, registry: Option<String>) -> Vec<String> {
     // 网络查询必须离开主线程（同步 command 在 WKWebView 主线程回调执行，
     // 阻塞网络会冻结整个 UI——0.3.0 卡死根因）。
     tauri::async_runtime::spawn_blocking(move || {
         let p = paths_from_app(&app);
-        let reg =
-            crate::registry::registry_url(load_settings_at(&p.app_data).registry.as_deref());
+        let reg = crate::registry::registry_url(
+            registry
+                .as_deref()
+                .or(load_settings_at(&p.app_data).registry.as_deref()),
+        );
         crate::registry::list_versions(&reg).unwrap_or_default()
     })
     .await

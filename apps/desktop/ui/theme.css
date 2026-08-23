@@ -454,10 +454,39 @@ select:disabled { opacity: 0.55; }
   box-shadow: 0 6px 20px rgba(123, 127, 232, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.35);
 }
 .app-logo svg { width: 26px; height: 26px; }
+.app-logo img { width: 52px; height: 52px; border-radius: 13px; display: block; }
 .about-title { font-size: 17px; font-weight: 650; letter-spacing: 0.2px; }
 .about-meta { margin-top: 2px; font-size: 12.5px; color: var(--dsh-fg-muted); }
 .about-meta .mono { color: var(--dsh-fg); }
 .about-actions { margin-top: 16px; display: flex; gap: 10px; flex-wrap: wrap; }
+
+/* ---- 关于面板：卸载（设计稿行样式：标题+说明左，操作按钮右） ---- */
+.uninstall-rows { display: flex; flex-direction: column; gap: 10px; }
+.uninstall-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 14px;
+  width: 100%; padding: 13px 16px; text-align: left;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--dsh-border-strong);
+  border-radius: var(--dsh-radius-md, 10px);
+  color: var(--dsh-fg);
+  font: inherit; cursor: pointer;
+  transition: background var(--dsh-dur, 150ms) var(--dsh-ease, ease), border-color var(--dsh-dur, 150ms) var(--dsh-ease, ease);
+}
+.uninstall-row:hover { background: rgba(255, 255, 255, 0.07); border-color: rgba(255, 255, 255, 0.24); }
+.uninstall-row:disabled { opacity: 0.5; cursor: not-allowed; }
+.uninstall-row .un-body { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.uninstall-row .t { font-size: 13.5px; font-weight: 600; }
+.uninstall-row .d { font-size: 12px; color: var(--dsh-fg-muted); line-height: 1.5; }
+.uninstall-row .un-btn {
+  flex: none; padding: 7px 14px; border-radius: 9px;
+  border: 1px solid rgba(248, 81, 73, 0.4);
+  background: linear-gradient(180deg, rgba(248, 81, 73, 0.16), rgba(248, 81, 73, 0.06));
+  color: #f98c86; font-size: 12.5px; font-weight: 600; white-space: nowrap;
+}
+.uninstall-row:hover .un-btn {
+  background: linear-gradient(180deg, rgba(248, 81, 73, 0.3), rgba(248, 81, 73, 0.12));
+  border-color: rgba(248, 81, 73, 0.6);
+}
 .about-status { margin-top: 12px; }
 
 .card-danger { border-color: rgba(248, 81, 73, 0.28); }

@@ -301,16 +301,16 @@
               <div class="adv-body">
                 <label class="field">
                   <span class="label-text">Registry 源</span>
-                  <input class="input mono" id="setupReg" type="text" value="https://registry.npmjs.org" spellcheck="false" />
+                  <div class="row">
+                    <input class="input mono" id="setupReg" type="text" value="https://registry.npmjs.org" spellcheck="false" />
+                    <button class="ghost" id="btnSetupRefresh" title="按当前 Registry 源重新获取可用版本">刷新版本</button>
+                  </div>
                 </label>
                 <label class="field">
                   <span class="label-text">版本</span>
                   <select id="setupVer"><option value="">加载中…</option></select>
                 </label>
-                <div class="row wrap">
-                  <button id="btnSetupInstallAdv">安装 dsh</button>
-                </div>
-                <p class="adv-note">更改将应用于本次下载。Registry 源建议保持默认。</p>
+                <p class="adv-note">更改将应用于本次下载。Registry 源建议保持默认；改动后点「刷新版本」重新获取列表。</p>
               </div>
             </details>
           </div>
@@ -412,9 +412,7 @@
           <div class="card">
             <div class="about-main">
               <div class="app-logo">
-                <svg viewBox="0 0 22 22" aria-hidden="true">
-                  <path d="M7 7.5h8M7 11h8M7 14.5h5" stroke="#fff" stroke-width="2" stroke-linecap="round" opacity=".95"/>
-                </svg>
+                <img src="icon.png" alt="DeepSeek Harness 图标" />
               </div>
               <div>
                 <div class="about-title">DeepSeek Harness Desktop</div>
@@ -434,14 +432,20 @@
               <h2>卸载</h2>
               <span class="card-hint">此操作不可撤销</span>
             </div>
-            <div class="choice">
-              <button id="btnUninstallKeep">
-                <span class="t">仅卸载应用</span>
-                <span class="d">保留 ~/.dsh 配置与数据，便于将来重装</span>
+            <div class="uninstall-rows">
+              <button class="uninstall-row" id="btnUninstallKeep">
+                <span class="un-body">
+                  <span class="t">仅卸载应用</span>
+                  <span class="d">保留 ~/.dsh 配置与数据，便于将来重装</span>
+                </span>
+                <span class="opt-danger un-btn">卸载（保留数据）</span>
               </button>
-              <button class="opt-danger" id="btnUninstallWipe">
-                <span class="t">完整卸载</span>
-                <span class="d">同时删除 ~/.dsh 中全部配置、插件与版本数据，不可恢复</span>
+              <button class="uninstall-row" id="btnUninstallWipe">
+                <span class="un-body">
+                  <span class="t">完整卸载</span>
+                  <span class="d">同时删除 ~/.dsh 中全部配置、插件与版本数据，不可恢复</span>
+                </span>
+                <span class="opt-danger un-btn">完全卸载</span>
               </button>
             </div>
             <div class="status" id="uninstallStatus" role="status" aria-live="polite"></div>

@@ -115,7 +115,7 @@
   const setupErrTitle = $('setupErrTitle');
   const setupErrMsg = $('setupErrMsg');
   const btnSetupInstall = $('btnSetupInstall');
-  const btnSetupInstallAdv = $('btnSetupInstallAdv');
+  const btnSetupRefresh = $('btnSetupRefresh');
   const btnSetupCancel = $('btnSetupCancel');
   const btnSetupRetry = $('btnSetupRetry');
   const setupReg = $('setupReg');
@@ -123,6 +123,7 @@
   const setupAdv = $('setupAdv');
   let setupCancelled = false;
   let setupDoneTimer = null; // 安装成功但 dsh:url 未达（boot 失败）时的恢复定时器
+  let setupProgressTimer = null; // 安装进度轮询（setup_state_cmd 兜底）
 
   function showSetupView() {
     setupActive = true;
@@ -134,6 +135,7 @@
     setupActive = false;
     setupView.hidden = true;
     clearTimeout(setupDoneTimer); // 已切回工作台：取消「启动失败」恢复定时器
+    clearInterval(setupProgressTimer); // 进度轮询停止
     if (!lastUrl) showPlaceholder(); // 引导收起但工作台未就绪：恢复占位 spinner
   }
   function setSetupPhase(phase) {
@@ -147,11 +149,11 @@
     setSetupPhase('error');
   }
 
-  async function loadSetupVersions() {
+  async function loadSetupVersions(registry) {
     setupVer.innerHTML = '<option value="">加载中…</option>';
     let list = [];
     try {
-      list = await invoke('list_dsh_versions_cmd');
+      list = await invoke('list_dsh_versions_cmd', { registry: registry || null });
     } catch (e) { /* 网络失败：下方给提示项 */ }
     if (Array.isArray(list) && list.length) {
       setupVer.innerHTML = '';
@@ -175,18 +177,31 @@
     const registry = setupReg.value.trim() || 'https://registry.npmjs.org';
     setupCancelled = false;
     clearTimeout(setupDoneTimer);
-    // 进入进行中态：进度条 + 取消按钮出现，主/高级区安装按钮同步锁定
+    // 进入进行中态：进度条 + 取消按钮出现，安装按钮锁定
     setupProgress.hidden = false;
     btnSetupInstall.disabled = true;
-    btnSetupInstallAdv.disabled = true;
     btnSetupCancel.hidden = false;
     btnSetupCancel.disabled = false;
     btnSetupCancel.textContent = '取消安装';
     setupAdv.open = false;
     setupStage.textContent = '正在连接 registry…';
     setupMeta.textContent = '首次安装约 300MB，请耐心等待';
+    // 进度轮询（主通道）：dsh:setup-progress 事件在部分环境不可靠
+    // （T.event.listen 曾实测挂起），1s 轮询 setup_state_cmd.progress 兜底。
+    let lastProgress = null;
+    setupProgressTimer = setInterval(async () => {
+      if (!setupActive || setupCancelled) { clearInterval(setupProgressTimer); return; }
+      try {
+        const st = await invoke('setup_state_cmd');
+        if (st.progress && st.progress !== lastProgress) {
+          lastProgress = st.progress;
+          setupStage.textContent = st.progress;
+        }
+      } catch (e) { /* 轮询失败忽略，事件通道兜底 */ }
+    }, 1000);
     try {
       await invoke('setup_dsh_cmd', { ver, registry });
+      clearInterval(setupProgressTimer);
       // 成功：后端 boot 会 emit dsh:url → loadWorkbench 自动切回工作台；
       // 若 4s 内未收到 dsh:url（boot 失败/事件丢失），恢复为可重试状态。
       if (!setupCancelled) {
@@ -203,6 +218,7 @@
         }, 4000);
       }
     } catch (e) {
+      clearInterval(setupProgressTimer);
       const msg = (e && e.message) || String(e);
       if (setupCancelled) {
         showSetupError('已取消', '安装已取消，可重试或调整高级选项后再次安装。');
@@ -212,8 +228,16 @@
     }
   }
 
+  // 高级区：Registry 源右侧「刷新版本」→ 按当前输入值重新获取可用版本
+  btnSetupRefresh.addEventListener('click', async () => {
+    btnSetupRefresh.disabled = true;
+    btnSetupRefresh.textContent = '刷新中…';
+    await loadSetupVersions(setupReg.value.trim() || null);
+    btnSetupRefresh.disabled = false;
+    btnSetupRefresh.textContent = '刷新版本';
+  });
+
   btnSetupInstall.addEventListener('click', () => runSetup());
-  btnSetupInstallAdv.addEventListener('click', () => runSetup());
   btnSetupRetry.addEventListener('click', async () => {
     // 先尝试恢复工作台（适用于「安装完成但启动失败」：dsh 可能已就绪，
     // 仅 dsh:url 事件丢失）；拿不到 URL 再走重新安装。
