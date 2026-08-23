@@ -77,33 +77,37 @@
         margin-left: 6px;
       }
 
-      /* ===== 导航栏折叠：收起 Tab 栏以扩大工作区（状态记忆） =====
-   注意：以下 40px 高度字面量必须与 shell.js applyTabsCollapsed 中
-   --dsh-topbar-h 折叠值保持一致（46px 默认值见 theme.css）。 */
+      /* ===== 导航栏折叠把手：独立元素贴在顶栏下边缘分割线上（不占顶栏内容行），
+         收起时整个顶栏（品牌+Tab）淡出上移、顶栏高度收窄，把手随线一起上移；
+         展开时反向。伸缩均为 0.3s 过渡。注意：高度字面量必须与
+         shell.js applyTabsCollapsed 中 --dsh-topbar-h 折叠值一致（默认 46px、折叠 28px）。 */
+      body { position: relative; }
       .tb-toggle {
-        margin-left: auto; flex: none;
-        width: 30px; height: 30px;
+        position: absolute;
+        top: var(--dsh-topbar-h);
+        left: 50%;
+        transform: translate(-50%, -50%);
+        z-index: 3;
+        width: 30px; height: 15px;
         display: grid; place-items: center;
-        border: 1px solid transparent; border-radius: 8px;
-        background: transparent; color: var(--dsh-fg-muted);
-        font-size: 13px; line-height: 1;
-        cursor: pointer; box-shadow: none;
-        transition: background var(--dsh-dur) var(--dsh-ease), color var(--dsh-dur) var(--dsh-ease);
+        border: 1px solid var(--dsh-border-strong);
+        border-top: none;
+        border-radius: 0 0 9px 9px;   /* 半圆把手，贴在线上沿 */
+        background: rgba(16, 18, 26, 0.92);
+        color: var(--dsh-fg-muted);
+        font-size: 10px; line-height: 1;
+        cursor: pointer;
+        box-shadow: 0 2px 6px rgba(0, 0, 0, 0.28);
+        padding: 0;
+        transition: top 0.3s var(--dsh-ease), color var(--dsh-dur) var(--dsh-ease);
       }
-      .tb-toggle:hover { background: rgba(255, 255, 255, 0.05); color: var(--dsh-fg); box-shadow: none; }
-      /* 折叠态：tab 隐藏、顶栏变矮（--dsh-topbar-h 联动 workspace 高度） */
-      .titlebar.collapsed { height: 40px; }
-      /* ===== 导航栏折叠：整个顶栏缩回（品牌+Tab 全收起，只留展开按钮），
-         带伸缩动画（titlebar height + workarea top 同步过渡）。
-         注意：高度字面量必须与 shell.js applyTabsCollapsed 中
-         --dsh-topbar-h 折叠值保持一致（默认 46px 见 theme.css）。 */
+      .tb-toggle:hover { color: var(--dsh-fg); background: rgba(24, 27, 38, 0.95); }
       .titlebar { overflow: hidden; transition: height 0.3s var(--dsh-ease); }
       .titlebar .brand,
-      .titlebar .tabs,
-      .titlebar .tb-toggle {
+      .titlebar .tabs {
         transition: opacity 0.22s var(--dsh-ease), transform 0.22s var(--dsh-ease), visibility 0s linear 0s;
       }
-      /* 折叠态：整条顶栏收窄到 28px，品牌与 Tab 淡出上移，仅留居中的展开按钮 */
+      /* 折叠态：整条顶栏收窄到 28px，品牌与 Tab 淡出上移（把手随线留在中间） */
       .titlebar.collapsed { height: 28px; }
       .titlebar.collapsed .brand,
       .titlebar.collapsed .tabs {
@@ -116,12 +120,6 @@
       }
       .titlebar.collapsed .brand { transform: translateY(-10px); }
       .titlebar.collapsed .tabs { transform: translate(-50%, -10px); } /* 覆盖居中位移，避免横向漂移 */
-      .titlebar.collapsed .tb-toggle {
-        position: absolute; left: 50%; margin-left: 0;
-        transform: translateX(-50%);
-        width: 24px; height: 24px;
-      }
-      .titlebar:not(.collapsed) .tb-toggle { margin-left: auto; }
 
       .workarea {
         position: absolute;
@@ -277,8 +275,10 @@
         <button class="tab" data-tab="plugins" role="tab" aria-selected="false"><span class="tab-dot"></span>插件</button>
         <button class="tab" data-tab="about" role="tab" aria-selected="false"><span class="tab-dot"></span>关于</button>
       </div>
-      <button class="tb-toggle" id="btnTabsToggle" aria-label="收起/展开导航栏" title="收起/展开导航栏"></button>
     </div>
+    <!-- 折叠把手：独立于顶栏内容行，跨在顶栏下边缘分割线上，随线上下移动 -->
+    <button class="tb-toggle" id="btnTabsToggle" aria-label="收起/展开导航栏" title="收起导航栏"></button>
+
 
     <div class="workarea">
       <!-- ============ 工作台（dsh iframe） ============ -->

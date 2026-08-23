@@ -18,9 +18,10 @@
   const btnTabsToggle = $('btnTabsToggle');
   function applyTabsCollapsed(c) {
     titlebar.classList.toggle('collapsed', c);
-    // 顶栏高度联动 workspace（.workarea 用 top: var(--dsh-topbar-h)，过渡动画）
+    // 顶栏高度联动 workspace 与把手（.workarea top / .tb-toggle top 均用
+    // var(--dsh-topbar-h)，transition 同步产生伸缩动画）
     document.documentElement.style.setProperty('--dsh-topbar-h', c ? '28px' : '46px');
-    btnTabsToggle.textContent = c ? '▸' : '▾';
+    btnTabsToggle.textContent = c ? '▾' : '▴';
     btnTabsToggle.title = c ? '展开导航栏' : '收起导航栏';
     btnTabsToggle.setAttribute('aria-expanded', String(!c));
   }
@@ -48,6 +49,10 @@
     if (name === 'plugins') refreshPlugins();
   }
   function selectTab(name) {
+    // 重复点击已选中的 tab：无操作（否则 dsh 等会重复 refreshDsh 重渲染，
+    // 用户看到「页面一直刷新」）
+    const cur = [...tabs].find((t) => t.classList.contains('active'));
+    if (cur && cur.dataset.tab === name) return;
     tabs.forEach((t) => t.classList.toggle('active', t.dataset.tab === name));
     tabOf(name);
   }
@@ -195,13 +200,32 @@
     }
   }
 
+  let setupRunId = 0; // 安装运行令牌：取消/失败的旧 run 不得覆盖新 run 的 UI
+  let setupStarting = false; // 预检/启动期防重入（连点会并发两个 runSetup → 轮询 timer 泄漏）
   async function runSetup() {
+    if (setupStarting) return;
+    setupStarting = true;
+    const myRun = ++setupRunId;
     const ver = setupVer.value;
     if (!ver) {
+      setupStarting = false;
       showSetupError('无法开始安装', '版本列表为空。请检查网络连接或更换 Registry 源后重试。');
       return;
     }
     const registry = setupReg.value.trim() || 'https://registry.npmmirror.com';
+    // 预检期锁定 + 给反馈：上次安装/取消可能还在后端收尾（SETUP_BUSY 仍 true）——
+    // 先等它复位再真正发起，否则新 run 会撞「已有一个安装正在进行中」，
+    // 且旧 run 的 catch 会串台覆盖新 run 的 UI（「取消后再装不显示进度」根因）。
+    btnSetupInstall.disabled = true;
+    setupStage.textContent = '正在等待上次安装收尾…';
+    for (let i = 0; i < 20; i++) {
+      try {
+        const st = await invoke('setup_state_cmd');
+        if (!st.installing) break;
+      } catch (e) { break; }
+      await new Promise((r) => setTimeout(r, 500));
+    }
+    setupStarting = false; // 进入正常安装（此后由按钮禁用保护，不会重入）
     setupCancelled = false;
     clearTimeout(setupDoneTimer);
     // 每次安装重置进度状态（fetch 计数/去重/元信息），取消重装不残留旧值
@@ -238,6 +262,8 @@
         }, 30000);
       }
     } catch (e) {
+      // 若已有更新的 run（用户重新发起），本 run 的取消/失败残留不得覆盖新 UI
+      if (myRun !== setupRunId) return;
       clearInterval(setupProgressTimer);
       const msg = (e && e.message) || String(e);
       if (setupCancelled) {
