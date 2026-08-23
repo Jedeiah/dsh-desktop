@@ -568,6 +568,10 @@ struct SetupState {
     /// 最近一次安装进度文本（轮询兜底用：dsh:setup-progress 事件
     /// 在部分环境不可靠——T.event.listen 曾实测挂起，见工作台 URL 的教训）。
     progress: Option<String>,
+    /// 当前工作台 URL（dsh 就绪即非 None）：前端轮询据此确定性进入工作台，
+    /// 不再依赖 dsh:url 事件（该事件在本环境曾实测丢失——"安装完成但等待
+    /// 工作台启动/点击重试立刻进入"的根因）。
+    dsh_url: Option<String>,
 }
 
 /// 防止并发触发安装（防重复安装；取消/失败/成功都会复位）。
@@ -627,6 +631,7 @@ fn setup_state_cmd(app: AppHandle) -> SetupState {
         installing: SETUP_BUSY.load(Ordering::SeqCst),
         current: crate::dsh::current_closure(&p).and_then(|d| crate::dsh::closure_version(&d)),
         progress: mlock(&SETUP_PROGRESS).clone(),
+        dsh_url: mlock(&DSH_URL).clone(),
     }
 }
 

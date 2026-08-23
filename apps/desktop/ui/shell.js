@@ -203,6 +203,14 @@
       if (!setupActive || setupCancelled) { clearInterval(setupProgressTimer); return; }
       try {
         const st = await invoke('setup_state_cmd');
+        // 工作台 URL 就绪即确定性进入（主通道）：dsh:url 事件在本环境曾实测
+        // 丢失——"安装完成但等待工作台启动/点重试立刻进去"的根因就是事件
+        // 没到而 DSH_URL 早已就绪（重试走 get_dsh_url 每次都能拿到）。
+        if (st.dsh_url && st.dsh_url !== lastUrl) {
+          clearInterval(setupProgressTimer);
+          loadWorkbench(st.dsh_url);
+          return;
+        }
         if (st.progress) applySetupProgress(st.progress);
       } catch (e) { /* 轮询失败忽略，事件通道兜底 */ }
     }, 1000);
