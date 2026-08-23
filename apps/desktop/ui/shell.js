@@ -339,7 +339,8 @@
   function markSetupInstalled() {
     setupInstalled = true;
     setupStage.textContent = '工作台正在启动，请稍候…';
-    setupMeta.textContent = '冷启动约需 5-30 秒，请稍候…';
+    // 明确出口预期：不自动报错打断（避免冷启动中误报），但提示长时间无响应可放弃。
+    setupMeta.textContent = '冷启动约需 5-30 秒；若长时间未进入工作台，可点「放弃等待」返回重试';
     btnSetupCancel.disabled = false;
     btnSetupCancel.textContent = '放弃等待';
   }
@@ -616,6 +617,9 @@
       }
     } catch (e) {
       clearInterval(progressTimer);
+      // 用户主动取消（syncSetup 时在 workbench 点了「取消安装」）：与 runSetup 的 catch
+      // 一致——回初始页、不显示「安装失败」（取消不是失败）。否则停引导轮询并恢复引导页。
+      if (syncSetup && setupCancelled) { clearInterval(setupProgressTimer); resetSetupInitial(); setDshStatus('已取消安装', ''); return; }
       // 首次安装同步过引导时,失败要停引导进度轮询并恢复引导页,否则 setupProgressTimer
       // 永久空转、setupView 卡"安装中"（runSetup 有此兜底,updateDsh 之前缺失）。
       if (syncSetup) { clearInterval(setupProgressTimer); resetSetupInitial(); }
