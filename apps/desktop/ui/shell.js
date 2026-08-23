@@ -268,6 +268,7 @@
       try {
         const st = await invoke('setup_state_cmd');
         if (st.dsh_url && st.dsh_url !== lastUrl) {
+          waitBusyReset = false;
           clearInterval(setupProgressTimer);
           loadWorkbench(st.dsh_url);
           return;
@@ -337,6 +338,9 @@
   setupReg.addEventListener('keydown', (e) => { if (e.key === 'Enter') runSetup(); });
 
   btnSetupCancel.addEventListener('click', () => {
+    // 撞 BUSY 后（waitBusyReset）其实没有"真安装"在跑（是上次取消的收尾）：
+    // 点取消没有可取消对象，直接回初始页，避免永久卡「正在取消安装…」
+    if (waitBusyReset) { resetSetupInitial(); return; }
     setupCancelled = true;
     btnSetupCancel.disabled = true;
     btnSetupCancel.textContent = '正在取消…';
