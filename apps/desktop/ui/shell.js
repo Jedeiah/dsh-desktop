@@ -266,6 +266,13 @@
   }
 
   async function refreshDsh() {
+    // 切换 Tab 立即给反馈：先显示 loading，数据到达后渲染（网络慢时不白屏）
+    setDshStatus('正在加载…', 'run');
+    dshVersionsEl.innerHTML = '';
+    const loading = document.createElement('div');
+    loading.className = 'empty';
+    loading.textContent = '正在获取版本列表…';
+    dshVersionsEl.appendChild(loading);
     try {
       const st = await invoke('get_dsh_state');
       // st: { current, latest, versions, installing }

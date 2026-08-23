@@ -69,8 +69,11 @@ pub fn download_installer(url: &str, dest: &Path) -> Result<u64, String> {
 }
 
 #[tauri::command]
-pub fn check_app_update_cmd() -> Option<String> {
-    latest_app_version().ok()
+pub async fn check_app_update_cmd() -> Option<String> {
+    // 网络检查离开主线程（同步 command 在主线程执行会冻结 UI——0.3.0 卡死根因）
+    tauri::async_runtime::spawn_blocking(|| latest_app_version().ok())
+        .await
+        .unwrap_or(None)
 }
 
 #[tauri::command]

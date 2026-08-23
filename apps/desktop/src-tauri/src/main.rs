@@ -612,10 +612,17 @@ fn setup_state_cmd(app: AppHandle) -> SetupState {
 }
 
 #[tauri::command]
-fn list_dsh_versions_cmd(app: AppHandle) -> Vec<String> {
-    let p = paths_from_app(&app);
-    let reg = crate::registry::registry_url(load_settings_at(&p.app_data).registry.as_deref());
-    crate::registry::list_versions(&reg).unwrap_or_default()
+async fn list_dsh_versions_cmd(app: AppHandle) -> Vec<String> {
+    // 网络查询必须离开主线程（同步 command 在 WKWebView 主线程回调执行，
+    // 阻塞网络会冻结整个 UI——0.3.0 卡死根因）。
+    tauri::async_runtime::spawn_blocking(move || {
+        let p = paths_from_app(&app);
+        let reg =
+            crate::registry::registry_url(load_settings_at(&p.app_data).registry.as_deref());
+        crate::registry::list_versions(&reg).unwrap_or_default()
+    })
+    .await
+    .unwrap_or_default()
 }
 
 /// dsh 版本管理状态（壳页「更新」Tab 查询）。
@@ -631,17 +638,26 @@ struct DshState {
 static LATEST_DSH: Mutex<Option<String>> = Mutex::new(None);
 
 #[tauri::command]
-fn get_dsh_state(app: AppHandle) -> DshState {
+async fn get_dsh_state(app: AppHandle) -> DshState {
     let p = paths_from_app(&app);
     let reg = crate::registry::registry_url(load_settings_at(&p.app_data).registry.as_deref());
     let current = crate::dsh::current_closure(&p)
         .and_then(|d| crate::dsh::closure_version(&d))
         .unwrap_or_else(|| "未安装".into());
+    let latest = mlock(&LATEST_DSH).clone();
+    let installing = SETUP_BUSY.load(Ordering::SeqCst);
+    // 网络查询（list_versions）离开主线程：同步 command 在主线程执行，
+    // 阻塞网络会冻结 UI（0.3.0 卡死根因，见 list_dsh_versions_cmd）。
+    let versions = tauri::async_runtime::spawn_blocking(move || {
+        crate::registry::list_versions(&reg).unwrap_or_default()
+    })
+    .await
+    .unwrap_or_default();
     DshState {
-        latest: mlock(&LATEST_DSH).clone(),
+        latest,
         current,
-        versions: crate::registry::list_versions(&reg).unwrap_or_default(),
-        installing: SETUP_BUSY.load(Ordering::SeqCst),
+        versions,
+        installing,
     }
 }
 
