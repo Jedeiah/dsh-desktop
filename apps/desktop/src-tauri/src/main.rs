@@ -571,6 +571,10 @@ static SETUP_BUSY: AtomicBool = AtomicBool::new(false);
 /// 安装指定版本 dsh；进度经 `dsh:setup-progress` 推送；成功后 `boot(app)` 启动工作台。
 #[tauri::command]
 async fn setup_dsh_cmd(app: AppHandle, ver: String, registry: String) -> Result<(), String> {
+    // M2：入口白名单校验，防止任意字符串（npm 参数注入）进入安装流程
+    if !crate::registry::valid_version(&ver) {
+        return Err("版本号不合法".to_string());
+    }
     if SETUP_BUSY.swap(true, Ordering::SeqCst) {
         return Err("已有一个安装正在进行中".to_string());
     }
@@ -644,6 +648,10 @@ fn get_dsh_state(app: AppHandle) -> DshState {
 /// 安装指定版本 dsh 并自动重启工作台（新版本生效）。
 #[tauri::command]
 async fn update_dsh_cmd(app: AppHandle, ver: String) -> Result<(), String> {
+    // M2：入口白名单校验，防止任意字符串（npm 参数注入）进入安装流程
+    if !crate::registry::valid_version(&ver) {
+        return Err("版本号不合法".to_string());
+    }
     if SETUP_BUSY.swap(true, Ordering::SeqCst) {
         return Err("已有一个安装正在进行中".to_string());
     }

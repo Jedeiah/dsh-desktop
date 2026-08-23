@@ -15,6 +15,35 @@ pub fn registry_url(registry: Option<&str>) -> String {
     }
 }
 
+/// 校验版本号是否形如 semver：`数字.数字.数字`，可选 `-` 预发布段
+/// （预发布段由非空字母数字段以 `.` 分隔）。用于安装/更新命令入口的
+/// 白名单校验，防止任意字符串（如 npm 参数注入）进入安装流程。
+pub fn valid_version(s: &str) -> bool {
+    let s = s.trim();
+    let (main, pre) = match s.split_once('-') {
+        Some((m, p)) => (m, Some(p)),
+        None => (s, None),
+    };
+    let nums: Vec<&str> = main.split('.').collect();
+    if nums.len() != 3
+        || nums
+            .iter()
+            .any(|n| n.is_empty() || !n.chars().all(|c| c.is_ascii_digit()))
+    {
+        return false;
+    }
+    if let Some(p) = pre {
+        if p.is_empty()
+            || p.split('.').any(|seg| {
+                seg.is_empty() || !seg.chars().all(|c| c.is_ascii_alphanumeric())
+            })
+        {
+            return false;
+        }
+    }
+    true
+}
+
 /// Simple semver-ish comparator (handles `0.1.0-rc.6`).
 pub fn cmp_versions(a: &str, b: &str) -> Ordering {
     let (am, asuf) = a.split_once('-').unwrap_or((a, ""));
@@ -140,5 +169,26 @@ mod tests {
         assert_eq!(registry_url(None), "https://registry.npmjs.org");
         assert_eq!(registry_url(Some("https://registry.npmmirror.com/")), "https://registry.npmmirror.com");
         assert_eq!(registry_url(Some("  ")), "https://registry.npmjs.org");
+    }
+
+    #[test]
+    fn valid_version_accepts_semver() {
+        assert!(valid_version("0.1.1-rc.2"));
+        assert!(valid_version("0.1.0"));
+        assert!(valid_version("1.2.3"));
+        assert!(valid_version("1.2.3-beta.1"));
+        assert!(valid_version("0.1.0-rc1"));
+    }
+
+    #[test]
+    fn valid_version_rejects_non_semver() {
+        assert!(!valid_version("latest"));
+        assert!(!valid_version(".."));
+        assert!(!valid_version("1;rm -rf"));
+        assert!(!valid_version(""));
+        assert!(!valid_version("0.1"));
+        assert!(!valid_version("0.1.0-"));
+        assert!(!valid_version("0.1.0-rc."));
+        assert!(!valid_version("0.1.0 rc"));
     }
 }
