@@ -923,11 +923,14 @@ pub(crate) fn restart_dsh(app: &AppHandle) {
 // ---------------------------------------------------------------------------
 
 /// 自绘弹窗内容。kind: "ok"（单按钮确定）| "yesno"（稍后/确定）。
+/// ok_label/no_label：自定义按钮文案（None 时前端回退「确定」/「稍后」）。
 #[derive(Clone, Serialize)]
 struct ModalSpec {
     title: String,
     message: String,
     kind: String,
+    ok_label: Option<String>,
+    no_label: Option<String>,
 }
 
 /// 把弹窗窗口定位到主窗口中心（用逻辑尺寸 × 主窗口缩放因子换算物理坐标，
@@ -1039,6 +1042,18 @@ fn modal_respond(window: tauri::WebviewWindow, accept: bool) -> Result<(), Strin
 /// 在后台线程调用（boot 线程 / 更新检查线程）：窗口在主线程打开，本线程阻塞等结果。
 /// kind="ok" 忽略按钮值；kind="yesno" 返回用户是否选择"确定"。
 fn show_modal(app: &AppHandle, title: &str, message: &str, kind: &str) -> bool {
+    show_modal_with_labels(app, title, message, kind, None, None)
+}
+
+/// show_modal 的按钮文案自定义版（卸载确认等场景）。
+fn show_modal_with_labels(
+    app: &AppHandle,
+    title: &str,
+    message: &str,
+    kind: &str,
+    ok_label: Option<&str>,
+    no_label: Option<&str>,
+) -> bool {
     // 串行化弹窗生命周期：并发 show_modal（如托盘更新检查 vs boot 崩溃线程）会
     // 造成「窗口显示旧内容、但点击结果发给新线程」的错配。锁覆盖 设置→开窗→等待，
     // 保证同时只有一个弹窗在途；第二个调用排队至前一个结束。
@@ -1049,6 +1064,8 @@ fn show_modal(app: &AppHandle, title: &str, message: &str, kind: &str) -> bool {
         title: title.to_string(),
         message: message.to_string(),
         kind: kind.to_string(),
+        ok_label: ok_label.map(|s| s.to_string()),
+        no_label: no_label.map(|s| s.to_string()),
     });
     let app2 = app.clone();
     let opened = Arc::new(AtomicBool::new(false));
@@ -1137,6 +1154,34 @@ fn open_browser_cmd(_app: AppHandle) -> Result<(), String> {
 
 /// 卸载确认窗口：执行卸载（wipe=true 连 ~/.dsh 一起删）。
 /// 完整流程：销毁 WebView（释放 WebView2 数据占用）→ teardown → 移入回收站 → 退出。
+/// 卸载入口（关于页按钮）：先弹自绘确认窗（yesno，自定义按钮文案），
+/// 用户确认后才执行 uninstall_run；取消则无操作。
+#[tauri::command]
+async fn confirm_uninstall_cmd(app: AppHandle, wipe: bool) -> Result<(), String> {
+    let app2 = app.clone();
+    let confirmed = tauri::async_runtime::spawn_blocking(move || {
+        let (title, msg) = if wipe {
+            (
+                "完全卸载",
+                "将删除 ~/.dsh 全部数据（会话与凭据），此操作不可撤销。",
+            )
+        } else {
+            (
+                "确认卸载",
+                "将卸载应用，保留 ~/.dsh 配置与数据（可随时重新安装）。",
+            )
+        };
+        show_modal_with_labels(&app2, title, msg, "yesno", Some("确认卸载"), Some("取消"))
+    })
+    .await
+    .map_err(|e| format!("弹窗线程异常：{e}"))?;
+    if confirmed {
+        uninstall_run(app, wipe).await
+    } else {
+        Ok(())
+    }
+}
+
 #[tauri::command]
 async fn uninstall_run(app: AppHandle, wipe: bool) -> Result<(), String> {
     // 先销毁全部 WebView 窗口：释放 WebView2 用户数据目录（app_data 内）占用，
@@ -1468,6 +1513,7 @@ fn main() {
             appupdate::check_app_update_cmd,
             appupdate::app_update_cmd,
             uninstall_run,
+            confirm_uninstall_cmd,
             modal_spec,
             modal_respond,
             get_dsh_url,

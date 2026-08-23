@@ -554,35 +554,27 @@
   // ---------------- 卸载（两档 + 行内确认） ----------------
   const btnUninstallKeep = $('btnUninstallKeep');
   const btnUninstallWipe = $('btnUninstallWipe');
-  const uninstallConfirm = $('uninstallConfirm');
-  const confirmText = $('confirmText');
   const uninstallStatus = $('uninstallStatus');
-  let uninstallMode = null; // 'keep' | 'wipe'
 
-  function askUninstall(mode) {
-    uninstallMode = mode;
-    confirmText.textContent = mode === 'wipe'
-      ? '确认完全卸载？将删除 ~/.dsh 全部数据，此操作不可撤销。'
-      : '确认卸载应用？将保留 ~/.dsh 配置与数据。';
-    uninstallConfirm.hidden = false;
-  }
-  $('confirmNo').addEventListener('click', () => { uninstallConfirm.hidden = true; });
-
-  function runUninstall() {
-    const wipe = uninstallMode === 'wipe';
-    uninstallConfirm.hidden = true;
+  function runUninstall(wipe) {
     uninstallStatus.textContent = '正在卸载…';
     uninstallStatus.className = 'status';
     [btnUninstallKeep, btnUninstallWipe].forEach((b) => { b.disabled = true; });
-    invoke('uninstall_run', { wipe }).catch((e) => {
-      uninstallStatus.textContent = '卸载未完成：' + (e.message || e);
-      uninstallStatus.className = 'status err';
-      [btnUninstallKeep, btnUninstallWipe].forEach((b) => { b.disabled = false; });
-    });
+    invoke('confirm_uninstall_cmd', { wipe })
+      .then(() => {
+        // 成功返回 = 用户取消（确认后真正卸载会退出 App，此处复位仅影响取消路径）
+        [btnUninstallKeep, btnUninstallWipe].forEach((b) => { b.disabled = false; });
+        uninstallStatus.textContent = '';
+        uninstallStatus.className = 'status';
+      })
+      .catch((e) => {
+        uninstallStatus.textContent = '卸载未完成：' + (e.message || e);
+        uninstallStatus.className = 'status err';
+        [btnUninstallKeep, btnUninstallWipe].forEach((b) => { b.disabled = false; });
+      });
   }
-  $('confirmYes').addEventListener('click', () => runUninstall());
-  btnUninstallKeep.addEventListener('click', () => askUninstall('keep'));
-  btnUninstallWipe.addEventListener('click', () => askUninstall('wipe'));
+  btnUninstallKeep.addEventListener('click', () => runUninstall(false));
+  btnUninstallWipe.addEventListener('click', () => runUninstall(true));
 
   // ---------------- 初始渲染 + 引导探测 ----------------
   (async () => {

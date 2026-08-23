@@ -30,12 +30,13 @@
     }
     title.textContent = spec.title || 'DeepSeek Harness';
     message.textContent = spec.message || '';
+    // 按钮文案：优先 spec 自定义（ok_label/no_label），回退默认「确定」/「稍后」
+    btnOk.textContent = spec.ok_label || '确定';
     if (spec.kind === 'yesno') {
       btnNo.hidden = false;
-      btnOk.textContent = '确定';
+      btnNo.textContent = spec.no_label || '稍后';
     } else {
       btnNo.hidden = true;
-      btnOk.textContent = '确定';
     }
   }
 
