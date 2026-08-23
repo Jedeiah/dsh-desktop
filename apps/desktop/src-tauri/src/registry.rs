@@ -5,7 +5,9 @@ use std::io::Read;
 use std::time::Duration;
 
 const PKG: &str = "@deepseek-ai/dsh";
-const DEFAULT_REGISTRY: &str = "https://registry.npmjs.org";
+// 默认使用国内镜像（npmmirror）：本产品面向国内用户最频繁的分发场景，
+// 直接连 registry.npmjs.org 在部分网络下慢/超时；Registry 源可在壳页随时改回官方源。
+const DEFAULT_REGISTRY: &str = "https://registry.npmmirror.com";
 
 /// Canonical registry base URL (no trailing slash).
 pub fn registry_url(registry: Option<&str>) -> String {
@@ -166,9 +168,9 @@ mod tests {
 
     #[test]
     fn registry_url_normalizes() {
-        assert_eq!(registry_url(None), "https://registry.npmjs.org");
+        assert_eq!(registry_url(None), "https://registry.npmmirror.com");
         assert_eq!(registry_url(Some("https://registry.npmmirror.com/")), "https://registry.npmmirror.com");
-        assert_eq!(registry_url(Some("  ")), "https://registry.npmjs.org");
+        assert_eq!(registry_url(Some("  ")), "https://registry.npmmirror.com");
     }
 
     #[test]

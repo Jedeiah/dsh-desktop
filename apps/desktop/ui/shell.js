@@ -13,6 +13,26 @@
   const tabLabels = { workbench: '工作台', dsh: 'dsh', plugins: '插件', about: '关于' };
   const tabs = $('tabs').querySelectorAll('.tab');
 
+  // ---------------- 导航栏折叠（收起 Tab 栏扩大工作区，状态记忆） ----------------
+  const titlebar = $('titlebar');
+  const btnTabsToggle = $('btnTabsToggle');
+  function applyTabsCollapsed(c) {
+    titlebar.classList.toggle('collapsed', c);
+    // 顶栏高度联动 workspace（.workarea 用 calc(100% - var(--dsh-topbar-h))）
+    document.documentElement.style.setProperty('--dsh-topbar-h', c ? '40px' : '46px');
+    btnTabsToggle.textContent = c ? '▸' : '▾';
+    btnTabsToggle.title = c ? '展开导航栏' : '收起导航栏';
+    btnTabsToggle.setAttribute('aria-expanded', String(!c));
+  }
+  btnTabsToggle.addEventListener('click', () => {
+    const next = !titlebar.classList.contains('collapsed');
+    applyTabsCollapsed(next);
+    try { localStorage.setItem('tabsCollapsed', next ? '1' : '0'); } catch (e) { /* 忽略 */ }
+  });
+  try {
+    applyTabsCollapsed(localStorage.getItem('tabsCollapsed') === '1');
+  } catch (e) { applyTabsCollapsed(false); }
+
   function tabOf(name) {
     if (name === 'workbench') {
       document.querySelectorAll('.panel').forEach((p) => p.classList.remove('active'));
@@ -181,7 +201,7 @@
       showSetupError('无法开始安装', '版本列表为空。请检查网络连接或更换 Registry 源后重试。');
       return;
     }
-    const registry = setupReg.value.trim() || 'https://registry.npmjs.org';
+    const registry = setupReg.value.trim() || 'https://registry.npmmirror.com';
     setupCancelled = false;
     clearTimeout(setupDoneTimer);
     // 每次安装重置进度状态（fetch 计数/去重/元信息），取消重装不残留旧值
@@ -467,7 +487,7 @@
   async function refreshRegistry() {
     try {
       const st = await invoke('get_shell_state');
-      regInput.value = st.registry || 'https://registry.npmjs.org';
+      regInput.value = st.registry || 'https://registry.npmmirror.com';
     } catch (e) {
       regStatus.textContent = '读取 Registry 源失败：' + (e.message || e);
       regStatus.className = 'status err';

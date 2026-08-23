@@ -77,6 +77,23 @@
         margin-left: 6px;
       }
 
+      /* ===== 导航栏折叠：收起 Tab 栏以扩大工作区（状态记忆） ===== */
+      .tb-toggle {
+        margin-left: auto; flex: none;
+        width: 30px; height: 30px;
+        display: grid; place-items: center;
+        border: 1px solid transparent; border-radius: 8px;
+        background: transparent; color: var(--dsh-fg-muted);
+        font-size: 13px; line-height: 1;
+        cursor: pointer; box-shadow: none;
+        transition: background var(--dsh-dur) var(--dsh-ease), color var(--dsh-dur) var(--dsh-ease);
+      }
+      .tb-toggle:hover { background: rgba(255, 255, 255, 0.05); color: var(--dsh-fg); box-shadow: none; }
+      /* 折叠态：tab 隐藏、顶栏变矮（--dsh-topbar-h 联动 workspace 高度） */
+      .titlebar.collapsed { height: 40px; }
+      .titlebar.collapsed .tabs { display: none; }
+      .titlebar.collapsed .brand span { display: none; }
+
       .workarea {
         position: relative;
         z-index: 1;
@@ -164,15 +181,6 @@
       .mono { font-family: var(--font-mono); }
 
       /* 卸载两档（移入关于页） */
-      .opt-danger {
-        border: 1px solid rgba(248, 81, 73, 0.3);
-        background: linear-gradient(180deg, rgba(248, 81, 73, 0.12), rgba(248, 81, 73, 0.05));
-        color: var(--text);
-      }
-      .opt-danger:hover {
-        background: linear-gradient(180deg, rgba(248, 81, 73, 0.26), rgba(248, 81, 73, 0.12));
-        border-color: rgba(248, 81, 73, 0.55);
-      }
       .choice { display: flex; flex-direction: column; gap: 10px; max-width: 560px; }
       .choice button { width: 100%; padding: 11px 14px; text-align: left; display: block; }
       .choice .t { font-size: 13px; font-weight: 600; }
@@ -227,7 +235,7 @@
     </style>
   </head>
   <body>
-    <div class="titlebar">
+    <div class="titlebar" id="titlebar">
       <div class="brand">
         <img src="icon.png" alt="" />
         <span>DeepSeek Harness Desktop</span>
@@ -238,6 +246,7 @@
         <button class="tab" data-tab="plugins" role="tab" aria-selected="false"><span class="tab-dot"></span>插件</button>
         <button class="tab" data-tab="about" role="tab" aria-selected="false"><span class="tab-dot"></span>关于</button>
       </div>
+      <button class="tb-toggle" id="btnTabsToggle" aria-label="收起/展开导航栏" title="收起/展开导航栏"></button>
     </div>
 
     <div class="workarea">
@@ -311,7 +320,7 @@
                 <label class="field">
                   <span class="label-text">Registry 源</span>
                   <div class="row">
-                    <input class="input mono" id="setupReg" type="text" value="https://registry.npmjs.org" spellcheck="false" />
+                    <input class="input mono" id="setupReg" type="text" value="https://registry.npmmirror.com" spellcheck="false" />
                     <button class="ghost" id="btnSetupRefresh" title="按当前 Registry 源重新获取可用版本">刷新版本</button>
                   </div>
                 </label>
@@ -372,7 +381,7 @@
               <span class="card-hint">安装与更新 dsh 时使用的下载源</span>
             </div>
             <div class="row">
-              <input class="input mono" id="regInput" type="text" spellcheck="false" placeholder="https://registry.npmjs.org" />
+              <input class="input mono" id="regInput" type="text" spellcheck="false" placeholder="https://registry.npmmirror.com" />
               <button id="btnSaveRegistry">保存</button>
             </div>
             <div class="status" id="regStatus" role="status" aria-live="polite"></div>
@@ -451,14 +460,14 @@
                   <div class="opt-title">仅卸载应用</div>
                   <div class="opt-desc">保留 ~/.dsh 配置与数据，便于将来重装</div>
                 </div>
-                <button class="opt-danger un-btn" id="btnUninstallKeep">卸载（保留数据）</button>
+                <button class="danger-ghost" id="btnUninstallKeep">卸载（保留数据）</button>
               </div>
               <div class="uninstall-row">
                 <div>
                   <div class="opt-title">完整卸载</div>
                   <div class="opt-desc">同时删除 ~/.dsh 中全部配置、插件与版本数据，不可恢复</div>
                 </div>
-                <button class="opt-danger un-btn" id="btnUninstallWipe">完全卸载</button>
+                <button class="danger-ghost" id="btnUninstallWipe">完全卸载</button>
               </div>
             </div>
             <div class="status" id="uninstallStatus" role="status" aria-live="polite"></div>
