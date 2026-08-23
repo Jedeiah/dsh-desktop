@@ -457,6 +457,7 @@ select:disabled { opacity: 0.55; }
 #logClear:hover { color: var(--dsh-fg); }
 
 /* ---- 关于面板 ---- */
+/* 图标相对右侧文字块垂直居中（居中不上不下；此前 flex-start 顶部对齐会偏上） */
 .about-main { display: flex; align-items: center; gap: 18px; flex-wrap: wrap; }
 .app-logo {
   width: 52px; height: 52px; flex: none; border-radius: 13px;

@@ -102,13 +102,23 @@
         border-radius: 0 0 10px 10px;   /* 半圆把手，从分割线下沿长出 */
         background: rgba(16, 18, 26, 0.92);
         color: var(--dsh-fg-muted);
-        font-size: 11px; line-height: 1;
         cursor: pointer;
         box-shadow: 0 2px 6px rgba(0, 0, 0, 0.28);
         padding: 0;
         transition: color var(--dsh-dur) var(--dsh-ease);
       }
       .tb-toggle:hover { color: var(--dsh-fg); background: rgba(24, 27, 38, 0.95); }
+      /* 箭头：纯 CSS 三角（border 画），摆脱 ▴/▾ 字体符号的 side-bearing 不对称
+         导致的左右错位；用 rotate 翻转朝向，元素恒居中且无横向漂移。 */
+      .tb-caret {
+        width: 0; height: 0;
+        border-left: 5px solid transparent;
+        border-right: 5px solid transparent;
+        border-bottom: 6px solid currentColor;  /* currentColor 跟随按钮颜色 */
+        transition: transform 0.25s var(--dsh-ease);
+        display: block;
+      }
+      .tb-toggle.collapsed .tb-caret { transform: rotate(180deg); }
       .titlebar { overflow: hidden; transition: height 0.3s var(--dsh-ease); }
       .titlebar .brand,
       .titlebar .tabs {
@@ -286,7 +296,7 @@
     <!-- 折叠把手：独立于顶栏内容行，由 flex 容器水平居中（布局级，杜绝
          left/transform 居中在 WebView 的亚像素错位），随线上下移动 -->
     <div class="tb-handle" id="tbHandle">
-      <button class="tb-toggle" id="btnTabsToggle" aria-label="收起/展开导航栏" title="收起导航栏"></button>
+      <button class="tb-toggle" id="btnTabsToggle" aria-label="收起/展开导航栏" title="收起导航栏"><span class="tb-caret" aria-hidden="true"></span></button>
     </div>
 
 
@@ -324,7 +334,7 @@
                 <div class="progress-fill"></div>
               </div>
               <div class="meta-line">
-                <span id="setupMeta">首次安装约 300MB；可展开高级选项选择版本与 Registry 源</span>
+                <span id="setupMeta">首次安装需下载约 300MB 依赖包，视网络通常需要几分钟，请耐心等待；可展开高级选项选择版本与 Registry 源</span>
               </div>
               <div class="actions" id="setupActions">
                 <button id="btnSetupInstall">安装 dsh</button>

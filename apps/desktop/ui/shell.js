@@ -21,7 +21,7 @@
     // 顶栏高度联动 workspace 与把手（.workarea top / .tb-toggle top 均用
     // var(--dsh-topbar-h)，transition 同步产生伸缩动画）
     document.documentElement.style.setProperty('--dsh-topbar-h', c ? '28px' : '46px');
-    btnTabsToggle.textContent = c ? '▾' : '▴';
+    btnTabsToggle.classList.toggle('collapsed', c);  // 控制 CSS 三角朝向
     btnTabsToggle.title = c ? '展开导航栏' : '收起导航栏';
     btnTabsToggle.setAttribute('aria-expanded', String(!c));
   }
@@ -107,8 +107,10 @@
   });
   wb.addEventListener('error', () => showPlaceholder());
 
-  function loadWorkbench(url) {
-    if (!url || url === lastUrl) return;
+  function loadWorkbench(url, force) {
+    // force：安装成功后主动恢复（等价「点重试」）——即使 URL 与 lastUrl 相同
+    // 也要重载 iframe（更新/重装场景 lastUrl 可能已等于新 URL，防重入会拦住）。
+    if (!url || (!force && url === lastUrl)) return;
     lastUrl = url;
     // dsh:url 事件 = 工作台就绪（引导安装成功后 boot 会发）→ 收起引导视图
     if (setupActive) hideSetupView();
@@ -232,7 +234,7 @@
     // 每次安装重置进度状态（fetch 计数/去重/元信息），取消重装不残留旧值
     setupFetchCount = 0;
     setupLastProgress = null;
-    setupMeta.textContent = '首次安装约 300MB，请耐心等待';
+    setupMeta.textContent = '首次安装需下载约 300MB 依赖包，通常需要几分钟，请耐心等待（可随时取消）';
     // 进入进行中态：进度条 + 取消按钮出现，安装按钮锁定
     setupProgress.hidden = false;
     btnSetupInstall.disabled = true;
@@ -245,14 +247,26 @@
     try {
       await invoke('setup_dsh_cmd', { ver, registry });
       clearInterval(setupProgressTimer);
-      // 成功：后端 boot 会 emit dsh:url → loadWorkbench 自动切回工作台；
-      // 若 30s 内未收到 dsh:url（boot 失败/事件丢失），恢复为可重试状态。
+      // 成功：后端 boot 已在后台拉起 dsh（冷启动约 5-30s）。**不依赖 dsh:url
+      // 事件**（本环境实测会丢失）——主动轮询 get_dsh_url（等价「点重试」前半
+      // 段）拿到地址立即进入工作台加载页；30s 内仍拿不到才提示可重试（错误页
+      // 的「重试」会先直接拉起工作台，失败则重新安装）。
       if (!setupCancelled) {
         setupStage.textContent = '安装完成，正在启动工作台…';
-        setupMeta.textContent = '';
+        setupMeta.textContent = '冷启动约需 5-30 秒，请稍候…';
         btnSetupCancel.disabled = true;
+        let recovered = false;
+        (async () => {
+          for (let i = 0; i < 36 && setupActive && !setupCancelled && !recovered; i++) {
+            try {
+              const url = await invoke('get_dsh_url');
+              if (url) { loadWorkbench(url, true); recovered = true; break; }
+            } catch (e) { break; }
+            await new Promise((r) => setTimeout(r, 800));
+          }
+        })();
         setupDoneTimer = setTimeout(() => {
-          if (setupActive && !setupCancelled) {
+          if (setupActive && !setupCancelled && !recovered) {
             // 30s 余量：实测 dsh 冷启动（node 拉起 + 初始化）约 5s 才输出工作台
             // URL；4s 超时会误报「启动失败」（0.3.0 现场日志实证）。
             showSetupError(
@@ -323,7 +337,7 @@
     setupProgress.hidden = true;
     setSetupPhase('stage');            // 隐藏错误视图，显示 stage 区
     setupStage.textContent = '准备安装 dsh 运行时';
-    setupMeta.textContent = '首次安装约 300MB；可展开高级选项选择版本与 Registry 源';
+    setupMeta.textContent = '首次安装需下载约 300MB 依赖包，通常需要几分钟，请耐心等待；可展开高级选项选择版本与 Registry 源';
     btnSetupInstall.disabled = false;  // 安装按钮恢复可点
     btnSetupCancel.hidden = true;      // 取消按钮收回
     btnSetupCancel.disabled = false;
