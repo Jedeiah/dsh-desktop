@@ -614,6 +614,22 @@
       if (syncSetup) {
         if (setupCancelled) { resetSetupInitial(); }
         else { markSetupInstalled(); }
+      } else {
+        // 非 syncSetup(工作台已在使用):装完不依赖会丢失的 dsh:url 事件——主动轮询
+        // get_dsh_url(restart_dsh 已清 DSH_URL,新 dsh 写入后命中)再 loadWorkbench(force)
+        // 重载 iframe,否则事件丢失时工作台会停在旧版本。
+        // 窗口会被 restart_dsh 隐藏但不销毁,此轮询在隐藏窗口内继续运行。
+        (async () => {
+          for (let i = 0; i < 38; i++) {
+            try {
+              const url = await invoke('get_dsh_url');
+              if (url) { loadWorkbench(url, true); return; }
+            } catch (e) { /* 单次失败忽略 */ }
+            await new Promise((r) => setTimeout(r, 800));
+          }
+          // 轮询耗尽(≈30s)仍无 url:提示可重试,不无限等(窗口隐藏,回到 dsh tab 可见)
+          setDshStatus('工作台启动超时，可点击「更新到最新」重试', 'err');
+        })();
       }
     } catch (e) {
       clearInterval(progressTimer);

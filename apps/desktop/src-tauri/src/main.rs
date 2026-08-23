@@ -966,6 +966,10 @@ pub(crate) fn kill_dsh() {
 pub(crate) fn restart_dsh(app: &AppHandle) {
     INTENTIONAL_STOP.store(true, Ordering::SeqCst);
     kill_dsh();
+    // 关键：重启立刻清 DSH_URL——否则新 dsh 启动前仍持旧 URL,前端(updateDsh 非首装
+    // 分支启动的轮询 / 引导等待态轮询)会拿到已死端口的旧 URL 而误重载。dsh:url 事件
+    // 实测会丢失,前端主通道是轮询 get_dsh_url；先清空,等新 dsh 写入新 URL 后轮询才拿对。
+    *mlock(&DSH_URL) = None;
     if let Some(w) = app.get_webview_window(WINDOW_LABEL) {
         let _ = w.close();
     }
