@@ -386,10 +386,12 @@
     if (text === setupLastProgress) return; // 双通道同一行只处理一次
     setupLastProgress = text;
     // npm --loglevel=info 的 fetch 行形如 "npm http fetch GET 200 <url> <ms>"：
-    // 只计数，不逐行刷 stage（否则满屏 url）。
+    // 只计数，不逐行刷 stage（否则满屏 url）；同时把阶段从「正在连接 registry」
+    // 推进到「正在下载依赖包」（否则 stage 滞留旧文案与 meta 计数矛盾）。
     if (/^npm (http )?fetch/.test(text)) {
       setupFetchCount += 1;
-      setupMeta.textContent = '正在下载依赖包…已获取 ' + setupFetchCount + ' 个（约 300MB）';
+      setupStage.textContent = '正在下载依赖包…';
+      setupMeta.textContent = '已获取 ' + setupFetchCount + ' 个依赖包（约 300MB）';
       return;
     }
     setupStage.textContent = text;

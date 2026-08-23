@@ -86,16 +86,19 @@
         position: absolute;
         top: var(--dsh-topbar-h);
         left: 50%;
-        transform: translate(-50%, -50%);
+        /* 只水平居中、不沿 Y 平移：按钮整体贴在线下方（上沿=分割线），
+           箭头完整落在线下、不与顶栏半截重叠（此前 translate(-50%,-50%)
+           使按钮中心压线导致视觉错位） */
+        transform: translateX(-50%);
         z-index: 3;
-        width: 30px; height: 15px;
+        width: 44px; height: 18px;
         display: grid; place-items: center;
         border: 1px solid var(--dsh-border-strong);
         border-top: none;
-        border-radius: 0 0 9px 9px;   /* 半圆把手，贴在线上沿 */
+        border-radius: 0 0 10px 10px;   /* 半圆把手，从分割线下沿长出 */
         background: rgba(16, 18, 26, 0.92);
         color: var(--dsh-fg-muted);
-        font-size: 10px; line-height: 1;
+        font-size: 11px; line-height: 1;
         cursor: pointer;
         box-shadow: 0 2px 6px rgba(0, 0, 0, 0.28);
         padding: 0;
