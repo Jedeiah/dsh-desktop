@@ -63,7 +63,7 @@ powershell -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.c
 > 自动解析最新正式版，退出已运行实例后下载安装器静默安装并启动。要求 Windows 10/11（自带 WebView2 运行时）。
 
 **macOS 手动安装：**
-1. 双击 **DeepSeek Harness Desktop_<版本>_aarch64.dmg**，把 **DeepSeek Harness.app** 拖进 **应用程序**。
+1. 双击 **DeepSeek Harness Desktop_<版本>_aarch64.dmg**，把 **DeepSeek Harness Desktop.app** 拖进 **应用程序**。
 2. 首次打开：**右键 → 打开**（未签名，需确认一次），之后正常双击即可。
 3. 若提示"已损坏，无法打开"（Chrome 下载的未签名 App 常见）：`xattr -dr com.apple.quarantine "/Applications/DeepSeek Harness Desktop.app"`
 
