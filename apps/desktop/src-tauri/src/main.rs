@@ -689,10 +689,14 @@ async fn update_dsh_cmd(app: AppHandle, ver: String) -> Result<(), String> {
         return Err("已有一个安装正在进行中".to_string());
     }
     let app_after = app.clone(); // 供安装成功后切回主线程 restart_dsh（app 将被 move 进阻塞线程）
+    *mlock(&SETUP_PROGRESS) = Some("准备安装…".to_string());
     let result = tauri::async_runtime::spawn_blocking(move || {
         let p = paths_from_app(&app);
         let reg = crate::registry::registry_url(load_settings_at(&p.app_data).registry.as_deref());
-        crate::dsh::install_version(&p, &ver, &reg, &|_msg| {})
+        crate::dsh::install_version(&p, &ver, &reg, &|msg| {
+            *mlock(&SETUP_PROGRESS) = Some(msg.to_string());
+            let _ = app.emit("dsh:setup-progress", msg);
+        })
     })
     .await;
     // join 失败（线程 panic）也必须在返回前释放锁，否则永久锁死（审查项）
@@ -1017,6 +1021,11 @@ fn open_modal_window(app: &AppHandle) -> bool {
         .decorations(false)
         .resizable(false)
         .visible(false) // 定位后再显示，避免闪烁
+        // 透明：modal.html body 已 transparent，不设则窗口默认底色在圆角卡片
+        // 外露出方框（用户反馈的"圆角框外面还有个方框"）。
+        .transparent(true)
+        // 置顶：确认类弹窗（卸载等）必须浮在所有窗口之上，不可被遮挡。
+        .always_on_top(true)
         .inner_size(460.0, 300.0)
         .center() // 兜底
         .on_navigation(webview_navigation_policy)
@@ -1334,14 +1343,27 @@ fn uninstall_teardown(p: &Paths, wipe_dsh: bool) -> Result<(), String> {
             dirs.push(strip_verbatim(PathBuf::from(local)).join(APP_ID));
         }
     }
-    // 目录级删除：失败不中断整体卸载（残留会在重启后清理），逐个重试。
+    // 目录级删除：失败不中断整体卸载。Caches/WebKit 常被 WebView 进程延迟占用
+    // （destroy 后 300ms 不够释放），失败项再等 1s 补删一轮（实测可清）。
     let mut leftovers: Vec<String> = Vec::new();
-    for dir in dirs {
+    for dir in &dirs {
         if dir.exists() {
-            if let Err(e) = remove_dir_all_retry(&dir) {
+            if let Err(e) = remove_dir_all_retry(dir) {
                 leftovers.push(format!("{}（{e}）", dir.display()));
             }
         }
+    }
+    if !leftovers.is_empty() {
+        std::thread::sleep(Duration::from_millis(1000));
+        let mut still: Vec<String> = Vec::new();
+        for dir in &dirs {
+            if dir.exists() {
+                if let Err(e) = remove_dir_all_retry(dir) {
+                    still.push(format!("{}（{e}）", dir.display()));
+                }
+            }
+        }
+        leftovers = still;
     }
     if !leftovers.is_empty() {
         let msg = format!("以下目录被占用未能删除，重启电脑后即可手动清理：\n{}", leftovers.join("\n"));
@@ -1573,12 +1595,11 @@ fn main() {
             list_dsh_versions_cmd,
         ])
         .setup(|app| {
-            // P3：托盘收敛为最小集 —— 显示主窗口 / 管理台 / 退出。
-            // 其余能力（插件/更新/卸载）移入壳页（shell.html）Tab，经 command/event 交互。
+            // 托盘最小集：显示主窗口 / 退出（左键点击即显示主窗口；
+            // 「管理台」与「显示主窗口」功能重复，已移除）。
             let show = MenuItem::with_id(app, "show", "显示主窗口", true, None::<&str>)?;
-            let manage = MenuItem::with_id(app, "manage", "管理台", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&show, &manage, &quit])?;
+            let menu = Menu::with_items(app, &[&show, &quit])?;
             let _tray = TrayIconBuilder::with_id("tray")
                 .icon(app.default_window_icon().unwrap().clone())
                 .menu(&menu)
@@ -1588,15 +1609,9 @@ fn main() {
                         kill_dsh();
                         app.exit(0);
                     }
-                    // 显示主窗口 / 管理台：都唤起壳页；管理台额外切到「dsh」Tab。
-                    // 不虚构 URL（dsh 未就绪时壳页保持占位，而不是塞一个假地址）。
-                    "show" | "manage" => {
+                    // 显示主窗口（左键点击托盘图标同样走此路径；管理台已并入）
+                    "show" => {
                         reveal_main_window(app, mlock(&DSH_URL).as_deref());
-                        if event.id.as_ref() == "manage" {
-                            if let Some(w) = app.get_webview_window(WINDOW_LABEL) {
-                                let _ = w.emit("shell:tab", "dsh");
-                            }
-                        }
                     }
                     _ => {}
                 })

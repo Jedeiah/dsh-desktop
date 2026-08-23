@@ -316,6 +316,8 @@
       updateSection.hidden = !hasUpdate;
       if (hasUpdate) updateVer.textContent = 'v' + dshLatest;
       btnUpdateLatest.disabled = !!st.installing;
+      btnCheckUpdate.disabled = !!st.installing;
+      btnCheckUpdate.textContent = st.installing ? '安装中…' : '检查更新';
 
       renderVersions(st.versions || [], current, dshLatest, !!st.installing);
 
@@ -402,13 +404,31 @@
   }
 
   async function updateDsh(ver) {
-    setDshStatus('正在安装 dsh v' + ver + '…（约 300MB，可能较久）', 'run');
+    // 点击即锁定全部安装入口（防连点/其他版本并发）：版本行按钮、更新到最新、
+    // 检查更新（hero 右侧不空）。finally 里 refreshDsh 按后端 installing 恢复。
+    setDshStatus('正在安装 dsh v' + ver + '…', 'run');
     btnUpdateLatest.disabled = true;
+    btnCheckUpdate.disabled = true;
+    btnCheckUpdate.textContent = '安装中…';
+    dshVersionsEl.querySelectorAll('button').forEach((b) => { b.disabled = true; });
+    // 进度显示（复用引导页的 SETUP_PROGRESS 轮询通道）：安装中每秒拉一次状态。
+    let lastProgress = null;
+    const progressTimer = setInterval(async () => {
+      try {
+        const st = await invoke('setup_state_cmd');
+        if (st.progress && st.progress !== lastProgress) {
+          lastProgress = st.progress;
+          setDshStatus(st.progress, 'run');
+        }
+      } catch (e) { /* 轮询失败忽略 */ }
+    }, 1000);
     try {
       await invoke('update_dsh_cmd', { ver });
+      clearInterval(progressTimer);
       // 后端安装成功 → 自动重启工作台（dsh:url 事件驱动 iframe 重载）
       setDshStatus('安装完成，工作台正在重启…', 'ok');
     } catch (e) {
+      clearInterval(progressTimer);
       setDshStatus('安装失败：' + (e.message || e), 'err');
     } finally {
       refreshDsh(); // 复位 installing 状态并重渲染列表
