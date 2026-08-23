@@ -583,6 +583,12 @@ async fn setup_dsh_cmd(
     if !crate::registry::valid_version(&ver) {
         return Err("版本号不合法".to_string());
     }
+    // registry 与 save_registry_cmd 同规则：必须 http(s) 前缀，防任意串进
+    // npm --registry / ureq URL（安全审查 should-fix）。
+    let reg = registry.trim();
+    if !(reg.starts_with("http://") || reg.starts_with("https://")) {
+        return Err("Registry 源必须以 http:// 或 https:// 开头".to_string());
+    }
     if SETUP_BUSY.swap(true, Ordering::SeqCst) {
         return Err("已有一个安装正在进行中".to_string());
     }
@@ -590,7 +596,7 @@ async fn setup_dsh_cmd(
     let app_after = app.clone(); // 供安装成功后切回主线程 boot（app 将被 move 进阻塞线程）
     let result = tauri::async_runtime::spawn_blocking(move || {
         let p = paths_from_app(&app);
-        let reg = crate::registry::registry_url(Some(&registry));
+        let reg = crate::registry::registry_url(Some(registry.trim()));
         crate::dsh::install_version(&p, &ver, &reg, &|msg| {
             *mlock(&SETUP_PROGRESS) = Some(msg.to_string());
             let _ = app.emit("dsh:setup-progress", msg);
