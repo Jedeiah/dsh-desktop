@@ -36,16 +36,22 @@ jobs:
           echo "app_version=$APP_VERSION" >> "$GITHUB_OUTPUT"
           echo "tag=v${APP_VERSION}" >> "$GITHUB_OUTPUT"
 
-      - name: Sync tauri.conf.json version to ${{ steps.ver.outputs.app_version }}
+      - name: Sync version to ${{ steps.ver.outputs.app_version }}
         run: |
           cd apps/desktop/src-tauri
           python3 - "${{ steps.ver.outputs.app_version }}" <<'PY'
-          import json, sys
+          import json, re, sys
+          v = sys.argv[1]
           p = "tauri.conf.json"
           d = json.load(open(p))
-          d["version"] = sys.argv[1]
+          d["version"] = v
           json.dump(d, open(p, "w"), indent=2, ensure_ascii=False)
-          print("version ->", sys.argv[1])
+          # Cargo.toml 的 version 必须同步，否则 env!("CARGO_PKG_VERSION") 仍是旧版
+          # → 检查更新永远误报「发现新版本」(latest > 旧 CARGO_PKG_VERSION)。
+          c = open("Cargo.toml").read()
+          c = re.sub(r'^version = ".*"$', f'version = "{v}"', c, count=1, flags=re.M)
+          open("Cargo.toml", "w").write(c)
+          print("version ->", v)
           PY
 
       - name: Install Rust
@@ -136,11 +142,15 @@ jobs:
         with:
           node-version: 24
 
-      - name: Sync tauri.conf.json version to ${{ steps.ver.outputs.app_version }}
+      - name: Sync version to ${{ steps.ver.outputs.app_version }}
         shell: pwsh
         run: |
           $v = "${{ steps.ver.outputs.app_version }}"
           node -e "const fs=require('fs');const p='apps/desktop/src-tauri/tauri.conf.json';const d=JSON.parse(fs.readFileSync(p));d.version=process.argv[1];fs.writeFileSync(p,JSON.stringify(d,null,2)+'\n')" $v
+          # Cargo.toml 的 version 必须同步（env!('CARGO_PKG_VERSION') 用于检查更新比较，
+          # 不同步会导致发版产物永远误报「发现新版本」）
+          $cp = "apps/desktop/src-tauri/Cargo.toml"
+          (Get-Content $cp) -replace '^version = ".*"$', "version = `"$v`"" | Set-Content $cp
 
       - name: Prepare bundled resources (node.exe + npm + pnpm)
         shell: pwsh
