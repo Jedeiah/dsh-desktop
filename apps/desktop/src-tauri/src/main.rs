@@ -599,11 +599,11 @@ async fn setup_dsh_cmd(app: AppHandle, ver: String, registry: String) -> Result<
         })
     })
     .await;
-    // join 失败（线程 panic）也必须在返回前释放锁，否则永久锁死（审查项）
+    // join 失败（线程 panic）也必须在返回前释放锁，否则永久锁死（审查项）。
+    // 进度一并复位（与锁并列：成功/失败/取消所有返回路径都覆盖，防残留旧文本）。
     SETUP_BUSY.store(false, Ordering::SeqCst);
-    result.map_err(|e| format!("安装线程异常：{e}"))??;
-    // 进度复位：避免下一次轮询首 tick 显示本次安装遗留的旧文本
     *mlock(&SETUP_PROGRESS) = None;
+    result.map_err(|e| format!("安装线程异常：{e}"))??;
     // 安装成功 → 启动工作台（boot 会 emit dsh:url，壳页自动切入工作台）
     let _ = app_after.clone().run_on_main_thread(move || boot(app_after));
     Ok(())
@@ -701,11 +701,11 @@ async fn update_dsh_cmd(app: AppHandle, ver: String) -> Result<(), String> {
         })
     })
     .await;
-    // join 失败（线程 panic）也必须在返回前释放锁，否则永久锁死（审查项）
+    // join 失败（线程 panic）也必须在返回前释放锁，否则永久锁死（审查项）。
+    // 进度一并复位（与锁并列：成功/失败/取消所有返回路径都覆盖，防残留旧文本）。
     SETUP_BUSY.store(false, Ordering::SeqCst);
-    result.map_err(|e| format!("安装线程异常：{e}"))??;
-    // 进度复位：避免下一次轮询首 tick 显示本次安装遗留的旧文本
     *mlock(&SETUP_PROGRESS) = None;
+    result.map_err(|e| format!("安装线程异常：{e}"))??;
     // 安装成功 → 自动重启工作台（新版本生效）
     let _ = app_after
         .clone()
