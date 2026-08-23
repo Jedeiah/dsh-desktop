@@ -34,7 +34,7 @@ Copy-Item -Force $NodeSrc (Join-Path $NodeDir "node.exe")
 $nodeVer = & (Join-Path $NodeDir "node.exe") --version
 Write-Host "    node: $nodeVer"
 
-# --- 1b. npm (in-app updates: update.rs installs new dsh closure via bundled npm)
+# --- 1b. npm (in-app updates: dsh.rs installs new dsh closure via bundled npm)
 # Windows node ships npm at <node.exe dir>\node_modules\npm (no lib/);
 # source is the *origin* node dir, not the staged $RES\node.
 $NpmSrc = Join-Path (Split-Path -Parent $NodeSrc) "node_modules\npm"

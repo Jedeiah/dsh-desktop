@@ -14,9 +14,9 @@ set -euo pipefail
 REPO="Jedeiah/dsh-desktop"
 APP_NAME="DeepSeek Harness"
 APP="/Applications/${APP_NAME}.app"
-# App 自己子进程的特征串（区别于用户终端里手动跑的 dsh）
-DSH_CHILD_PATTERN="resources/dsh/current/node_modules/@deepseek-ai/dsh/lib/bin.js"
-LAN_CHILD_PATTERN="resources/lan-proxy.js"
+# App 自己子进程的特征串（区别于用户终端里手动跑的 dsh：App 用内置 node
+# 运行 app-data 闭包的 bin.js --profile web；终端 dsh 的命令行不含该特征）
+DSH_CHILD_PATTERN="node_modules/@deepseek-ai/dsh/lib/bin.js --profile web"
 
 case "$(uname -m)" in
   arm64)  ARCH_SUFFIX="aarch64" ;;
@@ -54,7 +54,6 @@ if pgrep -x dsh-desktop >/dev/null 2>&1; then
   done
   pkill -x dsh-desktop 2>/dev/null || true # 15s 未退再补一刀（SIGTERM）
   pkill -f "$DSH_CHILD_PATTERN" 2>/dev/null || true
-  pkill -f "$LAN_CHILD_PATTERN" 2>/dev/null || true
   sleep 1
 fi
 

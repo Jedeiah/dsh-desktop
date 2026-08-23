@@ -12,8 +12,9 @@ $ErrorActionPreference = "Stop"
 
 $Repo = "Jedeiah/dsh-desktop"
 $ExeName = "dsh-desktop.exe"
-$ChildBin = "resources\dsh\current\node_modules\@deepseek-ai\dsh\lib\bin.js"
-$ChildProxy = "resources\lan-proxy.js"
+# App 自己 dsh 子进程的命令行特征（app-data 闭包的 bin.js --profile web；
+# 终端手动跑的 dsh 不含该特征，避免误杀）
+$DshChildPattern = "*bin.js*--profile web*"
 
 # --- 解析最新版本（走 github.com 跳转，绕开 api.github.com） ----------------
 Write-Host "==> 查询最新版本（$Repo）..."
@@ -49,9 +50,9 @@ try {
         Stop-Process -Name "dsh-desktop" -Force -ErrorAction SilentlyContinue
         Start-Sleep -Seconds 2
     }
-    # 精确清掉 App 自己的 dsh/lan-proxy 子进程（不匹配用户手动跑的 dsh）
+    # 精确清掉 App 自己的 dsh 子进程（不匹配用户手动跑的 dsh）
     Get-CimInstance Win32_Process -Filter "Name = 'node.exe'" -ErrorAction SilentlyContinue |
-        Where-Object { $_.CommandLine -like "*$ChildBin*" -or $_.CommandLine -like "*$ChildProxy*" } |
+        Where-Object { $_.CommandLine -like $DshChildPattern } |
         ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
 
     # --- 下载安装器 ------------------------------------------------------
