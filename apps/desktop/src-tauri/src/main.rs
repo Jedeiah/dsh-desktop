@@ -90,31 +90,6 @@ pub(crate) fn mlock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// Single-instance guard via an exclusive lock file in the app data dir.
-/// Returns true when THIS process acquired the lock; false when another
-/// instance is running (caller should activate it and exit). The locked file
-/// is deliberately leaked so the fd (and thus the lock) lives until exit.
-fn acquire_single_instance() -> bool {
-    let dir = crate::dsh::app_data_from_home();
-    let _ = std::fs::create_dir_all(&dir);
-    match std::fs::OpenOptions::new()
-        .create(true)
-        .write(true)
-        .truncate(false)
-        .open(dir.join("instance.lock"))
-    {
-        Ok(f) => {
-            if f.try_lock().is_ok() {
-                std::mem::forget(f); // keep the fd open so the lock persists
-                true
-            } else {
-                false
-            }
-        }
-        Err(_) => true, // cannot create the lock; do not block startup
-    }
-}
-
 /// Open the launcher log (creates `<app-data>/logs/launcher.log`).
 fn init_log(p: &Paths) {
     let dir = p.app_data.join("logs");
@@ -1610,18 +1585,16 @@ fn main() {
     if run_cli_hooks(&args) {
         return;
     }
-    if !acquire_single_instance() {
-        // 已有实例在运行：把窗口带出来即可，自己不启动（防双托盘/双 dsh）
-        #[cfg(target_os = "macos")]
-        let _ = Command::new("osascript")
-            .args(["-e", r#"tell application "DeepSeek Harness Desktop" to activate"#])
-            .spawn();
-        #[cfg(not(target_os = "macos"))]
-        logln!("another instance is running; exiting");
-        return;
-    }
+    // 单实例由 tauri-plugin-single-instance 接管（下方 .plugin()）：已有实例
+    // 被二次启动时，插件在回调里 reveal 主窗口并聚焦（macOS/Windows 统一，
+    // 替换了旧的"手动锁 + macOS osascript activate / Windows 仅退出"方案）。
+    // CLI hooks 在插件注册前 return，保持原有绕过逻辑不变。
 
     tauri::Builder::default()
+        // 单实例：已有实例被二次启动时聚焦主窗口（跨平台统一激活）
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            crate::reveal_main_window(app, mlock(&DSH_URL).as_deref());
+        }))
         .invoke_handler(tauri::generate_handler![
             plugin::plugin_op,
             plugin::plugin_list_cmd,
