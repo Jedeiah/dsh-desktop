@@ -107,10 +107,20 @@ pub fn download_installer(url: &str, dest: &Path) -> Result<u64, String> {
 
 #[tauri::command]
 pub async fn check_app_update_cmd() -> Option<String> {
-    // 网络检查离开主线程（同步 command 在主线程执行会冻结 UI——0.3.0 卡死根因）
-    tauri::async_runtime::spawn_blocking(|| latest_app_version().ok())
-        .await
-        .unwrap_or(None)
+    // 网络检查离开主线程（同步 command 在主线程执行会冻结 UI——0.3.0 卡死根因）。
+    // 返回**真正可更新**的版本（latest > 当前 App 版本才 Some），避免已是最新版
+    // 仍误报「发现新版本」——此前仅返回 latest，前端 `if (v)` 拿到版本号即误判。
+    tauri::async_runtime::spawn_blocking(|| {
+        let latest = latest_app_version().ok()?;
+        let cur = env!("CARGO_PKG_VERSION");
+        if crate::registry::cmp_versions(&latest, cur) == std::cmp::Ordering::Greater {
+            Some(latest)
+        } else {
+            None
+        }
+    })
+    .await
+    .unwrap_or(None)
 }
 
 #[tauri::command]

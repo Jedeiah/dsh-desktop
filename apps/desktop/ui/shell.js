@@ -553,6 +553,24 @@
     // 点击即锁定全部安装入口（防连点/其他版本并发）：版本行按钮、更新到最新、
     // 检查更新（hero 右侧不空）。finally 里 refreshDsh 按后端 installing 恢复。
     setDshStatus('正在安装 dsh v' + ver + '…', 'run');
+    // 首次安装（未装闭包、workbench 引导页在显示）时,同步 workbench 引导页
+    // 进入"安装中"进度态——否则用户在 dsh tab 点安装,切回工作台仍是初始
+    // "准备 dsh 运行时"界面（应用状态不同步 bug）。安装完成由引导进度轮询
+    // 检测 dsh_url 就绪 → loadWorkbench → hideSetupView 自动收起引导。
+    if (!lastUrl && setupView.hidden === false) {
+      setupActive = true;
+      setSetupPhase('stage');
+      setupStage.textContent = '正在安装 dsh v' + ver + '…';
+      setupMeta.textContent = '首次安装需下载约 300MB 依赖包，通常需要几分钟，请耐心等待（可随时取消）';
+      setupProgress.hidden = false;
+      btnSetupCancel.hidden = false;
+      btnSetupCancel.disabled = false;
+      btnSetupCancel.textContent = '取消安装';
+      setupCancelled = false;
+      setupFetchCount = 0;
+      setupLastProgress = null;
+      startSetupProgressPolling();
+    }
     btnUpdateLatest.disabled = true;
     btnCheckUpdate.disabled = true;
     btnCheckUpdate.textContent = '安装中…';
