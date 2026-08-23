@@ -1238,7 +1238,9 @@ async fn uninstall_run(app: AppHandle, wipe: bool) -> Result<(), String> {
     .await
     .map_err(|e| format!("卸载线程异常：{e}"))?;
     if let Err(e) = teardown {
-        // 卸载确认窗口已销毁，JS 无法回显：用系统通知兜底
+        // 卸载确认窗口已销毁，JS 无法回显：用系统通知兜底。
+        // 复位标志：否则后续 ExitRequested 一直被 prevent_exit 拦截，用户无法退出。
+        UNINSTALLING.store(false, Ordering::SeqCst);
         notify("卸载未完成", &e);
         return Err(e);
     }
