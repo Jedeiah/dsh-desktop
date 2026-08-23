@@ -344,8 +344,10 @@
               <span class="card-hint">安装与更新 dsh 时使用的下载源</span>
             </div>
             <div class="row">
-              <span class="val-inline mono" id="registryVal"></span>
+              <input class="input mono" id="regInput" type="text" spellcheck="false" placeholder="https://registry.npmjs.org" />
+              <button id="btnSaveRegistry">保存</button>
             </div>
+            <div class="status" id="regStatus" role="status" aria-live="polite"></div>
           </div>
         </div>
       </div>

@@ -255,7 +255,9 @@
   const updateVer = $('updateVer');
   const btnUpdateLatest = $('btnUpdateLatest');
   const dshVersionsEl = $('dshVersions');
-  const registryVal = $('registryVal');
+  const regInput = $('regInput');
+  const btnSaveRegistry = $('btnSaveRegistry');
+  const regStatus = $('regStatus');
   let dshLatest = null;
 
   function setDshStatus(text, kind) {
@@ -362,11 +364,37 @@
   async function refreshRegistry() {
     try {
       const st = await invoke('get_shell_state');
-      registryVal.textContent = st.registry || 'https://registry.npmjs.org';
+      regInput.value = st.registry || 'https://registry.npmjs.org';
     } catch (e) {
-      registryVal.textContent = '未知';
+      regStatus.textContent = '读取 Registry 源失败：' + (e.message || e);
+      regStatus.className = 'status err';
     }
   }
+
+  async function saveRegistry() {
+    const val = regInput.value.trim();
+    if (!val) {
+      regStatus.textContent = 'Registry 源不能为空';
+      regStatus.className = 'status err';
+      return;
+    }
+    btnSaveRegistry.disabled = true;
+    regStatus.textContent = '正在保存…';
+    regStatus.className = 'status run';
+    try {
+      await invoke('save_registry_cmd', { registry: val });
+      regStatus.textContent = '已保存，后续安装与更新将使用该源';
+      regStatus.className = 'status ok';
+      await refreshRegistry(); // 回显规范化后的地址（如去掉尾部斜杠）
+    } catch (e) {
+      regStatus.textContent = '保存失败：' + (e.message || e);
+      regStatus.className = 'status err';
+    } finally {
+      btnSaveRegistry.disabled = false;
+    }
+  }
+  btnSaveRegistry.addEventListener('click', saveRegistry);
+  regInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') saveRegistry(); });
 
   // ---------------- 插件页 ----------------
   const pkgEl = $('pkg');

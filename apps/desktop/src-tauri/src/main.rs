@@ -491,6 +491,15 @@ pub(crate) fn load_settings(app: &AppHandle) -> Settings {
     load_settings_at(&paths_from_app(app).app_data)
 }
 
+fn save_settings_at(app_data: &Path, s: &Settings) -> Result<(), String> {
+    let raw = serde_json::to_string_pretty(s).map_err(|e| format!("序列化设置失败：{e}"))?;
+    std::fs::write(settings_path_from_data(app_data), raw).map_err(|e| format!("写入设置失败：{e}"))
+}
+
+pub(crate) fn save_settings(app: &AppHandle, s: &Settings) -> Result<(), String> {
+    save_settings_at(&paths_from_app(app).app_data, s)
+}
+
 pub(crate) fn spawn_dsh(app: &AppHandle) -> std::io::Result<Child> {
     let p = paths_from_app(app);
     let node = node_bin(&p.resources);
@@ -1091,6 +1100,25 @@ fn get_shell_state(app: AppHandle) -> ShellState {
     }
 }
 
+/// 持久化 npm registry 源（安装/更新 dsh 的下载源）。校验非空且以 http(s)://
+/// 开头，规范化后写入 settings.json；后续 list_dsh_versions_cmd / get_dsh_state
+/// 都从 settings 读 registry，保存后自动生效。
+#[tauri::command]
+fn save_registry_cmd(app: AppHandle, registry: String) -> Result<(), String> {
+    let trimmed = registry.trim();
+    if trimmed.is_empty() {
+        return Err("Registry 源不能为空".into());
+    }
+    if !(trimmed.starts_with("http://") || trimmed.starts_with("https://")) {
+        return Err("Registry 源必须以 http:// 或 https:// 开头".into());
+    }
+    let canonical = crate::registry::registry_url(Some(trimmed));
+    let mut settings = load_settings(&app);
+    settings.registry = Some(canonical);
+    save_settings(&app, &settings)?;
+    Ok(())
+}
+
 /// 在系统浏览器打开 App 的 GitHub releases 下载页（手动下载兜底入口，规格 5.3）。
 /// 原「打开工作台」语义随常规 Tab 删除；工作台地址经 iframe 内嵌即可触达。
 #[tauri::command]
@@ -1436,6 +1464,7 @@ fn main() {
             modal_respond,
             get_dsh_url,
             get_shell_state,
+            save_registry_cmd,
             open_browser_cmd,
             get_dsh_state,
             update_dsh_cmd,
