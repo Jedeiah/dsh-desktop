@@ -413,7 +413,7 @@ select:disabled { opacity: 0.55; }
 }
 
 /* ---- dsh 面板：版本大字 / 更新卡 ---- */
-.hero { display: flex; align-items: center; justify-content: flex-start; gap: 28px; flex-wrap: wrap; }
+.hero { display: flex; align-items: center; justify-content: center; gap: 28px; flex-wrap: wrap; }
 .hero-main { min-width: 260px; }
 .hero-version { display: flex; align-items: center; gap: 12px; margin-top: 8px; flex-wrap: wrap; }
 .version-num { font-size: var(--dsh-text-xl); font-weight: 650; letter-spacing: -0.5px; color: var(--dsh-fg); line-height: 1.1; }
@@ -458,6 +458,14 @@ select:disabled { opacity: 0.55; }
 .about-title { font-size: 17px; font-weight: 650; letter-spacing: 0.2px; }
 .about-meta { margin-top: 2px; font-size: 12.5px; color: var(--dsh-fg-muted); }
 .about-meta .mono { color: var(--dsh-fg); }
+.about-links { margin-top: 8px; display: flex; flex-direction: column; gap: 3px; font-size: 12.5px; color: var(--dsh-fg-muted); }
+.about-links a {
+  color: var(--dsh-accent);
+  text-decoration: none;
+  cursor: pointer;
+  width: fit-content;
+}
+.about-links a:hover { text-decoration: underline; }
 .about-actions { margin-top: 16px; display: flex; gap: 10px; flex-wrap: wrap; }
 
 /* ---- 关于面板：卸载（设计稿行样式：标题+说明左，独立按钮右） ---- */

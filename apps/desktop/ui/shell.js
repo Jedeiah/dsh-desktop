@@ -13,6 +13,14 @@
   const tabLabels = { workbench: '工作台', dsh: 'dsh', plugins: '插件', about: '关于' };
   const tabs = $('tabs').querySelectorAll('.tab');
 
+  // 主菜单「关于 DeepSeek Harness Desktop」经 shell:tab 事件切到对应 Tab
+  try {
+    T.event.listen('shell:tab', (ev) => {
+      const n = ev.payload;
+      if (n && tabLabels[n]) selectTab(n);
+    });
+  } catch (e) { /* 忽略：能力缺失时用户手动点 Tab */ }
+
   function tabOf(name) {
     if (name === 'workbench') {
       document.querySelectorAll('.panel').forEach((p) => p.classList.remove('active'));
@@ -210,19 +218,21 @@
       await invoke('setup_dsh_cmd', { ver, registry });
       clearInterval(setupProgressTimer);
       // 成功：后端 boot 会 emit dsh:url → loadWorkbench 自动切回工作台；
-      // 若 4s 内未收到 dsh:url（boot 失败/事件丢失），恢复为可重试状态。
+      // 若 30s 内未收到 dsh:url（boot 失败/事件丢失），恢复为可重试状态。
       if (!setupCancelled) {
         setupStage.textContent = '安装完成，正在启动工作台…';
         setupMeta.textContent = '';
         btnSetupCancel.disabled = true;
         setupDoneTimer = setTimeout(() => {
           if (setupActive && !setupCancelled) {
+            // 30s 余量：实测 dsh 冷启动（node 拉起 + 初始化）约 5s 才输出工作台
+            // URL；4s 超时会误报「启动失败」（0.3.0 现场日志实证）。
             showSetupError(
-              '安装完成但工作台启动失败',
-              'dsh 已安装，但工作台未能自动启动。可重试：将先尝试直接拉起工作台，失败则重新安装。'
+              '安装完成，等待工作台启动',
+              'dsh 已安装，工作台正在启动（冷启动约需 5-30 秒）。若长时间无响应，可重试：将先尝试直接拉起工作台，失败则重新安装。'
             );
           }
-        }, 4000);
+        }, 30000);
       }
     } catch (e) {
       clearInterval(setupProgressTimer);
@@ -644,6 +654,11 @@
     invoke('open_browser_cmd').catch((e) => setAppStatus('打开下载页失败：' + (e.message || e), 'err'));
   });
 
+  // 关于页「项目主页」链接 → 系统默认浏览器
+  $('aboutRepo').addEventListener('click', () => {
+    invoke('open_repo_cmd').catch((e) => setAppStatus('打开项目主页失败：' + (e.message || e), 'err'));
+  });
+
   // ---------------- 卸载（两档 + 行内确认） ----------------
   const btnUninstallKeep = $('btnUninstallKeep');
   const btnUninstallWipe = $('btnUninstallWipe');
@@ -685,5 +700,4 @@
     refreshPlugins();
   })();
 
-  // shell:tab 事件监听已随托盘「管理台」移除（无 emit 方），删除死代码
-})();
+});

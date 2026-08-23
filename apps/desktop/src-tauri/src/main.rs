@@ -40,6 +40,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use tauri::menu::{Menu, MenuItem};
+#[cfg(target_os = "macos")]
+use tauri::menu::SubmenuBuilder;
 use tauri::tray::{MouseButton, TrayIconBuilder, TrayIconEvent};
 use tauri::{
     AppHandle, Manager, RunEvent, WebviewUrl, WebviewWindowBuilder, WindowEvent,
@@ -1203,6 +1205,13 @@ fn open_browser_cmd(_app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// 在系统浏览器打开仓库主页（关于页「项目主页」链接）。
+#[tauri::command]
+fn open_repo_cmd(_app: AppHandle) -> Result<(), String> {
+    open_url("https://github.com/Jedeiah/dsh-desktop");
+    Ok(())
+}
+
 /// 卸载确认窗口：执行卸载（wipe=true 连 ~/.dsh 一起删）。
 /// 完整流程：销毁 WebView（释放 WebView2 数据占用）→ teardown → 移入回收站 → 退出。
 /// 卸载入口（关于页按钮）：先弹自绘确认窗（yesno，自定义按钮文案），
@@ -1596,6 +1605,7 @@ fn main() {
             get_shell_state,
             save_registry_cmd,
             open_browser_cmd,
+            open_repo_cmd,
             get_dsh_state,
             update_dsh_cmd,
             setup_dsh_cmd,
@@ -1638,6 +1648,43 @@ fn main() {
 
             let handle = app.handle().clone();
             init_log(&paths_from_app(app.handle()));
+
+            // 主菜单（macOS 菜单栏）：「关于」→ 唤起主窗口并切到关于页（信息与
+            // App 内一致：版本/作者/仓库链接），「退出」→ 与托盘一致（先停 dsh）。
+            // 原生 About 面板不支持自定义仓库链接，故用自定义项代替。
+            // Windows/Linux 不设主菜单（保持无菜单栏现状，托盘即入口）。
+            #[cfg(target_os = "macos")]
+            {
+                let about_item = MenuItem::with_id(
+                    app,
+                    "menu-about",
+                    "关于 DeepSeek Harness Desktop",
+                    true,
+                    None::<&str>,
+                )?;
+                let quit_item =
+                    MenuItem::with_id(app, "menu-quit", "退出", true, Some("CmdOrCtrl+Q"))?;
+                let app_menu = SubmenuBuilder::new(app, "DeepSeek Harness Desktop")
+                    .item(&about_item)
+                    .separator()
+                    .item(&quit_item)
+                    .build()?;
+                let main_menu = Menu::with_items(app, &[&app_menu])?;
+                app.set_menu(main_menu)?;
+                app.on_menu_event(move |app, event| match event.id.as_ref() {
+                    "menu-about" => {
+                        reveal_main_window(app, mlock(&DSH_URL).as_deref());
+                        if let Some(w) = app.get_webview_window(WINDOW_LABEL) {
+                            let _ = w.emit("shell:tab", "about");
+                        }
+                    }
+                    "menu-quit" => {
+                        kill_dsh();
+                        app.exit(0);
+                    }
+                    _ => {}
+                });
+            }
             // P3：主窗口 = 壳页（ui/shell.html）。壳页顶部是 Tab 栏（工作台/常规/
             // 网络/插件/更新/卸载），工作台 Tab 内用 <iframe> 内嵌 dsh 工作台；
             // 其余管理能力内嵌为面板（window.__TAURI__ 只注入主 frame → 远程 iframe
