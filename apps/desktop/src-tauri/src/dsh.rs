@@ -12,7 +12,7 @@
 // on uninstall). A new closure is boot-verified (--version and
 // --dump-default-config must pass) BEFORE the `current` marker is switched,
 // so a failed install never breaks the running version. The registry is
-// configurable (default official npmjs; npmmirror is a supported fast mirror).
+// configurable (default npmmirror for CN users; official npmjs is supported).
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};

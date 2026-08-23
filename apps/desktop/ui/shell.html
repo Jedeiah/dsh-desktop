@@ -77,7 +77,9 @@
         margin-left: 6px;
       }
 
-      /* ===== 导航栏折叠：收起 Tab 栏以扩大工作区（状态记忆） ===== */
+      /* ===== 导航栏折叠：收起 Tab 栏以扩大工作区（状态记忆） =====
+   注意：以下 40px 高度字面量必须与 shell.js applyTabsCollapsed 中
+   --dsh-topbar-h 折叠值保持一致（46px 默认值见 theme.css）。 */
       .tb-toggle {
         margin-left: auto; flex: none;
         width: 30px; height: 30px;
