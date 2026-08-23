@@ -1,2 +1,0 @@
-{"sequence":1,"timestamp":"2026-08-22T21:58:09.954733+08:00","event_type":"state_change","task_id":"20260822-103833.215928000-deepseek-v4-flash--task-15","session_id":"20260822-103833.215928000-deepseek-v4-flash","state":"running","runtime_state":"alive"}
-{"sequence":2,"timestamp":"2026-08-22T22:55:23.235676+08:00","event_type":"state_change","task_id":"20260822-103833.215928000-deepseek-v4-flash--task-15","session_id":"20260822-103833.215928000-deepseek-v4-flash","state":"succeeded","runtime_state":"exited"}

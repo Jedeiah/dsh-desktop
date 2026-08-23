@@ -700,4 +700,5 @@
     refreshPlugins();
   })();
 
-});
+  // 主菜单「关于」经 shell:tab 事件切 Tab（emit 方：main.rs menu-about）
+})();

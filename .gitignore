@@ -16,3 +16,6 @@ build/
 # 编辑器/系统临时
 *.swp
 *.tmp
+
+# Reasonix 会话产物（截图/任务日志），不入库
+.reasonix/
