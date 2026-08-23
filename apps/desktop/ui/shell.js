@@ -245,9 +245,11 @@
         resetSetupInitial();
       } else if (msg.includes('已有一个安装正在进行中')) {
         // 并发保护误报：安装其实仍在进行（上次取消/安装未收尾、BUSY 仍 true）。
-        // 不是失败——回到进行中态继续等真正结束（轮询已重启）。
+        // 不是失败——回到进行中态继续等真正结束（轮询已重启）；
+        // 若它最终只是取消收尾（installing 变 false 且无 URL），轮询会回初始页。
         setSetupPhase('stage');
         setupStage.textContent = '安装正在进行中…';
+        waitBusyReset = true;
         startSetupProgressPolling();
       } else {
         showSetupError('安装失败', msg);
@@ -259,6 +261,7 @@
   // （T.event.listen 曾实测挂起），1s 轮询 setup_state_cmd 兜底。
   // 主通道同时取工作台 URL（dsh:url 事件实测丢失——确定性进入）与
   // 进度文本（去重走 applySetupProgress 内部 setupLastProgress）。
+  let waitBusyReset = false; // 撞 BUSY 分支：等后端收尾结束后回初始页
   function startSetupProgressPolling() {
     setupProgressTimer = setInterval(async () => {
       if (!setupActive || setupCancelled) { clearInterval(setupProgressTimer); return; }
@@ -269,6 +272,14 @@
           loadWorkbench(st.dsh_url);
           return;
         }
+        // 撞 BUSY 后（waitBusyReset）：后端收尾结束（installing=false 且无 URL，
+        // 如上次取消）→ 回到初始引导页，避免永久卡「安装正在进行中…」
+        if (waitBusyReset && !st.installing && !st.dsh_url) {
+          waitBusyReset = false;
+          clearInterval(setupProgressTimer);
+          resetSetupInitial();
+          return;
+        }
         if (st.progress) applySetupProgress(st.progress);
       } catch (e) { /* 轮询失败忽略，事件通道兜底 */ }
     }, 1000);
@@ -277,6 +288,7 @@
   // 回到初始引导页：清进度/错误/取消态，恢复「安装」按钮（取消后可重新安装）
   function resetSetupInitial() {
     setupCancelled = false;
+    waitBusyReset = false;
     clearTimeout(setupDoneTimer);
     setupProgress.hidden = true;
     setSetupPhase('stage');            // 隐藏错误视图，显示 stage 区
@@ -286,6 +298,7 @@
     btnSetupCancel.hidden = true;      // 取消按钮收回
     btnSetupCancel.disabled = false;
     btnSetupCancel.textContent = '取消安装';
+    setupAdv.open = false;
     setupFetchCount = 0;
     setupLastProgress = null;
   }

@@ -101,18 +101,21 @@
       .titlebar .brand,
       .titlebar .tabs,
       .titlebar .tb-toggle {
-        transition: opacity 0.22s var(--dsh-ease), transform 0.22s var(--dsh-ease), visibility 0s linear 0.22s;
+        transition: opacity 0.22s var(--dsh-ease), transform 0.22s var(--dsh-ease), visibility 0s linear 0s;
       }
       /* 折叠态：整条顶栏收窄到 28px，品牌与 Tab 淡出上移，仅留居中的展开按钮 */
       .titlebar.collapsed { height: 28px; }
       .titlebar.collapsed .brand,
       .titlebar.collapsed .tabs {
         opacity: 0;
-        transform: translateY(-10px);
         visibility: hidden;
         pointer-events: none;
-        transition: opacity 0.22s var(--dsh-ease), transform 0.22s var(--dsh-ease), visibility 0s linear 0s;
+        /* visibility 延迟到淡出动画结束后再隐藏（收起动画可见）；
+           展开时用默认规则（立即显示，不遮挡淡入） */
+        transition: opacity 0.22s var(--dsh-ease), transform 0.22s var(--dsh-ease), visibility 0s linear 0.22s;
       }
+      .titlebar.collapsed .brand { transform: translateY(-10px); }
+      .titlebar.collapsed .tabs { transform: translate(-50%, -10px); } /* 覆盖居中位移，避免横向漂移 */
       .titlebar.collapsed .tb-toggle {
         position: absolute; left: 50%; margin-left: 0;
         transform: translateX(-50%);
