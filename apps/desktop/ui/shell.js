@@ -557,12 +557,15 @@
     // 进入"安装中"进度态——否则用户在 dsh tab 点安装,切回工作台仍是初始
     // "准备 dsh 运行时"界面（应用状态不同步 bug）。安装完成由引导进度轮询
     // 检测 dsh_url 就绪 → loadWorkbench → hideSetupView 自动收起引导。
-    if (!lastUrl && setupView.hidden === false) {
+    // syncSetup 记录是否同步过引导,供失败/异常路径正确清理（防轮询泄漏/卡死）。
+    const syncSetup = (!lastUrl && setupView.hidden === false);
+    if (syncSetup) {
       setupActive = true;
       setSetupPhase('stage');
       setupStage.textContent = '正在安装 dsh v' + ver + '…';
       setupMeta.textContent = '首次安装需下载约 300MB 依赖包，通常需要几分钟，请耐心等待（可随时取消）';
       setupProgress.hidden = false;
+      btnSetupInstall.disabled = true; // 锁定引导页安装按钮,防与 dsh tab 安装并发(runSetup 同款保护)
       btnSetupCancel.hidden = false;
       btnSetupCancel.disabled = false;
       btnSetupCancel.textContent = '取消安装';
@@ -591,8 +594,25 @@
       clearInterval(progressTimer);
       // 后端安装成功 → 自动重启工作台（dsh:url 事件驱动 iframe 重载）
       setDshStatus('安装完成，工作台正在重启…', 'ok');
+      // 首次安装同步过引导:若 30s 内 dsh_url 未就绪(重启失败/崩溃/自愈放弃),
+      // 停引导进度轮询并提示重试,防 setupProgressTimer 永久空转、setupView 卡死。
+      if (syncSetup) {
+        clearTimeout(setupDoneTimer);
+        setupDoneTimer = setTimeout(() => {
+          if (setupActive && !setupCancelled) {
+            clearInterval(setupProgressTimer);
+            showSetupError(
+              '安装完成，等待工作台启动',
+              'dsh 已安装，工作台正在启动（冷启动约需 5-30 秒）。若长时间无响应，可重试：将先尝试直接拉起工作台，失败则重新安装。'
+            );
+          }
+        }, 30000);
+      }
     } catch (e) {
       clearInterval(progressTimer);
+      // 首次安装同步过引导时,失败要停引导进度轮询并恢复引导页,否则 setupProgressTimer
+      // 永久空转、setupView 卡"安装中"（runSetup 有此兜底,updateDsh 之前缺失）。
+      if (syncSetup) { clearInterval(setupProgressTimer); resetSetupInitial(); }
       setDshStatus('安装失败：' + (e.message || e), 'err');
     } finally {
       refreshDsh(); // 复位 installing 状态并重渲染列表
