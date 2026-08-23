@@ -93,13 +93,39 @@
       .tb-toggle:hover { background: rgba(255, 255, 255, 0.05); color: var(--dsh-fg); box-shadow: none; }
       /* 折叠态：tab 隐藏、顶栏变矮（--dsh-topbar-h 联动 workspace 高度） */
       .titlebar.collapsed { height: 40px; }
-      .titlebar.collapsed .tabs { display: none; }
-      .titlebar.collapsed .brand span { display: none; }
+      /* ===== 导航栏折叠：整个顶栏缩回（品牌+Tab 全收起，只留展开按钮），
+         带伸缩动画（titlebar height + workarea top 同步过渡）。
+         注意：高度字面量必须与 shell.js applyTabsCollapsed 中
+         --dsh-topbar-h 折叠值保持一致（默认 46px 见 theme.css）。 */
+      .titlebar { overflow: hidden; transition: height 0.3s var(--dsh-ease); }
+      .titlebar .brand,
+      .titlebar .tabs,
+      .titlebar .tb-toggle {
+        transition: opacity 0.22s var(--dsh-ease), transform 0.22s var(--dsh-ease), visibility 0s linear 0.22s;
+      }
+      /* 折叠态：整条顶栏收窄到 28px，品牌与 Tab 淡出上移，仅留居中的展开按钮 */
+      .titlebar.collapsed { height: 28px; }
+      .titlebar.collapsed .brand,
+      .titlebar.collapsed .tabs {
+        opacity: 0;
+        transform: translateY(-10px);
+        visibility: hidden;
+        pointer-events: none;
+        transition: opacity 0.22s var(--dsh-ease), transform 0.22s var(--dsh-ease), visibility 0s linear 0s;
+      }
+      .titlebar.collapsed .tb-toggle {
+        position: absolute; left: 50%; margin-left: 0;
+        transform: translateX(-50%);
+        width: 24px; height: 24px;
+      }
+      .titlebar:not(.collapsed) .tb-toggle { margin-left: auto; }
 
       .workarea {
-        position: relative;
+        position: absolute;
+        left: 0; right: 0; bottom: 0;
+        top: var(--dsh-topbar-h);
+        transition: top 0.3s var(--dsh-ease);
         z-index: 1;
-        height: calc(100% - var(--dsh-topbar-h));
         background: var(--dsh-bg);
       }
       /* 工作台容器铺满工作区 */

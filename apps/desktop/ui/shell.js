@@ -18,8 +18,8 @@
   const btnTabsToggle = $('btnTabsToggle');
   function applyTabsCollapsed(c) {
     titlebar.classList.toggle('collapsed', c);
-    // 顶栏高度联动 workspace（.workarea 用 calc(100% - var(--dsh-topbar-h))）
-    document.documentElement.style.setProperty('--dsh-topbar-h', c ? '40px' : '46px');
+    // 顶栏高度联动 workspace（.workarea 用 top: var(--dsh-topbar-h)，过渡动画）
+    document.documentElement.style.setProperty('--dsh-topbar-h', c ? '28px' : '46px');
     btnTabsToggle.textContent = c ? '▸' : '▾';
     btnTabsToggle.title = c ? '展开导航栏' : '收起导航栏';
     btnTabsToggle.setAttribute('aria-expanded', String(!c));
@@ -216,24 +216,7 @@
     btnSetupCancel.textContent = '取消安装';
     setupAdv.open = false;
     setupStage.textContent = '正在连接 registry…';
-    // 进度轮询（主通道）：dsh:setup-progress 事件在部分环境不可靠
-    // （T.event.listen 曾实测挂起），1s 轮询 setup_state_cmd.progress 兜底。
-    // 去重统一走 applySetupProgress 内部的 setupLastProgress（事件/轮询双通道共用）。
-    setupProgressTimer = setInterval(async () => {
-      if (!setupActive || setupCancelled) { clearInterval(setupProgressTimer); return; }
-      try {
-        const st = await invoke('setup_state_cmd');
-        // 工作台 URL 就绪即确定性进入（主通道）：dsh:url 事件在本环境曾实测
-        // 丢失——"安装完成但等待工作台启动/点重试立刻进去"的根因就是事件
-        // 没到而 DSH_URL 早已就绪（重试走 get_dsh_url 每次都能拿到）。
-        if (st.dsh_url && st.dsh_url !== lastUrl) {
-          clearInterval(setupProgressTimer);
-          loadWorkbench(st.dsh_url);
-          return;
-        }
-        if (st.progress) applySetupProgress(st.progress);
-      } catch (e) { /* 轮询失败忽略，事件通道兜底 */ }
-    }, 1000);
+    startSetupProgressPolling();
     try {
       await invoke('setup_dsh_cmd', { ver, registry });
       clearInterval(setupProgressTimer);
@@ -258,11 +241,53 @@
       clearInterval(setupProgressTimer);
       const msg = (e && e.message) || String(e);
       if (setupCancelled) {
-        showSetupError('已取消', '安装已取消，可重试或调整高级选项后再次安装。');
+        // 用户主动取消：回到初始引导页（可重新安装），不显示错误态
+        resetSetupInitial();
+      } else if (msg.includes('已有一个安装正在进行中')) {
+        // 并发保护误报：安装其实仍在进行（上次取消/安装未收尾、BUSY 仍 true）。
+        // 不是失败——回到进行中态继续等真正结束（轮询已重启）。
+        setSetupPhase('stage');
+        setupStage.textContent = '安装正在进行中…';
+        startSetupProgressPolling();
       } else {
         showSetupError('安装失败', msg);
       }
     }
+  }
+
+  // 进度轮询（主通道）：dsh:setup-progress 事件在部分环境不可靠
+  // （T.event.listen 曾实测挂起），1s 轮询 setup_state_cmd 兜底。
+  // 主通道同时取工作台 URL（dsh:url 事件实测丢失——确定性进入）与
+  // 进度文本（去重走 applySetupProgress 内部 setupLastProgress）。
+  function startSetupProgressPolling() {
+    setupProgressTimer = setInterval(async () => {
+      if (!setupActive || setupCancelled) { clearInterval(setupProgressTimer); return; }
+      try {
+        const st = await invoke('setup_state_cmd');
+        if (st.dsh_url && st.dsh_url !== lastUrl) {
+          clearInterval(setupProgressTimer);
+          loadWorkbench(st.dsh_url);
+          return;
+        }
+        if (st.progress) applySetupProgress(st.progress);
+      } catch (e) { /* 轮询失败忽略，事件通道兜底 */ }
+    }, 1000);
+  }
+
+  // 回到初始引导页：清进度/错误/取消态，恢复「安装」按钮（取消后可重新安装）
+  function resetSetupInitial() {
+    setupCancelled = false;
+    clearTimeout(setupDoneTimer);
+    setupProgress.hidden = true;
+    setSetupPhase('stage');            // 隐藏错误视图，显示 stage 区
+    setupStage.textContent = '准备安装 dsh 运行时';
+    setupMeta.textContent = '首次安装约 300MB；可展开高级选项选择版本与 Registry 源';
+    btnSetupInstall.disabled = false;  // 安装按钮恢复可点
+    btnSetupCancel.hidden = true;      // 取消按钮收回
+    btnSetupCancel.disabled = false;
+    btnSetupCancel.textContent = '取消安装';
+    setupFetchCount = 0;
+    setupLastProgress = null;
   }
 
   // 高级区：Registry 源右侧「刷新版本」→ 按当前输入值重新获取可用版本
@@ -284,6 +309,15 @@
         if (url) { loadWorkbench(url); return; }
       } catch (e) { break; }
       await new Promise((r) => setTimeout(r, 800));
+    }
+    // 上次安装/取消若未收尾（后端 BUSY 仍 true），先等它复位再装——
+    // 否则会撞「已有一个安装正在进行中」（那只是并发保护，不是失败）。
+    for (let i = 0; i < 20; i++) {
+      try {
+        const st = await invoke('setup_state_cmd');
+        if (!st.installing) break;
+      } catch (e) { break; }
+      await new Promise((r) => setTimeout(r, 500));
     }
     runSetup();
   });
