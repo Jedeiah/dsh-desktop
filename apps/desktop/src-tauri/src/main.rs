@@ -41,7 +41,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 use tauri::menu::{Menu, MenuItem};
 #[cfg(target_os = "macos")]
-use tauri::menu::SubmenuBuilder;
+use tauri::menu::{AboutMetadata, PredefinedMenuItem, SubmenuBuilder};
 use tauri::tray::{MouseButton, TrayIconBuilder, TrayIconEvent};
 use tauri::{
     AppHandle, Manager, RunEvent, WebviewUrl, WebviewWindowBuilder, WindowEvent,
@@ -1650,17 +1650,25 @@ fn main() {
             init_log(&paths_from_app(app.handle()));
 
             // 主菜单（macOS 菜单栏）：「关于」→ 唤起主窗口并切到关于页（信息与
-            // App 内一致：版本/作者/仓库链接），「退出」→ 与托盘一致（先停 dsh）。
-            // 原生 About 面板不支持自定义仓库链接，故用自定义项代替。
-            // Windows/Linux 不设主菜单（保持无菜单栏现状，托盘即入口）。
+            // App 内关于页一致的内容走 metadata（macOS 系统关于面板支持
+            // name/version/copyright/credits，如图标与版权行 + 作者/仓库文本）。
+            // 「退出」→ 与托盘一致（先停 dsh）；Windows/Linux 不设主菜单。
             #[cfg(target_os = "macos")]
             {
-                let about_item = MenuItem::with_id(
+                // 原生 About：PredefinedMenuItem::about 点击直接弹系统关于面板
+                // （不依赖菜单事件链——此前自定义项「点击没反应」的回归根因）。
+                let about_item = PredefinedMenuItem::about(
                     app,
-                    "menu-about",
-                    "关于 DeepSeek Harness Desktop",
-                    true,
-                    None::<&str>,
+                    Some("关于 DeepSeek Harness Desktop"),
+                    Some(AboutMetadata {
+                        name: Some("DeepSeek Harness Desktop".into()),
+                        version: Some(app.package_info().version.to_string()),
+                        copyright: Some("© 2026 Jedeiah · MIT License".into()),
+                        credits: Some(
+                            "作者 Jedeiah\n项目主页 github.com/Jedeiah/dsh-desktop".into(),
+                        ),
+                        ..Default::default()
+                    }),
                 )?;
                 let quit_item =
                     MenuItem::with_id(app, "menu-quit", "退出", true, Some("CmdOrCtrl+Q"))?;
@@ -1672,12 +1680,6 @@ fn main() {
                 let main_menu = Menu::with_items(app, &[&app_menu])?;
                 app.set_menu(main_menu)?;
                 app.on_menu_event(move |app, event| match event.id.as_ref() {
-                    "menu-about" => {
-                        reveal_main_window(app, mlock(&DSH_URL).as_deref());
-                        if let Some(w) = app.get_webview_window(WINDOW_LABEL) {
-                            let _ = w.emit("shell:tab", "about");
-                        }
-                    }
                     "menu-quit" => {
                         kill_dsh();
                         app.exit(0);

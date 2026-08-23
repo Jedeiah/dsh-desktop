@@ -413,7 +413,18 @@ select:disabled { opacity: 0.55; }
 }
 
 /* ---- dsh 面板：版本大字 / 更新卡 ---- */
-.hero { display: flex; align-items: center; justify-content: center; gap: 28px; flex-wrap: wrap; }
+/* 注意：必须显式 flex-direction: row——.card（theme.css 通用组件卡）声明了
+   flex-direction: column（为 modal 弹窗 head/msg/foot 垂直排布），.card.hero
+   会继承导致 hero-main 与 hero-actions 垂直堆叠（用户多次反馈的「和设计稿
+   不一样」根因）；设计稿布局为：版本信息左 + 按钮右（space-between）。 */
+.hero {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  flex-wrap: wrap;
+}
 .hero-main { min-width: 260px; }
 .hero-version { display: flex; align-items: center; gap: 12px; margin-top: 8px; flex-wrap: wrap; }
 .version-num { font-size: var(--dsh-text-xl); font-weight: 650; letter-spacing: -0.5px; color: var(--dsh-fg); line-height: 1.1; }

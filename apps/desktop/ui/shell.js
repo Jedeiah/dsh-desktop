@@ -13,14 +13,6 @@
   const tabLabels = { workbench: '工作台', dsh: 'dsh', plugins: '插件', about: '关于' };
   const tabs = $('tabs').querySelectorAll('.tab');
 
-  // 主菜单「关于 DeepSeek Harness Desktop」经 shell:tab 事件切到对应 Tab
-  try {
-    T.event.listen('shell:tab', (ev) => {
-      const n = ev.payload;
-      if (n && tabLabels[n]) selectTab(n);
-    });
-  } catch (e) { /* 忽略：能力缺失时用户手动点 Tab */ }
-
   function tabOf(name) {
     if (name === 'workbench') {
       document.querySelectorAll('.panel').forEach((p) => p.classList.remove('active'));
