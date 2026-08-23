@@ -461,7 +461,7 @@
       btnCheckUpdate.disabled = !!st.installing;
       btnCheckUpdate.textContent = st.installing ? '安装中…' : '检查更新';
 
-      renderVersions(st.versions || [], current, dshLatest, !!st.installing);
+      renderVersions(st.versions || [], current, dshLatest, !!st.installing, st.installed || []);
 
       if (st.installing) {
         setDshStatus('正在安装新版本…安装完成后工作台自动重启', 'run');
@@ -480,7 +480,7 @@
 
   // 渐进披露：展开态记忆标志（模块级，refreshDsh 重渲染不折叠）
   const versionsExpanded = { value: false };
-  function renderVersions(versions, current, latest, installing) {
+  function renderVersions(versions, current, latest, installing, installed = []) {
     dshVersionsEl.innerHTML = '';
     if (!versions.length) {
       const empty = document.createElement('div');
@@ -524,7 +524,9 @@
         btn.textContent = '当前版本';
         btn.disabled = true;
       } else {
-        btn.textContent = '安装';
+        // 已安装（本地目录存在,非当前）→「切换」（走 install_version 复用,秒切）；
+        // 未安装 →「安装」。点按都调 updateDsh(v)（后端会自动复用已存在目录）。
+        btn.textContent = installed.includes(v) ? '切换' : '安装';
         btn.addEventListener('click', () => { btn.disabled = true; updateDsh(v); });
         btn.disabled = installing;
       }

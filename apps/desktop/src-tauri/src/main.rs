@@ -661,6 +661,9 @@ struct DshState {
     latest: Option<String>,
     versions: Vec<String>,
     installing: bool,
+    /// 已安装（本地 `dsh/v<ver>` 目录存在）的版本集合——前端据此把已装版本
+    /// 的按钮显示为「切换」而非「安装」（配套 install_version 复用已有目录）。
+    installed: Vec<String>,
 }
 
 /// 启动时异步查询的 npm latest 缓存（离线/断网失败静默，latest 保持 None）。
@@ -675,6 +678,8 @@ async fn get_dsh_state(app: AppHandle) -> DshState {
         .unwrap_or_else(|| "未安装".into());
     let latest = mlock(&LATEST_DSH).clone();
     let installing = SETUP_BUSY.load(Ordering::SeqCst);
+    // 已安装版本集合（本地读取,同步；用于前端区分「切换」/「安装」）
+    let installed = crate::dsh::installed_versions(&p);
     // 网络查询（list_versions）离开主线程：同步 command 在主线程执行，
     // 阻塞网络会冻结 UI（0.3.0 卡死根因，见 list_dsh_versions_cmd）。
     let versions = tauri::async_runtime::spawn_blocking(move || {
@@ -687,6 +692,7 @@ async fn get_dsh_state(app: AppHandle) -> DshState {
         current,
         versions,
         installing,
+        installed,
     }
 }
 

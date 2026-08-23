@@ -49,6 +49,18 @@ pub fn closure_version(dir: &Path) -> Option<String> {
     None
 }
 
+/// 判断 `dir` 是否为**可用**的目标版本闭包目录：版本标记匹配 `ver` 且入口文件
+/// `node_modules/@deepseek-ai/dsh/lib/bin.js` 存在。`install_version` 的"复用已有
+/// 目录"和 `installed_versions` 的"已安装可切换"都用同一判定，避免 UI 显示「切换」
+/// 但实际目录残缺、点按却走了重装（文案误导）。校验不过 fall through 到正常安装。
+fn closure_is_usable(dir: &Path, ver: &str) -> bool {
+    dir.is_dir()
+        && closure_version(dir).as_deref() == Some(ver)
+        && dir
+            .join("node_modules/@deepseek-ai/dsh/lib/bin.js")
+            .is_file()
+}
+
 /// The active closure dir: `<app-data>/dsh/current` marker -> `v<ver>/`.
 pub fn current_closure(p: &Paths) -> Option<PathBuf> {
     let marker = p.app_data.join("dsh/current");
@@ -64,16 +76,16 @@ pub fn current_closure(p: &Paths) -> Option<PathBuf> {
 }
 
 /// Version dir names under `<app-data>/dsh/`, newest first.
-// Task 7 删除其唯一生产调用后成为死代码（bin crate 内 pub 不豁免 dead_code）；
-// 函数与单测仍有价值，保留并抑制 lint，避免扩大改动面。
-#[allow(dead_code)]
+/// 前端区分「切换」/「安装」时用（get_dsh_state 返回 installed）。
+/// 仅统计**可用**的已装版本（closure_is_usable：版本匹配 + 入口完整），与
+/// install_version 的「复用已有目录」判定一致，避免残缺目录被当作可「切换」。
 pub fn installed_versions(p: &Paths) -> Vec<String> {
     let mut out = vec![];
     if let Ok(entries) = std::fs::read_dir(p.app_data.join("dsh")) {
         for e in entries.flatten() {
             let name = e.file_name().to_string_lossy().to_string();
             if let Some(ver) = name.strip_prefix('v') {
-                if !ver.ends_with("-tmp") && !ver.ends_with(".old") && e.path().is_dir() {
+                if !ver.ends_with("-tmp") && !ver.ends_with(".old") && closure_is_usable(&e.path(), ver) {
                     out.push(ver.to_string());
                 }
             }
@@ -253,15 +265,10 @@ pub fn install_version(
     std::fs::create_dir_all(&dsh_dir).map_err(|e| format!("创建目录失败: {e}"))?;
 
     let final_dir = dsh_dir.join(format!("v{ver}"));
-    // 目标版本目录已存在且可用（版本匹配 + 闭包入口完整）：直接复用，只切换 current，
-    // 不重跑 npm install——切回已安装版本是秒切，也避免超大依赖树全量 resolve 极慢。
-    // 校验含入口文件 lib/bin.js，防止"目录曾被破坏但 VERSION/包目录仍在"被误判可复用
-    //（校验不过 fall through 到下方 npm install,不会静默跳过一次真正的重装）。
-    let dsh_pkg = final_dir.join("node_modules/@deepseek-ai/dsh");
-    if final_dir.is_dir()
-        && closure_version(&final_dir).as_deref() == Some(ver)
-        && dsh_pkg.join("lib/bin.js").is_file()
-    {
+    // 目标版本目录已存在且可用（closure_is_usable：版本匹配 + 入口完整）：直接复用，
+    // 只切换 current，不重跑 npm install——切回已安装版本是秒切，也避免超大依赖树
+    // 全量 resolve 极慢。校验不过 fall through 到下方 npm install（不静默跳过一次重装）。
+    if closure_is_usable(&final_dir, ver) {
         progress(&format!("dsh v{ver} 已存在，直接切换…"));
         activate_closure(&dsh_dir, ver)?;
         progress("完成");
@@ -365,9 +372,13 @@ mod tests {
     fn installed_versions_lists_desc() {
         let root = tmp().join("installed");
         let _ = std::fs::remove_dir_all(&root);
-        // 规格 4.3 布局：闭包在 <app-data>/dsh/v<ver>/
+        // 规格 4.3 布局：闭包在 <app-data>/dsh/v<ver>/。构造**可用**闭包
+        //（VERSION 标记 + 入口 lib/bin.js），匹配 closure_is_usable 判定。
         for v in ["v0.1.0-rc.7", "v0.1.1-rc.1", "v0.1.1-rc.2"] {
-            std::fs::create_dir_all(root.join("dsh").join(v)).unwrap();
+            let dir = root.join("dsh").join(v);
+            std::fs::create_dir_all(dir.join("node_modules/@deepseek-ai/dsh/lib")).unwrap();
+            std::fs::write(dir.join("VERSION"), v.trim_start_matches('v')).unwrap();
+            std::fs::write(dir.join("node_modules/@deepseek-ai/dsh/lib/bin.js"), "// entry").unwrap();
         }
         std::fs::create_dir_all(root.join("dsh/npm-cache")).unwrap(); // 非 v* 应忽略
         std::fs::create_dir_all(root.join("dsh/v0.1.0-rc.6.old")).unwrap(); // .old 残留应忽略
