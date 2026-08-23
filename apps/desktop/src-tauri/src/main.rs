@@ -139,7 +139,7 @@ fn hms(secs: u64) -> String {
     let era = if z >= 0 { z } else { z - 146096 } / 146097;
     let doe = (z - era * 146097) as u64;
     let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
-    let y = yoe as u64 + era as u64 * 400;
+    let y = yoe + era as u64 * 400;
     let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
     let mp = (5 * doy + 2) / 153;
     let d = doy - (153 * mp + 2) / 5 + 1;
@@ -260,12 +260,9 @@ fn resource_dir(app: &AppHandle) -> PathBuf {
 #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 fn strip_verbatim_prefix(s: &str) -> Option<String> {
     if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
-        Some(format!(r"\\{rest}"))
-    } else if let Some(rest) = s.strip_prefix(r"\\?\") {
-        Some(rest.to_string())
-    } else {
-        None
+        return Some(format!(r"\\{rest}"));
     }
+    s.strip_prefix(r"\\?\").map(|rest| rest.to_string())
 }
 
 /// Windows：剥离 `\\?\` verbatim 前缀（见 strip_verbatim_prefix）。`std::env::
@@ -316,10 +313,11 @@ pub(crate) fn paths_from_cli() -> Paths {
 }
 
 /// 安全守卫：所有会改变系统状态/访问敏感的 mutating 命令都只接受来自壳页
-/// 主窗口（label == WINDOW_LABEL）的调用。远程 dsh 工作台在 iframe 内拿不到
-/// window.__TAURI__（Tauri 仅往主 frame 注入），但依赖该前提是脆弱的——统一
-/// 在此校验调用窗口，防止任何来源（含未来 withGlobalTauri 行为变化）诱导
-/// 安装/更新/卸载/改写设置等破坏性操作。
+/// 主窗口（label == WINDOW_LABEL）的调用。虽然 shells-frame 里的远程 dsh 工作
+/// 台在 iframe 内通常拿不到 window.__TAURI__（Tauri 仅往主 frame 注入），但
+/// tauri.conf.json 的 withGlobalTauri 为 true、且该前提随平台/版本可能变化——
+/// 统一在此校验调用窗口，防止任何来源诱导安装/更新/卸载/改写设置等破坏性
+/// 操作（纵深防御，不单靠 iframe 隔离）。
 pub(crate) fn ensure_shell_window(window: &tauri::WebviewWindow) -> Result<(), String> {
     if window.label() != WINDOW_LABEL {
         return Err("该操作仅限壳页窗口使用".to_string());
@@ -385,6 +383,7 @@ fn user_shell_path() -> String {
 /// - 不依赖"子进程退出后 read 必 EOF"：rc 里 `&` 后台进程若继承 stdout 写端，
 ///   退出后 read 也会无限阻塞（会拖垮所有 spawn_dsh）——非阻塞读 + WouldBlock
 ///   轮询 + 同一 deadline 兜底，任何情况下 5s 内必返回。
+///
 /// 返回过滤后的 KEY=VALUE 列表；失败返回 None（调用方静默继承原环境）。
 #[cfg(target_os = "macos")]
 fn capture_user_env() -> Option<Vec<(String, String)>> {
@@ -900,8 +899,6 @@ pub(crate) fn no_console(mut cmd: Command) -> Command {
     cmd
 }
 
-/// Open a folder in the platform file manager.
-
 /// 是否为允许在 WebView 内导航的地址：App 内置页（tauri://localhost /
 /// http(s)://tauri.localhost）与 **dsh 工作台源端口**（http://127.0.0.1:<dsh
 /// 实际端口>）。只放行"当前 dsh 端口"，其它一律放行到外部。未就绪
@@ -942,6 +939,7 @@ fn webview_navigation_policy(url: &tauri::Url) -> bool {
     let scheme = url.scheme();
     // 只放行 data/blob/about（内嵌 srcdoc 等需要）；拦截 javascript: ——
     // 配合注入面可成执行面，且正常导航无需 javascript:（安全加固）。
+    // 平台不对称同下方"已知限制"说明：macOS 覆盖所有帧、Windows 仅顶层。
     if matches!(scheme, "data" | "blob" | "about") {
         return true;
     }
@@ -1711,12 +1709,11 @@ fn main() {
                     .build()?;
                 let main_menu = Menu::with_items(app, &[&app_menu])?;
                 app.set_menu(main_menu)?;
-                app.on_menu_event(move |app, event| match event.id.as_ref() {
-                    "menu-quit" => {
+                app.on_menu_event(move |app, event| {
+                    if event.id.as_ref() == "menu-quit" {
                         kill_dsh();
                         app.exit(0);
                     }
-                    _ => {}
                 });
             }
             // P3：主窗口 = 壳页（ui/shell.html）。壳页顶部是 Tab 栏（工作台/常规/

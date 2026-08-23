@@ -22,8 +22,8 @@ jobs:
             ~/.cargo/git
             apps/desktop/src-tauri/target
           key: macos-cargo-${{ runner.os }}-${{ hashFiles('apps/desktop/src-tauri/Cargo.lock') }}
-      - name: Cargo clippy (dev)
-        run: cd apps/desktop/src-tauri && cargo clippy --bins
+      - name: Cargo clippy (dev, warn)
+        run: cd apps/desktop/src-tauri && cargo clippy --all-targets -- -D warnings
       - name: Cargo check (dev)
         run: cd apps/desktop/src-tauri && cargo check
       - name: Cargo test
@@ -46,8 +46,8 @@ jobs:
             ~/.cargo/git
             apps/desktop/src-tauri/target
           key: windows-cargo-${{ runner.os }}-${{ hashFiles('apps/desktop/src-tauri/Cargo.lock') }}
-      - name: Cargo clippy (dev)
-        run: cd apps/desktop/src-tauri && cargo clippy --bins
+      - name: Cargo clippy (dev, warn)
+        run: cd apps/desktop/src-tauri && cargo clippy --all-targets -- -D warnings
       - name: Cargo check (dev)
         run: cd apps/desktop/src-tauri && cargo check
       - name: Cargo test
