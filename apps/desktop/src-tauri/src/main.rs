@@ -315,6 +315,18 @@ pub(crate) fn paths_from_cli() -> Paths {
     }
 }
 
+/// 安全守卫：所有会改变系统状态/访问敏感的 mutating 命令都只接受来自壳页
+/// 主窗口（label == WINDOW_LABEL）的调用。远程 dsh 工作台在 iframe 内拿不到
+/// window.__TAURI__（Tauri 仅往主 frame 注入），但依赖该前提是脆弱的——统一
+/// 在此校验调用窗口，防止任何来源（含未来 withGlobalTauri 行为变化）诱导
+/// 安装/更新/卸载/改写设置等破坏性操作。
+pub(crate) fn ensure_shell_window(window: &tauri::WebviewWindow) -> Result<(), String> {
+    if window.label() != WINDOW_LABEL {
+        return Err("该操作仅限壳页窗口使用".to_string());
+    }
+    Ok(())
+}
+
 /// The bundled node executable (name differs per platform: `node` vs `node.exe`).
 pub(crate) fn node_bin(resources: &Path) -> PathBuf {
     if cfg!(windows) {
@@ -586,7 +598,13 @@ static SETUP_PROGRESS: Mutex<Option<String>> = Mutex::new(None);
 /// 安装指定版本 dsh；进度经 `dsh:setup-progress` 推送（并写入
 /// SETUP_PROGRESS 供轮询兜底）；成功后 `boot(app)` 启动工作台。
 #[tauri::command]
-async fn setup_dsh_cmd(app: AppHandle, ver: String, registry: String) -> Result<(), String> {
+async fn setup_dsh_cmd(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+    ver: String,
+    registry: String,
+) -> Result<(), String> {
+    crate::ensure_shell_window(&window)?;
     // M2：入口白名单校验，防止任意字符串（npm 参数注入）进入安装流程
     if !crate::registry::valid_version(&ver) {
         return Err("版本号不合法".to_string());
@@ -620,7 +638,10 @@ async fn setup_dsh_cmd(app: AppHandle, ver: String, registry: String) -> Result<
 /// 终止进行中的 npm 安装（规格 5.1「可取消」）；取消后 install 返回 Err →
 /// tmp 清理 → 引导页可重试。
 #[tauri::command]
-fn setup_cancel_cmd() {
+fn setup_cancel_cmd(window: tauri::WebviewWindow) {
+    if crate::ensure_shell_window(&window).is_err() {
+        return;
+    }
     crate::dsh::cancel_install();
 }
 
@@ -691,7 +712,8 @@ async fn get_dsh_state(app: AppHandle) -> DshState {
 
 /// 安装指定版本 dsh 并自动重启工作台（新版本生效）。
 #[tauri::command]
-async fn update_dsh_cmd(app: AppHandle, ver: String) -> Result<(), String> {
+async fn update_dsh_cmd(app: AppHandle, window: tauri::WebviewWindow, ver: String) -> Result<(), String> {
+    crate::ensure_shell_window(&window)?;
     // M2：入口白名单校验，防止任意字符串（npm 参数注入）进入安装流程
     if !crate::registry::valid_version(&ver) {
         return Err("版本号不合法".to_string());
@@ -911,14 +933,16 @@ fn is_internal_webview_url(url: &tauri::Url) -> bool {
 /// 已知限制（平台不对称）：wry 在 **macOS** 的导航回调（decidePolicyForNavigationAction）
 /// 覆盖所有帧——外部 http(s) 的 iframe/表单提交会被拦截并转交浏览器（有意的
 /// 安全边界：外部内容不进工作台）；**Windows** 的 NavigationStarting 仅顶层
-/// 导航触发，iframe 不受影响。data:/blob:/about:/javascript: 一律放行以免
-/// 破坏内嵌内容（如 srcdoc 预览）。
+/// 导航触发，iframe 不受影响。data:/blob:/about: 放行以免破坏内嵌内容
+///（如 srcdoc 预览）；javascript: 已拦截（安全加固）。
 fn webview_navigation_policy(url: &tauri::Url) -> bool {
     if is_internal_webview_url(url) {
         return true;
     }
     let scheme = url.scheme();
-    if matches!(scheme, "data" | "blob" | "about" | "javascript") {
+    // 只放行 data/blob/about（内嵌 srcdoc 等需要）；拦截 javascript: ——
+    // 配合注入面可成执行面，且正常导航无需 javascript:（安全加固）。
+    if matches!(scheme, "data" | "blob" | "about") {
         return true;
     }
     let s = url.as_str();
@@ -1187,7 +1211,8 @@ fn get_shell_state(app: AppHandle) -> ShellState {
 /// 开头，规范化后写入 settings.json；后续 list_dsh_versions_cmd / get_dsh_state
 /// 都从 settings 读 registry，保存后自动生效。
 #[tauri::command]
-fn save_registry_cmd(app: AppHandle, registry: String) -> Result<(), String> {
+fn save_registry_cmd(app: AppHandle, window: tauri::WebviewWindow, registry: String) -> Result<(), String> {
+    crate::ensure_shell_window(&window)?;
     let trimmed = registry.trim();
     if trimmed.is_empty() {
         return Err("Registry 源不能为空".into());
@@ -1222,7 +1247,8 @@ fn open_repo_cmd(_app: AppHandle) -> Result<(), String> {
 /// 卸载入口（关于页按钮）：先弹自绘确认窗（yesno，自定义按钮文案），
 /// 用户确认后才执行 uninstall_run；取消则无操作。
 #[tauri::command]
-async fn confirm_uninstall_cmd(app: AppHandle, wipe: bool) -> Result<(), String> {
+async fn confirm_uninstall_cmd(app: AppHandle, window: tauri::WebviewWindow, wipe: bool) -> Result<(), String> {
+    crate::ensure_shell_window(&window)?;
     let app2 = app.clone();
     let confirmed = tauri::async_runtime::spawn_blocking(move || {
         let (title, msg) = if wipe {
@@ -1241,14 +1267,15 @@ async fn confirm_uninstall_cmd(app: AppHandle, wipe: bool) -> Result<(), String>
     .await
     .map_err(|e| format!("弹窗线程异常：{e}"))?;
     if confirmed {
-        uninstall_run(app, wipe).await
+        uninstall_run(app, window, wipe).await
     } else {
         Ok(())
     }
 }
 
 #[tauri::command]
-async fn uninstall_run(app: AppHandle, wipe: bool) -> Result<(), String> {
+async fn uninstall_run(app: AppHandle, window: tauri::WebviewWindow, wipe: bool) -> Result<(), String> {
+    crate::ensure_shell_window(&window)?;
     // 卸载链进行中：ExitRequested 必须 prevent_exit（见 run 循环），
     // 否则 destroy 全部窗口会触发默认退出，teardown 永远来不及执行
     //（0.3.0 卸载"程序退出但没卸载"根因）。

@@ -77,7 +77,11 @@ pub async fn check_app_update_cmd() -> Option<String> {
 }
 
 #[tauri::command]
-pub async fn app_update_cmd(app: tauri::AppHandle) -> Result<(), String> {
+pub async fn app_update_cmd(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+) -> Result<(), String> {
+    crate::ensure_shell_window(&window)?;
     let ver = latest_app_version()?;
     let url = asset_url(&ver).ok_or_else(|| "当前平台暂不支持自动安装".to_string())?;
     let tmp = std::env::temp_dir().join(format!("dsh-desktop-update-{ver}"));

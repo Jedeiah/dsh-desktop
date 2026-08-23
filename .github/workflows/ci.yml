@@ -11,12 +11,23 @@ jobs:
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v7
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy,rustfmt
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            apps/desktop/src-tauri/target
+          key: macos-cargo-${{ runner.os }}-${{ hashFiles('apps/desktop/src-tauri/Cargo.lock') }}
+      - name: Cargo clippy (dev)
+        run: cd apps/desktop/src-tauri && cargo clippy --bins
       - name: Cargo check (dev)
-        run: |
-          cd apps/desktop/src-tauri
-          cargo check
+        run: cd apps/desktop/src-tauri && cargo check
+      - name: Cargo test
+        run: cd apps/desktop/src-tauri && cargo test
 
   build-windows:
     # Windows 目标上的真实编译检查（验证全部 #[cfg(windows)] 代码路径与
@@ -24,9 +35,20 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v7
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy,rustfmt
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            apps/desktop/src-tauri/target
+          key: windows-cargo-${{ runner.os }}-${{ hashFiles('apps/desktop/src-tauri/Cargo.lock') }}
+      - name: Cargo clippy (dev)
+        run: cd apps/desktop/src-tauri && cargo clippy --bins
       - name: Cargo check (dev)
-        run: |
-          cd apps/desktop/src-tauri
-          cargo check
+        run: cd apps/desktop/src-tauri && cargo check
+      - name: Cargo test
+        run: cd apps/desktop/src-tauri && cargo test
