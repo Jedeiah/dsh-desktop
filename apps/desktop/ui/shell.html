@@ -82,15 +82,19 @@
          展开时反向。伸缩均为 0.3s 过渡。注意：高度字面量必须与
          shell.js applyTabsCollapsed 中 --dsh-topbar-h 折叠值一致（默认 46px、折叠 28px）。 */
       body { position: relative; }
-      .tb-toggle {
+      .tb-handle {
         position: absolute;
         top: var(--dsh-topbar-h);
-        left: 50%;
-        /* 只水平居中、不沿 Y 平移：按钮整体贴在线下方（上沿=分割线），
-           箭头完整落在线下、不与顶栏半截重叠（此前 translate(-50%,-50%)
-           使按钮中心压线导致视觉错位） */
-        transform: translateX(-50%);
+        left: 0; right: 0;
         z-index: 3;
+        display: flex;
+        justify-content: center;   /* 布局级水平居中，无 left/transform 亚像素错位 */
+        pointer-events: none;      /* 容器不挡点击，仅按钮响应 */
+        transition: top 0.3s var(--dsh-ease);
+      }
+      .tb-toggle {
+        position: relative;
+        pointer-events: auto;
         width: 44px; height: 18px;
         display: grid; place-items: center;
         border: 1px solid var(--dsh-border-strong);
@@ -102,7 +106,7 @@
         cursor: pointer;
         box-shadow: 0 2px 6px rgba(0, 0, 0, 0.28);
         padding: 0;
-        transition: top 0.3s var(--dsh-ease), color var(--dsh-dur) var(--dsh-ease);
+        transition: color var(--dsh-dur) var(--dsh-ease);
       }
       .tb-toggle:hover { color: var(--dsh-fg); background: rgba(24, 27, 38, 0.95); }
       .titlebar { overflow: hidden; transition: height 0.3s var(--dsh-ease); }
@@ -279,8 +283,11 @@
         <button class="tab" data-tab="about" role="tab" aria-selected="false"><span class="tab-dot"></span>关于</button>
       </div>
     </div>
-    <!-- 折叠把手：独立于顶栏内容行，跨在顶栏下边缘分割线上，随线上下移动 -->
-    <button class="tb-toggle" id="btnTabsToggle" aria-label="收起/展开导航栏" title="收起导航栏"></button>
+    <!-- 折叠把手：独立于顶栏内容行，由 flex 容器水平居中（布局级，杜绝
+         left/transform 居中在 WebView 的亚像素错位），随线上下移动 -->
+    <div class="tb-handle" id="tbHandle">
+      <button class="tb-toggle" id="btnTabsToggle" aria-label="收起/展开导航栏" title="收起导航栏"></button>
+    </div>
 
 
     <div class="workarea">
