@@ -74,6 +74,14 @@ jobs:
           ditto -c -k --keepParent "DeepSeek Harness Desktop.app" \
             "DeepSeek-Harness-Desktop-macOS-arm64.zip"
 
+      - name: Generate SHA-256 checksums
+        run: |
+          cd apps/desktop/src-tauri/target/release/bundle
+          for f in dmg/*.dmg macos/DeepSeek-Harness-Desktop-macOS-arm64.zip; do
+            shasum -a 256 "$f" > "$f.sha256"
+          done
+          ls -1 dmg/*.sha256 macos/*.sha256
+
       - name: Upload to GitHub Release (${{ steps.ver.outputs.tag }})
         uses: softprops/action-gh-release@v3
         with:
@@ -98,7 +106,9 @@ jobs:
             ## 本次更新
           files: |
             apps/desktop/src-tauri/target/release/bundle/dmg/*.dmg
+            apps/desktop/src-tauri/target/release/bundle/dmg/*.dmg.sha256
             apps/desktop/src-tauri/target/release/bundle/macos/DeepSeek-Harness-Desktop-macOS-arm64.zip
+            apps/desktop/src-tauri/target/release/bundle/macos/DeepSeek-Harness-Desktop-macOS-arm64.zip.sha256
           generate_release_notes: true
 
   build-windows:
@@ -155,11 +165,24 @@ jobs:
           Copy-Item -Recurse "$rel/resources" $tmp
           Compress-Archive -Path "$tmp/*" -DestinationPath "DeepSeek-Harness-Desktop-Windows-x64.zip" -Force
 
+      - name: Generate SHA-256 checksums
+        shell: pwsh
+        run: |
+          Get-ChildItem "apps/desktop/src-tauri/target/release/bundle/nsis/*-setup.exe", "DeepSeek-Harness-Desktop-Windows-x64.zip" |
+            ForEach-Object {
+              $h = (Get-FileHash -Algorithm SHA256 $_.FullName).Hash.ToLower()
+              # "<hex>  <filename>"（与 App 端解析格式一致）
+              "$h  $($_.Name)" | Out-File -Encoding utf8 "$($_.FullName).sha256"
+            }
+          Get-ChildItem "apps/desktop/src-tauri/target/release/bundle/nsis/*.sha256", "*.sha256"
+
       - name: Upload to GitHub Release (${{ steps.ver.outputs.tag }})
         uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ steps.ver.outputs.tag }}
           files: |
             apps/desktop/src-tauri/target/release/bundle/nsis/*-setup.exe
+            apps/desktop/src-tauri/target/release/bundle/nsis/*-setup.exe.sha256
             DeepSeek-Harness-Desktop-Windows-x64.zip
+            DeepSeek-Harness-Desktop-Windows-x64.zip.sha256
           generate_release_notes: false

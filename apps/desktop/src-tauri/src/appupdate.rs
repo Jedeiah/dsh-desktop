@@ -44,10 +44,40 @@ pub fn latest_app_version() -> Result<String, String> {
         .ok_or_else(|| format!("无法从响应 URL 解析版本：{final_url}"))
 }
 
+/// SHA-256 校验和（十六进制小写）——发布流程在 release.yml 为每个安装包生成
+/// `<asset>.sha256`（内容为该文件的 SHA-256）。这里下载资产后比对，防止 release
+/// 资产被替换导致执行任意代码（安全审查 should-fix）。
+fn sha256_of_file(path: &Path) -> std::io::Result<String> {
+    use sha2::{Digest, Sha256};
+    let mut f = std::fs::File::open(path)?;
+    let mut hasher = Sha256::new();
+    std::io::copy(&mut f, &mut hasher)?;
+    let out = hasher.finalize();
+    Ok(out.iter().map(|b| format!("{b:02x}")).collect())
+}
+
+/// Download `<url>.sha256`（发布流程生成）；解析首个 64 位十六进制为预期 SHA。
+/// 匹配 release.yml 生成的 `shasum -a 256` 输出格式（"<hex>  <file>"）。
+fn expected_sha256(url: &str) -> Result<String, String> {
+    let sha_url = format!("{url}.sha256");
+    let body = ureq::get(&sha_url)
+        .timeout(Duration::from_secs(30))
+        .call()
+        .map_err(|e| format!("下载校验和 {sha_url} 失败: {e}"))?
+        .into_string()
+        .map_err(|e| format!("读取校验和失败: {e}"))?;
+    body.split_whitespace()
+        .next()
+        .filter(|h| h.len() == 64 && h.chars().all(|c| c.is_ascii_hexdigit()))
+        .map(|h| h.to_ascii_lowercase())
+        .ok_or_else(|| format!("校验和文件格式异常: {body:?}"))
+}
+
 /// Stream-download `url` to `dest`; verifies size against Content-Length when
 /// the server provides it (规格 5.3：校验大小与 asset 一致；缺失/不符即失败清理，
 /// 杜绝静默截断)。大文件下载用 30 分钟总超时——ureq 的 timeout 覆盖整个请求，
 /// 数十秒的默认值必然中断数百 MB 的安装包下载。
+/// 下载完成后比对 release 提供的 SHA-256（安全加固），不符则删除并失败。
 pub fn download_installer(url: &str, dest: &Path) -> Result<u64, String> {
     let resp = ureq::get(url)
         .timeout(Duration::from_secs(1800))
@@ -64,6 +94,13 @@ pub fn download_installer(url: &str, dest: &Path) -> Result<u64, String> {
             let _ = std::fs::remove_file(dest);
             return Err(format!("下载不完整: 期望 {exp} 字节, 实际 {n}"));
         }
+    }
+    // SHA-256 校验（发布流程生成 `<asset>.sha256`）
+    let got = sha256_of_file(dest).map_err(|e| format!("计算安装包 SHA-256 失败: {e}"))?;
+    let want = expected_sha256(url)?;
+    if got != want {
+        let _ = std::fs::remove_file(dest);
+        return Err(format!("安装包校验失败: SHA-256 不符(期望 {want}, 实际 {got})"));
     }
     Ok(n)
 }
