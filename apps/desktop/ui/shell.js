@@ -291,6 +291,7 @@
     setupCancelled = false;
     waitBusyReset = false;
     clearTimeout(setupDoneTimer);
+    clearInterval(setupProgressTimer); // 幂等：所有回初始的路径都停轮询，防空转泄漏
     setupProgress.hidden = true;
     setSetupPhase('stage');            // 隐藏错误视图，显示 stage 区
     setupStage.textContent = '准备安装 dsh 运行时';
