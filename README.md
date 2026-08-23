@@ -1,4 +1,4 @@
-# DeepSeek Harness 桌面端（DSh Desktop）
+# DeepSeek Harness Desktop 桌面端（DSh Desktop）
 
 <p align="center">
   <img src="apps/desktop/src-tauri/icons/icon-rounded-256.png" alt="DeepSeek Harness 图标" width="128">
@@ -63,9 +63,9 @@ powershell -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.c
 > 自动解析最新正式版，退出已运行实例后下载安装器静默安装并启动。要求 Windows 10/11（自带 WebView2 运行时）。
 
 **macOS 手动安装：**
-1. 双击 **DeepSeek Harness_<版本>_aarch64.dmg**，把 **DeepSeek Harness.app** 拖进 **应用程序**。
+1. 双击 **DeepSeek Harness Desktop_<版本>_aarch64.dmg**，把 **DeepSeek Harness.app** 拖进 **应用程序**。
 2. 首次打开：**右键 → 打开**（未签名，需确认一次），之后正常双击即可。
-3. 若提示"已损坏，无法打开"（Chrome 下载的未签名 App 常见）：`xattr -dr com.apple.quarantine "/Applications/DeepSeek Harness.app"`
+3. 若提示"已损坏，无法打开"（Chrome 下载的未签名 App 常见）：`xattr -dr com.apple.quarantine "/Applications/DeepSeek Harness Desktop.app"`
 
 **Windows 手动安装：**
 - 下载 Release 里的 `DeepSeek.Harness_<版本>_x64-setup.exe` 双击安装（无需管理员权限，装到当前用户）。
@@ -169,7 +169,7 @@ cd apps/desktop/src-tauri && cargo run
 # 发布构建（产出 .app + DMG）
 cargo tauri build
 #   产物：target/release/bundle/macos/DeepSeek Harness.app
-#        target/release/bundle/dmg/DeepSeek Harness_<版本>_aarch64.dmg
+#        target/release/bundle/dmg/DeepSeek Harness Desktop_<版本>_aarch64.dmg
 ```
 
 **Windows**（需在 Windows 机器或 Windows CI 上构建）：

@@ -72,8 +72,8 @@ try {
     # 避免无权限/缓慢扫描 %ProgramFiles%）。
     $Installed = $null
     foreach ($c in @(
-        (Join-Path $env:LOCALAPPDATA "Programs\DeepSeek Harness\$ExeName"),
-        (Join-Path $env:ProgramFiles "DeepSeek Harness\$ExeName")
+        (Join-Path $env:LOCALAPPDATA "Programs\DeepSeek Harness Desktop\$ExeName"),
+        (Join-Path $env:ProgramFiles "DeepSeek Harness Desktop\$ExeName")
     )) {
         if (Test-Path $c) { $Installed = Get-Item -LiteralPath $c; break }
     }

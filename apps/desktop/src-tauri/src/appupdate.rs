@@ -21,9 +21,9 @@ pub fn parse_tag_from_effective_url(final_url: &str) -> Option<String> {
 pub fn asset_url(ver: &str) -> Option<String> {
     let base = format!("https://github.com/{REPO}/releases/download/v{ver}");
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-    let name = format!("DeepSeek.Harness_{ver}_aarch64.dmg");
+    let name = format!("DeepSeek.Harness.Desktop_{ver}_aarch64.dmg");
     #[cfg(target_os = "windows")]
-    let name = format!("DeepSeek.Harness_{ver}_x64-setup.exe");
+    let name = format!("DeepSeek.Harness.Desktop_{ver}_x64-setup.exe");
     #[cfg(not(any(
         all(target_os = "macos", target_arch = "aarch64"),
         target_os = "windows"
@@ -192,13 +192,13 @@ mod tests {
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         {
             let url = asset_url("0.3.1").unwrap();
-            assert!(url.contains("DeepSeek.Harness_0.3.1_aarch64.dmg"), "macOS arm64: {url}");
+            assert!(url.contains("DeepSeek.Harness.Desktop_0.3.1_aarch64.dmg"), "macOS arm64: {url}");
         }
         #[cfg(all(target_os = "macos", not(target_arch = "aarch64")))]
         assert!(asset_url("0.3.1").is_none(), "macOS x86_64 无 CI 产物");
         #[cfg(target_os = "windows")]
         assert!(
-            asset_url("0.3.1").unwrap().ends_with("DeepSeek.Harness_0.3.1_x64-setup.exe"),
+            asset_url("0.3.1").unwrap().ends_with("DeepSeek.Harness.Desktop_0.3.1_x64-setup.exe"),
             "Windows: {}",
             asset_url("0.3.1").unwrap()
         );

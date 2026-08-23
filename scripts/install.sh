@@ -12,7 +12,7 @@
 set -euo pipefail
 
 REPO="Jedeiah/dsh-desktop"
-APP_NAME="DeepSeek Harness"
+APP_NAME="DeepSeek Harness Desktop"
 APP="/Applications/${APP_NAME}.app"
 # App 自己子进程的特征串（区别于用户终端里手动跑的 dsh：App 用内置 node
 # 运行 app-data 闭包的 bin.js --profile web；终端 dsh 的命令行不含该特征）
@@ -36,10 +36,10 @@ if [ -z "$TAG" ] || [ "$TAG" = "$TAG_URL" ]; then
   exit 1
 fi
 
-# 资产名：release 工作流产物为 DeepSeek Harness_<ver>_<arch>.dmg，
+# 资产名：release 工作流产物为 DeepSeek Harness Desktop_<ver>_<arch>.dmg，
 # GitHub 上传时把空格替换为点号 → 用固定命名拼下载地址（绕开 API）。
 VERSION="${TAG#v}"
-DMG_URL="https://github.com/${REPO}/releases/download/${TAG}/DeepSeek.Harness_${VERSION}_${ARCH_SUFFIX}.dmg"
+DMG_URL="https://github.com/${REPO}/releases/download/${TAG}/DeepSeek.Harness.Desktop_${VERSION}_${ARCH_SUFFIX}.dmg"
 
 echo "==> 最新版本: ${TAG}  （架构: ${ARCH_SUFFIX}）"
 

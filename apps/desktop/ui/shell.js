@@ -202,7 +202,7 @@
         const st = await invoke('setup_state_cmd');
         if (st.progress && st.progress !== lastProgress) {
           lastProgress = st.progress;
-          setupStage.textContent = st.progress;
+          applySetupProgress(st.progress);
         }
       } catch (e) { /* 轮询失败忽略，事件通道兜底 */ }
     }, 1000);
@@ -267,9 +267,22 @@
     invoke('setup_cancel_cmd').catch(() => {});
   });
 
-  // 进度：后端以阶段文本推送（npm 输出不流式），进度条为不确定态流动动画
+  // 进度：阶段文本（setupStage）+ npm fetch 行计数（setupMeta 显示"已下载 N 个
+  // 依赖包"，不刷屏）；进度条为不确定态流动动画。
+  let setupFetchCount = 0;
+  function applySetupProgress(text) {
+    if (!text) return;
+    // npm --loglevel=info 的 fetch 行形如 "npm http fetch GET 200 <url> <ms>"：
+    // 只计数，不逐行刷 stage（否则满屏 url）。
+    if (/^npm (http )?fetch/.test(text)) {
+      setupFetchCount += 1;
+      setupMeta.textContent = '正在下载依赖包…已获取 ' + setupFetchCount + ' 个（约 300MB）';
+      return;
+    }
+    setupStage.textContent = text;
+  }
   T.event.listen('dsh:setup-progress', (e) => {
-    if (setupActive) setupStage.textContent = String(e.payload || '');
+    if (setupActive) applySetupProgress(String(e.payload || ''));
   }).catch(() => {});
 
   // 辅助触发（防竞态兜底）：boot 里未装闭包会发 dsh:need-setup；webview 挂

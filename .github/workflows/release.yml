@@ -71,8 +71,8 @@ jobs:
       - name: Zip the .app (方便直接下载解压使用)
         run: |
           cd apps/desktop/src-tauri/target/release/bundle/macos
-          ditto -c -k --keepParent "DeepSeek Harness.app" \
-            "DeepSeek-Harness-macOS-arm64.zip"
+          ditto -c -k --keepParent "DeepSeek Harness Desktop.app" \
+            "DeepSeek-Harness-Desktop-macOS-arm64.zip"
 
       - name: Upload to GitHub Release (${{ steps.ver.outputs.tag }})
         uses: softprops/action-gh-release@v3
@@ -92,13 +92,13 @@ jobs:
             ```
 
             或手动安装：macOS 下载 DMG → 拖入「应用程序」→ 首次右键 → 打开
-            （若提示「已损坏」：`xattr -dr com.apple.quarantine "/Applications/DeepSeek Harness.app"`）；
+            （若提示「已损坏」：`xattr -dr com.apple.quarantine "/Applications/DeepSeek Harness Desktop.app"`）；
             Windows 下载 `*-setup.exe` 双击安装（或解压便携 zip 直接运行）。
 
             ## 本次更新
           files: |
             apps/desktop/src-tauri/target/release/bundle/dmg/*.dmg
-            apps/desktop/src-tauri/target/release/bundle/macos/DeepSeek-Harness-macOS-arm64.zip
+            apps/desktop/src-tauri/target/release/bundle/macos/DeepSeek-Harness-Desktop-macOS-arm64.zip
           generate_release_notes: true
 
   build-windows:
@@ -153,7 +153,7 @@ jobs:
           New-Item -ItemType Directory -Force -Path $tmp | Out-Null
           Copy-Item "$rel/dsh-desktop.exe" $tmp
           Copy-Item -Recurse "$rel/resources" $tmp
-          Compress-Archive -Path "$tmp/*" -DestinationPath "DeepSeek-Harness-Windows-x64.zip" -Force
+          Compress-Archive -Path "$tmp/*" -DestinationPath "DeepSeek-Harness-Desktop-Windows-x64.zip" -Force
 
       - name: Upload to GitHub Release (${{ steps.ver.outputs.tag }})
         uses: softprops/action-gh-release@v3
@@ -161,5 +161,5 @@ jobs:
           tag_name: ${{ steps.ver.outputs.tag }}
           files: |
             apps/desktop/src-tauri/target/release/bundle/nsis/*-setup.exe
-            DeepSeek-Harness-Windows-x64.zip
+            DeepSeek-Harness-Desktop-Windows-x64.zip
           generate_release_notes: false

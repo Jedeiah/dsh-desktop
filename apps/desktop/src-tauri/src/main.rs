@@ -733,7 +733,7 @@ pub(crate) fn boot(app: AppHandle) {
             );
             show_modal(
                 &app,
-                "DeepSeek Harness 启动失败",
+                "DeepSeek Harness Desktop 启动失败",
                 &msg,
                 "ok",
             );
@@ -784,7 +784,7 @@ pub(crate) fn boot(app: AppHandle) {
             );
             show_modal(
                 &app,
-                "DeepSeek Harness 运行异常",
+                "DeepSeek Harness Desktop 运行异常",
                 &msg,
                 "ok",
             );
@@ -1030,6 +1030,9 @@ fn open_modal_window(app: &AppHandle) -> bool {
         .transparent(true)
         // 置顶：确认类弹窗（卸载等）必须浮在所有窗口之上，不可被遮挡。
         .always_on_top(true)
+        // 关窗口阴影：macOS 透明窗口的阴影跟随窗口矩形（460×300），会在圆角
+        // 卡片外形成方形"背景框"（用户反馈）；卡片自身有柔和圆角阴影，无需窗口阴影。
+        .shadow(false)
         .inner_size(460.0, 300.0)
         .center() // 兜底
         .on_navigation(webview_navigation_policy)
@@ -1286,7 +1289,7 @@ async fn uninstall_run(app: AppHandle, wipe: bool) -> Result<(), String> {
         if !spawned {
             notify(
                 "请通过系统卸载",
-                "应用数据已清理。请到“设置 → 应用 → 已安装的应用”中卸载 DeepSeek Harness。",
+                "应用数据已清理。请到“设置 → 应用 → 已安装的应用”中卸载 DeepSeek Harness Desktop。",
             );
         }
     }
@@ -1295,7 +1298,7 @@ async fn uninstall_run(app: AppHandle, wipe: bool) -> Result<(), String> {
         if !trash_self() {
             notify(
                 "请通过系统卸载",
-                "应用数据已清理。请通过系统卸载 DeepSeek Harness。",
+                "应用数据已清理。请通过系统卸载 DeepSeek Harness Desktop。",
             );
         }
     }
@@ -1402,7 +1405,7 @@ rec = d.get('recent-apps', [])
 def bad(r):
     td = r.get('tile-data', {})
     label = td.get('file-label') or td.get('file-data', {}).get('file-label')
-    return label == 'DeepSeek Harness' or b'DeepSeek' in td.get('book', b'')
+    return label == 'DeepSeek Harness Desktop' or b'DeepSeek' in td.get('book', b'')
 d['recent-apps'] = [r for r in rec if not bad(r)]
 with open(p,'wb') as f: plistlib.dump(d, f, fmt=plistlib.FMT_BINARY)
 "#;
@@ -1570,7 +1573,7 @@ fn main() {
         // 已有实例在运行：把窗口带出来即可，自己不启动（防双托盘/双 dsh）
         #[cfg(target_os = "macos")]
         let _ = Command::new("osascript")
-            .args(["-e", r#"tell application "DeepSeek Harness" to activate"#])
+            .args(["-e", r#"tell application "DeepSeek Harness Desktop" to activate"#])
             .spawn();
         #[cfg(not(target_os = "macos"))]
         logln!("another instance is running; exiting");

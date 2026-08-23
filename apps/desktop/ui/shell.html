@@ -28,7 +28,16 @@
       .titlebar .brand { display: flex; align-items: center; gap: 9px; font-size: 13.5px; font-weight: 650; letter-spacing: 0.2px; flex: none; }
       .titlebar .brand img { width: 22px; height: 22px; border-radius: 6px; }
 
-      .tabs { display: flex; justify-content: center; gap: 4px; flex: 1; min-width: 0; }
+      .tabs {
+        /* 相对整个窗口居中（品牌宽度不再偏移 Tab 组） */
+        position: absolute;
+        left: 50%;
+        transform: translateX(-50%);
+        display: flex;
+        justify-content: center;
+        gap: 4px;
+        min-width: 0;
+      }
       .tab {
         height: 32px;
         padding: 0 15px;
@@ -209,7 +218,7 @@
         background: linear-gradient(135deg, #7b7fe8, #c471ed 55%, #58a6ff);
         box-shadow: 0 6px 20px rgba(123, 127, 232, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.35);
       }
-      .setup-logo svg { width: 22px; height: 22px; }
+      .setup-logo img { width: 44px; height: 44px; border-radius: 12px; display: block; }
       #setupActions { margin-top: 22px; display: flex; justify-content: center; gap: 10px; }
 
       @media (prefers-reduced-motion: reduce) {
@@ -250,13 +259,11 @@
           <div class="setup-card">
             <div class="head">
               <div class="setup-logo">
-                <svg viewBox="0 0 22 22" aria-hidden="true">
-                  <path d="M7 7.5h8M7 11h8M7 14.5h5" stroke="#fff" stroke-width="2" stroke-linecap="round" opacity=".95"/>
-                </svg>
+                <img src="icon.png" alt="DeepSeek Harness Desktop 图标" />
               </div>
               <div>
                 <h1>准备 dsh 运行时</h1>
-                <p>DeepSeek Harness 桌面壳 · 首次启动</p>
+                <p>DeepSeek Harness Desktop 桌面壳 · 首次启动</p>
               </div>
             </div>
 
