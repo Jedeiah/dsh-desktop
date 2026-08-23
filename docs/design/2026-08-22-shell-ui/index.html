@@ -228,13 +228,40 @@ kbd {
 .uninstall-row + .uninstall-row { margin-top: 10px; }
 .opt-title { font-size: 13.5px; font-weight: 600; }
 .opt-desc { margin-top: 2px; font-size: 12.5px; color: var(--dsh-fg-muted); }
-.uninstall-confirm {
-  margin-top: 12px; padding: 12px 16px; border-radius: 10px;
-  background: var(--dsh-danger-soft); border: 1px solid rgba(248,81,73,0.35);
-  display: flex; align-items: center; justify-content: space-between; gap: 14px; flex-wrap: wrap;
-  font-size: 13px; color: #F4B3AF;
+/* ============ 自绘弹窗（卸载确认） ============ */
+.modal-overlay {
+  position: fixed; inset: 0; z-index: 100;
+  display: grid; place-items: center;
+  background: rgba(8, 10, 16, 0.62);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  animation: fadeIn .18s var(--dsh-ease);
 }
-.uninstall-confirm .btn-group { display: flex; gap: 8px; }
+.modal-overlay[hidden] { display: none; }
+.modal {
+  width: min(400px, calc(100vw - 48px));
+  border-radius: 16px;
+  border: 1px solid var(--dsh-border-strong);
+  background: linear-gradient(180deg, rgba(255,255,255,0.07), rgba(255,255,255,0.04));
+  box-shadow: var(--dsh-shadow-pop), inset 0 1px 0 rgba(255,255,255,0.06);
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+  padding: 22px 22px 18px;
+  animation: modalPop .2s var(--dsh-ease);
+}
+@keyframes fadeIn { from { opacity: 0; } }
+@keyframes modalPop { from { opacity: 0; transform: translateY(8px) scale(.98); } }
+.modal-head { display: flex; align-items: center; gap: 12px; }
+.modal-icon {
+  width: 34px; height: 34px; flex: none; border-radius: 9px;
+  display: grid; place-items: center;
+  background: var(--dsh-danger-soft); border: 1px solid rgba(248,81,73,0.4);
+}
+.modal-icon svg { width: 17px; height: 17px; }
+.modal-title { font-size: 16px; font-weight: 650; letter-spacing: .2px; }
+.modal-desc { margin-top: 12px; font-size: 13px; color: var(--dsh-fg-muted); line-height: 1.65; }
+.modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 22px; }
+.spinner-sm { width: 14px; height: 14px; border-width: 2px; }
 .uninstall-done { padding: 22px; text-align: center; color: var(--dsh-fg-muted); font-size: 13.5px; }
 .uninstall-done b { color: var(--dsh-fg); }
 
@@ -289,8 +316,6 @@ kbd {
 .ready-actions { display: flex; gap: 10px; margin-top: 4px; }
 iframe#dsh-frame { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; display: none; }
 
-/* ============ 卸载确认（全局） ============ */
-.btn-mini { height: 28px; padding: 0 12px; font-size: 12.5px; border-radius: 7px; }
 </style>
 </head>
 <body>
@@ -500,13 +525,6 @@ iframe#dsh-frame { position: absolute; inset: 0; width: 100%; height: 100%; bord
               <button class="btn btn-danger btn-uninstall" data-mode="all">完全卸载</button>
             </div>
           </div>
-          <div class="uninstall-confirm" id="uninstall-confirm" hidden>
-            <span id="confirm-text">确认卸载？此操作不可撤销。</span>
-            <div class="btn-group">
-              <button class="btn btn-danger btn-mini" id="confirm-yes">确认卸载</button>
-              <button class="btn btn-ghost btn-mini" id="confirm-no">取消</button>
-            </div>
-          </div>
           <div class="uninstall-done" id="uninstall-done" hidden>
             <b>应用已卸载（演示）</b><br>
             <span id="done-detail">已保留 ~/.dsh 数据。</span>
@@ -519,6 +537,28 @@ iframe#dsh-frame { position: absolute; inset: 0; width: 100%; height: 100%; bord
       </div>
     </section>
   </main>
+</div>
+
+<!-- ===== 卸载确认弹窗（自绘） ===== -->
+<div class="modal-overlay" id="uninstall-modal" hidden>
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title" aria-describedby="modal-desc">
+    <div class="modal-head">
+      <div class="modal-icon">
+        <svg viewBox="0 0 20 20" fill="none" aria-hidden="true">
+          <path d="M4.5 6.5h11" stroke="#F85149" stroke-width="1.6" stroke-linecap="round"/>
+          <path d="M8.5 6.5v-1.8h3v1.8" stroke="#F85149" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+          <path d="M6 6.5l.7 8.7a1.6 1.6 0 0 0 1.6 1.5h3.4a1.6 1.6 0 0 0 1.6-1.5L14 6.5" stroke="#F85149" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+          <path d="M8.8 9.3v3.4M11.2 9.3v3.4" stroke="#F85149" stroke-width="1.6" stroke-linecap="round"/>
+        </svg>
+      </div>
+      <h3 class="modal-title" id="modal-title">确认卸载</h3>
+    </div>
+    <p class="modal-desc" id="modal-desc">将卸载应用本体，保留 ~/.dsh 配置与数据，便于将来重装。</p>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" id="modal-cancel">取消</button>
+      <button class="btn btn-danger" id="modal-confirm">确认卸载</button>
+    </div>
+  </div>
 </div>
 
 <script>
@@ -565,7 +605,9 @@ window.addEventListener('keydown', e => {
     e.preventDefault();
     activate(activeIndex + 1);
   } else if (e.key === 'Escape') {
-    activate(0);
+    const m = $('uninstall-modal');
+    if (m && !m.hidden) closeUninstallModal();
+    else activate(0);
   }
 });
 
@@ -817,30 +859,55 @@ $('btn-app-download').addEventListener('click', async function () {
   btn.disabled = false; btn.textContent = '下载并安装更新';
 });
 
-/* ============ 卸载（关于） ============ */
+/* ============ 卸载（关于）· 自绘弹窗 ============ */
 let uninstallMode = null;
+let uninstallRunning = false;
+let uninstallTrigger = null;
+
+function closeUninstallModal() {
+  if (uninstallRunning) return;
+  $('uninstall-modal').hidden = true;
+  if (uninstallTrigger && uninstallTrigger.isConnected) uninstallTrigger.focus();
+}
+
 $('uninstall-body').addEventListener('click', e => {
   const btn = e.target.closest('.btn-uninstall');
   if (!btn) return;
   uninstallMode = btn.dataset.mode;
-  $('confirm-text').textContent = uninstallMode === 'all'
-    ? '确认完全卸载？将删除 ~/.dsh 全部数据，此操作不可撤销。'
-    : '确认卸载？将保留 ~/.dsh 数据。';
-  $('uninstall-confirm').hidden = false;
+  const isAll = uninstallMode === 'all';
+  $('modal-title').textContent = isAll ? '完全卸载' : '确认卸载';
+  $('modal-desc').textContent = isAll
+    ? '将同时删除 ~/.dsh 中全部配置、插件与版本数据。此操作不可撤销，且无法恢复。'
+    : '将卸载应用本体，保留 ~/.dsh 配置与数据，便于将来重装。';
+  const confirmBtn = $('modal-confirm');
+  confirmBtn.disabled = false;
+  confirmBtn.textContent = '确认卸载';
+  uninstallTrigger = btn;
+  $('uninstall-modal').hidden = false;
+  confirmBtn.focus();
 });
-$('confirm-no').addEventListener('click', () => { $('uninstall-confirm').hidden = true; });
-$('confirm-yes').addEventListener('click', async function () {
+
+$('modal-cancel').addEventListener('click', closeUninstallModal);
+$('uninstall-modal').addEventListener('click', e => {
+  if (e.target === $('uninstall-modal')) closeUninstallModal();
+});
+
+$('modal-confirm').addEventListener('click', async function () {
   const btn = this;
-  btn.disabled = true; btn.textContent = '卸载中…';
+  uninstallRunning = true;
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner spinner-sm"></span>正在卸载…';
   await sleep(1400);
-  $('uninstall-confirm').hidden = true;
+  uninstallRunning = false;
+  $('uninstall-modal').hidden = true;
   $('uninstall-body').hidden = true;
   $('done-detail').textContent = uninstallMode === 'all'
     ? '已删除 ~/.dsh 全部数据（演示）。'
     : '已保留 ~/.dsh 数据（演示）。';
   $('uninstall-done').hidden = false;
-  btn.disabled = false; btn.textContent = '确认卸载';
+  $('uninstall-reset').focus();
 });
+
 $('uninstall-reset').addEventListener('click', () => {
   $('uninstall-done').hidden = true;
   $('uninstall-body').hidden = false;
