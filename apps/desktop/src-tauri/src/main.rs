@@ -1416,8 +1416,7 @@ fn uninstall_teardown(p: &Paths, wipe_dsh: bool) -> Result<(), String> {
 fn clear_dock_recents() {
     let tmp = std::env::temp_dir().join("dsh-dock.plist");
     let t = tmp.to_string_lossy().to_string();
-    let py = r#"
-import plistlib, sys
+    let py = r#"import plistlib, sys
 p = sys.argv[1]
 try:
     with open(p,'rb') as f: d = plistlib.load(f)
