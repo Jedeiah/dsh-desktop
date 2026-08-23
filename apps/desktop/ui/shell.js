@@ -227,6 +227,7 @@
     }
     setupStarting = false; // 进入正常安装（此后由按钮禁用保护，不会重入）
     setupCancelled = false;
+    setSetupPhase('stage'); // 从错误视图重试进入时，确保回到进行中视图（幂等）
     clearTimeout(setupDoneTimer);
     // 每次安装重置进度状态（fetch 计数/去重/元信息），取消重装不残留旧值
     setupFetchCount = 0;
@@ -289,6 +290,7 @@
   // 进度文本（去重走 applySetupProgress 内部 setupLastProgress）。
   let waitBusyReset = false; // 撞 BUSY 分支：等后端收尾结束后回初始页
   function startSetupProgressPolling() {
+    clearInterval(setupProgressTimer); // 幂等：先清旧 timer，防旧 run 残留泄漏/误杀新 timer
     setupProgressTimer = setInterval(async () => {
       if (!setupActive || setupCancelled) { clearInterval(setupProgressTimer); return; }
       try {
