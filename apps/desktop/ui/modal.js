@@ -23,12 +23,12 @@
     try {
       spec = await window.__TAURI__.core.invoke('modal_spec');
     } catch (e) {
-      title.textContent = 'DeepSeek Harness';
+      title.textContent = 'DeepSeek Harness Desktop';
       message.textContent = '无法获取提示内容：' + (e.message || e);
       btnOk.textContent = '确定';
       return;
     }
-    title.textContent = spec.title || 'DeepSeek Harness';
+    title.textContent = spec.title || 'DeepSeek Harness Desktop';
     message.textContent = spec.message || '';
     // 按钮文案：优先 spec 自定义（ok_label/no_label），回退默认「确定」/「稍后」
     btnOk.textContent = spec.ok_label || '确定';

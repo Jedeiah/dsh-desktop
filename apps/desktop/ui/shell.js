@@ -669,11 +669,5 @@
     refreshPlugins();
   })();
 
-  // 主进程经 shell:tab 事件切 Tab（托盘「管理台」→ dsh）
-  try {
-    T.event.listen('shell:tab', (ev) => {
-      const n = ev.payload;
-      if (n && tabLabels[n]) selectTab(n);
-    });
-  } catch (e) { /* 忽略 */ }
+  // shell:tab 事件监听已随托盘「管理台」移除（无 emit 方），删除死代码
 })();

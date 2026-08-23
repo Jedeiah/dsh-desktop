@@ -6,6 +6,9 @@
     <title>DeepSeek Harness Desktop</title>
     <link rel="stylesheet" href="theme.css" />
     <style>
+      /* 透明窗口：覆盖 theme.css 的 body 实色背景（否则圆角卡片外露出方框）；
+         卡片本身自带渐变背景，body 透明不影响显示 */
+      html, body { background: transparent; }
       /* 弹窗内嵌：消息可滚动区 */
       .msg {
         max-height: 220px;

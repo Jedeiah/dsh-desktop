@@ -602,6 +602,8 @@ async fn setup_dsh_cmd(app: AppHandle, ver: String, registry: String) -> Result<
     // join 失败（线程 panic）也必须在返回前释放锁，否则永久锁死（审查项）
     SETUP_BUSY.store(false, Ordering::SeqCst);
     result.map_err(|e| format!("安装线程异常：{e}"))??;
+    // 进度复位：避免下一次轮询首 tick 显示本次安装遗留的旧文本
+    *mlock(&SETUP_PROGRESS) = None;
     // 安装成功 → 启动工作台（boot 会 emit dsh:url，壳页自动切入工作台）
     let _ = app_after.clone().run_on_main_thread(move || boot(app_after));
     Ok(())
@@ -702,6 +704,8 @@ async fn update_dsh_cmd(app: AppHandle, ver: String) -> Result<(), String> {
     // join 失败（线程 panic）也必须在返回前释放锁，否则永久锁死（审查项）
     SETUP_BUSY.store(false, Ordering::SeqCst);
     result.map_err(|e| format!("安装线程异常：{e}"))??;
+    // 进度复位：避免下一次轮询首 tick 显示本次安装遗留的旧文本
+    *mlock(&SETUP_PROGRESS) = None;
     // 安装成功 → 自动重启工作台（新版本生效）
     let _ = app_after
         .clone()
@@ -817,7 +821,7 @@ pub(crate) fn reveal_main_window(app: &AppHandle, url: Option<&str>) {
         // 兜底：主窗不存在（极罕见）时重建壳页。shell.js 自带 get_dsh_url
         // 轮询兜底，重建后无需再补发地址事件。
         if let Ok(w) = WebviewWindowBuilder::new(app, WINDOW_LABEL, WebviewUrl::App("shell.html".into()))
-            .title("DeepSeek Harness")
+            .title("DeepSeek Harness Desktop")
             .inner_size(1280.0, 820.0)
             .min_inner_size(800.0, 560.0)
             .visible(false)
@@ -1643,7 +1647,7 @@ fn main() {
                 WINDOW_LABEL,
                 WebviewUrl::App("shell.html".into()),
             )
-            .title("DeepSeek Harness")
+            .title("DeepSeek Harness Desktop")
             .inner_size(1280.0, 820.0)
             .min_inner_size(800.0, 560.0)
             .visible(false) // 隐藏创建 → 定位后由 reveal 显示，避免首帧位置跳变
