@@ -119,6 +119,31 @@ pub fn latest_version(registry: &str) -> Result<String, String> {
         .ok_or_else(|| "registry 响应缺少 version 字段".into())
 }
 
+/// 200 响应体是否表示「版本存在」。部分 registry 镜像对不存在的版本返回
+/// 200 + `{"error": ...}`，仅按状态码会误判为存在，需按 body 判断。
+fn version_exists_response(body: &str) -> bool {
+    !body.contains("\"error\"")
+}
+
+/// 查询指定版本是否存在于 registry（`GET {registry}/{pkg}/{ver}`：200=存在，
+/// 404=不存在，其它状态/网络错误视为 Err）。供「输入版本号安装」在下载前校验，
+/// 避免用户输入不存在的版本白白触发一次大下载。
+pub fn version_exists(registry: &str, ver: &str) -> Result<bool, String> {
+    let url = format!("{registry}/{PKG}/{ver}");
+    match ureq::get(&url).timeout(Duration::from_secs(20)).call() {
+        Ok(resp) => {
+            let mut body = String::new();
+            resp.into_reader()
+                .take(16 << 20)
+                .read_to_string(&mut body)
+                .map_err(|e| format!("读取 registry 响应失败: {e}"))?;
+            Ok(version_exists_response(&body))
+        }
+        Err(ureq::Error::Status(404, _)) => Ok(false),
+        Err(e) => Err(format!("查询版本存在性失败: {e}")),
+    }
+}
+
 /// List every published version of `@deepseek-ai/dsh`, newest first.
 /// 为支持「搜索全部版本」需完整文档；上限放宽到 16MB（原 4MB 在版本非常多时
 /// 会被截断 → parse_versions 静默丢版本/为空）。截断仍是兜底,超限会解析失败返回空,
@@ -141,6 +166,15 @@ pub fn list_versions(registry: &str) -> Result<Vec<String>, String> {
 mod tests {
     use super::*;
     use std::cmp::Ordering;
+
+    #[test]
+    fn version_exists_response_detects_error_body() {
+        // 正常 200：版本元数据 JSON，无 error 字段 → 存在
+        assert!(version_exists_response(r#"{"name":"@deepseek-ai/dsh","version":"0.1.0"}"#));
+        // 部分 registry 镜像对不存在的版本返回 200 + {"error": ...} → 不存在
+        assert!(!version_exists_response(r#"{"error":"Not found"}"#));
+        assert!(!version_exists_response(r#"{"error":"version not found: 9.9.9"}"#));
+    }
 
     #[test]
     fn cmp_versions_orders_rc_and_release() {
