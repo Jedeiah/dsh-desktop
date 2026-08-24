@@ -305,7 +305,7 @@
       <!-- 占位层默认可见（"正在启动…"），首个 iframe load 后由 shell.js 隐藏；
            之后换端口重载时会再次盖住，避免白屏闪烁。 -->
       <div class="activity" id="activity-workbench">
-        <iframe id="workbenchFrame" title="DeepSeek Harness 工作台"></iframe>
+        <iframe id="workbenchFrame" allow="clipboard-write" title="DeepSeek Harness 工作台"></iframe>
         <div class="placeholder" id="wbPlaceholder">
           <img class="startup-logo" src="icon.png" alt="" />
           <div class="startup-title">DeepSeek Harness Desktop</div>
