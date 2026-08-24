@@ -373,6 +373,13 @@ select.input, select {
   font-family: inherit;
   outline: none;
   cursor: pointer;
+  /* V8: 跨平台统一外观 —— 去原生样式 + 自定义箭头（须在 background 简写之后） */
+  appearance: none;
+  -webkit-appearance: none;
+  padding-right: 28px;
+  background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%23888' stroke-width='1.5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
 }
 select:focus { border-color: var(--dsh-accent); box-shadow: 0 0 0 3px rgba(123, 127, 232, 0.22); }
 select:disabled { opacity: 0.55; }
