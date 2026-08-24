@@ -135,6 +135,11 @@
     wb.focus();
   }
 
+  // V6：点击品牌（图标+App名）刷新工作台（等同右键 reload）；未就绪时无操作
+  const brandEl = $('brand');
+  brandEl.addEventListener('click', () => { if (lastUrl) loadWorkbench(lastUrl, true); });
+  brandEl.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); if (lastUrl) loadWorkbench(lastUrl, true); } });
+
   // 加载 dsh 工作台：以「轮询 get_dsh_url」为主通道（普通 invoke，必通），
   // 事件监听仅作增量/次选（且必须带超时，避免 T.event.listen 在此路径挂起而
   // 把后续逻辑全部堵死——此前实测该调用在本页面会挂起）。
