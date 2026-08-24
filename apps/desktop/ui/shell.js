@@ -750,6 +750,39 @@
         meta.className = 'row-meta mono';
         meta.textContent = p.version ? 'v' + p.version : '';
         row.appendChild(meta);
+        if (p.installed) {
+          const btn = document.createElement('button');
+          btn.className = 'sm danger-ghost';
+          btn.textContent = '卸载';
+          btn.addEventListener('click', async () => {
+            // 二次确认：第一次点击变「确认卸载」，3 秒未再点自动还原；再点才执行
+            if (btn.textContent !== '确认卸载') {
+              btn.textContent = '确认卸载';
+              const t0 = Date.now();
+              const timer = setInterval(() => {
+                if (btn.textContent === '确认卸载' && Date.now() - t0 >= 3000) {
+                  btn.textContent = '卸载';
+                  clearInterval(timer);
+                }
+              }, 500);
+              return;
+            }
+            btn.disabled = true;
+            try {
+              const text = await invoke('plugin_op', { op: 'remove', pkg: p.name });
+              pluginOutput.hidden = false;
+              pluginOutput.textContent = text;
+              setPluginStatus('已完成，工作台正在重启…', 'ok');
+            } catch (e) {
+              const msg = typeof e === 'string' ? e : (e && e.message) || String(e);
+              pluginOutput.textContent = msg;
+              setPluginStatus('卸载失败，详见下方输出', 'err');
+            } finally {
+              refreshPlugins(); // 重渲后按钮状态自然复位
+            }
+          });
+          row.appendChild(btn);
+        }
         pluginListEl.appendChild(row);
       });
     } catch (e) {
