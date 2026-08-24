@@ -55,18 +55,81 @@ pub fn list_installed_plugins(profile_dir: &std::path::Path) -> Vec<PluginInfo> 
     out
 }
 
-/// npm 包名宽松校验：仅字母数字与 @ . _ - / ~，不以 . / _ / - 开头（npm 规则 +
-/// 防 pnpm 参数混淆：`-g`、`--dir=` 等以 - 开头的 token 会被 pnpm 当选项），
-/// 防参数注入/路径穿越。
+/// npm/pnpm 包规格宽松校验（spec V9 两级白名单）：
+/// 1) 第一级前缀白名单：@ / 字母数字（npm 包名、owner/repo）/ github: /
+///    gitlab: / bitbucket: / git+ssh:// / git+https:// / https:// / http://；
+///    非白名单协议形式（含 `:` 的其它开头，如 git:、git://、git+http://、
+///    file:、jsr:、workspace:）一律拒绝——冒号检查仅针对 `#` 切分后的主体，
+///    `#semver:` / `#path:` 参数段不受影响；
+/// 2) 第二级字符白名单：字母数字与 @ . _ - / ~ : +（< > = ^ 仅限 #semver: 段），
+///    # 后参数段支持 <ref> / semver: / path:（& 分隔）。
+/// 防 pnpm 参数混淆（-g、--dir= 等以 - 开头）、防参数注入/路径穿越
+/// （空白、控制字符、shell 元字符、? query、本地路径均拒绝）。
 fn valid_pkg_name(s: &str) -> bool {
-    !s.is_empty()
-        && s.len() <= 214
-        && !s.starts_with('.')
-        && !s.starts_with('_')
-        && !s.starts_with('-')
-        && s.bytes().all(|b| {
-            b.is_ascii_alphanumeric() || matches!(b, b'@' | b'.' | b'_' | b'-' | b'/' | b'~')
-        })
+    if s.is_empty() || s.len() > 214 {
+        return false;
+    }
+    let lower = s.to_ascii_lowercase();
+    let first = s.as_bytes()[0];
+    let protocol_ok = lower.starts_with("github:")
+        || lower.starts_with("gitlab:")
+        || lower.starts_with("bitbucket:")
+        || lower.starts_with("git+ssh://")
+        || lower.starts_with("git+https://")
+        || lower.starts_with("https://")
+        || lower.starts_with("http://");
+    // 按 # 切分主体与参数段（URL 中 # 只作 git 参数起始符）
+    let (body, params) = match s.split_once('#') {
+        Some((b, p)) => (b, Some(p)),
+        None => (s, None),
+    };
+    if !protocol_ok {
+        // 非协议形式只允许 @scope/pkg 与 npm 包名/owner-repo（字母数字开头且无冒号）
+        if !(first == b'@' || first.is_ascii_alphanumeric()) {
+            return false;
+        }
+        if body.contains(':') {
+            return false; // git: / git:// / file: / jsr: / workspace: 等非白名单协议
+        }
+    }
+    if s.starts_with('.') || s.starts_with('_') || s.starts_with('-') {
+        return false;
+    }
+    if body.is_empty()
+        || !body
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'@' | b'.' | b'_' | b'-' | b'/' | b'~' | b':' | b'+'))
+    {
+        return false;
+    }
+    if let Some(p) = params {
+        for seg in p.split('&') {
+            if seg.is_empty() {
+                return false;
+            }
+            let ok = if let Some(r) = seg.strip_prefix("semver:") {
+                !r.is_empty()
+                    && r.bytes().all(|b| {
+                        b.is_ascii_alphanumeric()
+                            || matches!(b, b'.' | b'-' | b'_' | b'+' | b'^' | b'~' | b'<' | b'>' | b'=' | b'v')
+                    })
+            } else if let Some(d) = seg.strip_prefix("path:") {
+                !d.is_empty()
+                    && d.starts_with('/')
+                    && d.bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'/' | b'.' | b'_' | b'-' | b'~'))
+            } else {
+                // 裸 ref：commit hash / 分支（可含 /）/ tag（可含 v 前缀）
+                seg.bytes().all(|b| {
+                    b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_' | b'/')
+                })
+            };
+            if !ok {
+                return false;
+            }
+        }
+    }
+    true
 }
 
 /// 内置 pnpm 可执行文件名（prepare-resources 打包：macOS/Linux 产出 `pnpm`
@@ -365,7 +428,7 @@ pub async fn plugin_op(
         return Err(format!("不支持的插件操作：{op}（仅支持 add / remove）"));
     }
     if !valid_pkg_name(&pkg) {
-        return Err("包名不合法（仅允许字母、数字与 @ . _ - / ~，且不能以 - 开头）".to_string());
+        return Err("包名不合法：支持 npm 包名（@scope/pkg）、Git 源（owner/repo、github:owner/repo、git+ssh://…、git+https://…、https://…）与 tarball URL；不允许空白、shell 特殊字符、以 - 开头的参数或本地路径".to_string());
     }
     // pnpm 可能运行数分钟：移到阻塞线程池执行，避免占用 Tauri 主线程
     // （否则安装期间 App UI / 托盘冻结）。PLUGIN_LOCK 在阻塞线程内获取释放。
@@ -459,11 +522,37 @@ mod tests {
 
     #[test]
     fn pkg_name_validation() {
-        // 合法
-        for ok in ["@linxin666/dsh-web-ui-all", "lodash", "@scope/pkg-name", "a.b-c_d", "x~y"] {
+        // 合法：npm 包名
+        for ok in ["@linxin666/dsh-web-ui-all", "lodash", "@scope/pkg-name", "a.b-c_d", "x~y", "pkg@1.0.0", "pkg@next"] {
             assert!(valid_pkg_name(ok), "{ok} 应合法");
         }
-        // 非法
+        // 合法：Git 简写 / 托管商简写
+        for ok in [
+            "kevva/is-positive",
+            "kevva/is-positive#master",
+            "zkochan/is-negative#heads/canary",
+            "zkochan/is-negative#2.0.1",
+            "andreineculau/npm-publish-git#v0.0.7",
+            "github:kevva/is-positive",
+            "gitlab:pnpm/git-resolver",
+            "bitbucket:pnpmjs/git-resolver",
+        ] {
+            assert!(valid_pkg_name(ok), "{ok} 应合法");
+        }
+        // 合法：完整 Git URL / tarball（含 #semver:、#path:、& 组合）
+        for ok in [
+            "git+ssh://git@github.com:zkochan/is-negative.git#2.0.1",
+            "git+https://github.com/zkochan/is-negative.git",
+            "git+https://github.com/zkochan/is-negative.git#semver:^2.0.0",
+            "https://github.com/zkochan/is-negative.git#v0.0.7",
+            "https://github.com/indexzero/forever/tarball/v0.5.6",
+            "kevva/is-positive#semver:<=v0.0.7",
+            "RexSkz/test-git-subfolder-fetch#path:/packages/simple-react-app",
+            "RexSkz/test-git-subdir-fetch.git#beta&path:/packages/simple-react-app",
+        ] {
+            assert!(valid_pkg_name(ok), "{ok} 应合法");
+        }
+        // 非法：原有注入面
         for bad in [
             "",
             "a b",
@@ -474,12 +563,32 @@ mod tests {
             "a\\b",
             "a|b",
             "a>b",
+            "a?x=1",
             ".x",
             "-g",
             "--dir=/tmp",
             "--prefix=x",
             "..",
             &"x".repeat(215),
+        ] {
+            assert!(!valid_pkg_name(bad), "{bad:?} 应非法");
+        }
+        // 非法：spec V9 明确不开放的格式
+        for bad in [
+            "git:kevva/is-positive",          // 裸 git: 前缀（pnpm 中不存在）
+            "git://github.com/a/b",           // 明文 git 协议
+            "git+http://github.com/a/b",      // 明文 http 组合
+            "file:../local-dir",              // file: 协议
+            "jsr:@hono/hono",                 // JSR
+            "workspace:*",                    // workspace 协议
+            "./local-dir",                    // 本地路径
+            "https://a.com/b.tgz?token=123",  // ? query 不开放
+            "pkg@\">=0.1.0 <0.2.0\"",         // 含空格版本范围
+            "x#",                             // 空参数段
+            "#only-param",                    // 无主体
+            "a&b",                            // & 出现在主体（非参数段）
+            "kevva/is-positive#semver:1.0.0 <2.0.0", // semver 含空格
+            "https://a.com/b;rm",             // 分号注入
         ] {
             assert!(!valid_pkg_name(bad), "{bad:?} 应非法");
         }
