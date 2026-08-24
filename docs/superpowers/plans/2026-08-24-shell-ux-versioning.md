@@ -124,10 +124,11 @@ git commit -m "feat(registry): version_exists 补 200+error 字段判断（镜�
 
 **Files:**
 - Modify: `apps/desktop/src-tauri/src/main.rs:1630-1650`（`invoke_handler` 列表）
+- Modify: `apps/desktop/src-tauri/src/main.rs:705-709`（`get_dsh_state` 的 versions 全量拉取——审核发现：dsh tab 的 `refreshDsh` 数据源是 `get_dsh_state` 而非 `list_dsh_versions_cmd`，此处不收敛则 V1「数据源根治」未达成）
 
 **Interfaces:**
 - Consumes: `version_exists_cmd`（约 661 行半成品，签名 `(app: AppHandle, window: WebviewWindow, ver: String) -> Result<bool, String>`，内部已含 `ensure_shell_window` + `valid_version` + `spawn_blocking`——**保持不动**）
-- Produces: 前端可 `invoke('version_exists_cmd', { ver })`——Task 3/4 依赖
+- Produces: 前端可 `invoke('version_exists_cmd', { ver })`——Task 3/4 依赖；`get_dsh_state.versions` 收敛为最近 10 个——Task 3 渲染依赖
 
 - [ ] **Step 1: 注册命令**
 
@@ -137,24 +138,50 @@ git commit -m "feat(registry): version_exists 补 200+error 字段判断（镜�
             version_exists_cmd,
 ```
 
-- [ ] **Step 2: 编译验证**
+- [ ] **Step 2: get_dsh_state 版本列表收敛**
+
+`get_dsh_state` 中（约 705 行）：
+
+```rust
+    let versions = tauri::async_runtime::spawn_blocking(move || {
+        crate::registry::list_versions(&reg).unwrap_or_default()
+    })
+    .await
+    .unwrap_or_default();
+```
+
+替换为：
+
+```rust
+    // 收敛：只返回最近 10 个（与 list_dsh_versions_cmd 一致，dsh tab 数据源在此，
+    // 避免版本非常多时全量拉取到内存——spec V1「数据源根治」）。
+    let versions = tauri::async_runtime::spawn_blocking(move || {
+        crate::registry::list_versions(&reg).unwrap_or_default().into_iter().take(10).collect()
+    })
+    .await
+    .unwrap_or_default();
+```
+
+- [ ] **Step 3: 编译验证**
 
 Run: `cd apps/desktop/src-tauri && cargo build`
 Expected: 编译通过（如半成品已被回退，先按 spec V1 补实现再注册：`ensure_shell_window` → `valid_version` 校验 → `spawn_blocking` 调 `crate::registry::version_exists`，参见 spec 第 28-29 行）
 
-- [ ] **Step 3: 跑全量测试 + 提交**
+- [ ] **Step 4: 跑全量测试 + 提交**
 
 ```bash
 cd apps/desktop/src-tauri && cargo test && cargo clippy -D warnings
 git add apps/desktop/src-tauri/src/main.rs
-git commit -m "feat(main): 注册 version_exists_cmd 命令（下载前版本校验）"
+git commit -m "feat(main): 注册 version_exists_cmd；get_dsh_state 版本列表收敛最近 10 个"
 ```
 
 ### Task 3: 前端 dsh tab——删搜索框、最近 10 个、输入版本安装
 
 **Files:**
 - Modify: `apps/desktop/ui/shell.html:426-429`（`.version-search` 块）
+- Modify: `apps/desktop/ui/shell.js:432`（`const dshVersionSearch = $('dshVersionSearch')` 声明——HTML 删除后此声明残留）
 - Modify: `apps/desktop/ui/shell.js:483-562`（`dshRender` / `renderVersions` / 搜索框监听）
+- Modify: `apps/desktop/ui/theme.css:415-424`（`.version-search` 样式——搜索框删除后残留，一并清理）
 
 **Interfaces:**
 - Consumes: `invoke('version_exists_cmd', { ver }) -> bool`（Task 2）、`updateDsh(ver)`（shell.js:563 已有，不改）、`setDshStatus(text, kind)`（shell.js:438 已有）、`dshVersionsEl`（`$('dshVersions')`）
@@ -183,7 +210,7 @@ git commit -m "feat(main): 注册 version_exists_cmd 命令（下载前版本校
 - [ ] **Step 2: JS——清理搜索框相关代码**
 
 `shell.js` 中：
-1. 删除 `const dshRender = {...}` 缓存对象与渲染函数内的 `dshRender.xxx = xxx;` 赋值（spec：移除全量缓存，不再需要）；
+1. 删除 `const dshVersionSearch = $('dshVersionSearch');`（约 432 行）与 `const dshRender = {...}` 缓存对象（约 485 行）及渲染函数内的 `dshRender.xxx = xxx;` 赋值（spec：移除全量缓存，不再需要）；
 2. `renderVersions` 内删除 `const q = ...`、`const matching = ...`、`const slice = q ? matching : ...` 三行，改为 `const slice = versions.slice(0, 10);`，`RECENT` 常量（当前为 5）一并删除；
 3. 删除渲染尾部搜索提示分支（`if (q && !matching.length) {...} else if (!q && versions.length > slice.length)`），只保留：
 
@@ -232,6 +259,24 @@ git commit -m "feat(main): 注册 version_exists_cmd 命令（下载前版本校
   dshVersionInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') btnInstallVersion.click(); });
 ```
 
+- [ ] **Step 3b: 清理 theme.css 残留的搜索框样式**
+
+删除 `theme.css` 中整个 `.version-search` 样式块（约 415-424 行）：
+
+```css
+/* 版本列表搜索框：搜的是全部已发布版本（默认列表只展示最近 5 个） */
+.version-search { margin-bottom: 10px; }
+.version-search input {
+  width: 100%; padding: 8px 12px; border-radius: var(--dsh-radius-sm);
+  border: 1px solid var(--dsh-border-strong); background: var(--dsh-bg-soft);
+  color: var(--dsh-fg); font-size: 13px; font-family: inherit;
+}
+.version-search input:focus { outline: none; border-color: var(--dsh-accent); box-shadow: var(--dsh-ring, none); }
+.version-search-hint {
+  display: block; margin-top: 5px; font-size: var(--dsh-text-xs, 11.5px); color: var(--dsh-fg-subtle);
+}
+```
+
 - [ ] **Step 4: 语法检查**
 
 Run: `node --check apps/desktop/ui/shell.js`
@@ -249,7 +294,7 @@ Run: `cd apps/desktop && cargo tauri dev`（或按项目既有发版/调试方�
 - [ ] **Step 6: 提交**
 
 ```bash
-git add apps/desktop/ui/shell.html apps/desktop/ui/shell.js
+git add apps/desktop/ui/shell.html apps/desktop/ui/shell.js apps/desktop/ui/theme.css
 git commit -m "feat(shell): dsh tab 版本列表改最近 10 个 + 输入版本号安装（去搜索框）"
 ```
 
@@ -260,7 +305,7 @@ git commit -m "feat(shell): dsh tab 版本列表改最近 10 个 + 输入版本�
 - Modify: `apps/desktop/ui/shell.js:217-223`（`runSetup` 的 ver 获取处）
 
 **Interfaces:**
-- Consumes: `invoke('version_exists_cmd', { ver })`（Task 2）、`showSetupError(title, msg)`（shell.js:186 已有）、`setupVer` / `setupVerInput`
+- Consumes: `invoke('version_exists_cmd', { ver })`（Task 2）、`showSetupError(title, msg)`（shell.js:186 已有）、`setupVer`（shell.js:161 已声明）、`setupVerInput`（本任务 Step 2 声明）
 - Produces: 无新接口
 
 - [ ] **Step 1: HTML——版本下拉下加输入框**
@@ -284,7 +329,15 @@ git commit -m "feat(shell): dsh tab 版本列表改最近 10 个 + 输入版本�
                 </label>
 ```
 
-- [ ] **Step 2: JS——runSetup 优先用输入值并校验**
+- [ ] **Step 2: JS——声明 setupVerInput 元素**
+
+在 `shell.js:161` 的 `const setupVer = $('setupVer');` 之后追加：
+
+```js
+  const setupVerInput = $('setupVerInput');
+```
+
+- [ ] **Step 3: JS——runSetup 优先用输入值并校验**
 
 `shell.js` 的 `runSetup` 中，把：
 
@@ -325,12 +378,12 @@ git commit -m "feat(shell): dsh tab 版本列表改最近 10 个 + 输入版本�
 
 （`setupStarting` 复位模式与现有 `!ver` 分支一致；后续 `invoke('setup_dsh_cmd', { ver, registry })` 无需改动，`ver` 已是最终值。）
 
-- [ ] **Step 3: 语法检查 + 渲染验证**
+- [ ] **Step 4: 语法检查 + 渲染验证**
 
 Run: `node --check apps/desktop/ui/shell.js`
 Expected: 通过。再 `cargo tauri dev` 手动验证：引导页输入不存在版本 → 报「版本不存在」；输入有效版本（如当前最新版）→ 安装流程使用该版本。
 
-- [ ] **Step 4: 提交**
+- [ ] **Step 5: 提交**
 
 ```bash
 git add apps/desktop/ui/shell.html apps/desktop/ui/shell.js
@@ -779,39 +832,45 @@ Expected: FAIL（现有实现拒绝 `kevva/is-positive` 等 git 类格式）
 
 ```rust
 /// npm/pnpm 包规格宽松校验（spec V9 两级白名单）：
-/// 1) 第一级前缀白名单：@ / 字母数字 / github: / gitlab: / bitbucket: /
-///    git+ssh:// / git+https:// / https:// / http://；
-/// 2) 第二级字符白名单：字母数字与 @ . _ - / ~ : + # &（< > = ^ 仅限
-///    #semver: 段），# 后参数段支持 <ref> / semver: / path:（& 分隔）。
+/// 1) 第一级前缀白名单：@ / 字母数字（npm 包名、owner/repo）/ github: /
+///    gitlab: / bitbucket: / git+ssh:// / git+https:// / https:// / http://；
+///    非白名单协议形式（含 `:` 的其它开头，如 git:、git://、git+http://、
+///    file:、jsr:、workspace:）一律拒绝——冒号检查仅针对 `#` 切分后的主体，
+///    `#semver:` / `#path:` 参数段不受影响；
+/// 2) 第二级字符白名单：字母数字与 @ . _ - / ~ : +（< > = ^ 仅限 #semver: 段），
+///    # 后参数段支持 <ref> / semver: / path:（& 分隔）。
 /// 防 pnpm 参数混淆（-g、--dir= 等以 - 开头）、防参数注入/路径穿越
-/// （空白、控制字符、shell 元字符、? query、file:/jsr:/workspace:、
-/// 明文 git://、本地路径均拒绝）。
+/// （空白、控制字符、shell 元字符、? query、本地路径均拒绝）。
 fn valid_pkg_name(s: &str) -> bool {
     if s.is_empty() || s.len() > 214 {
         return false;
     }
     let lower = s.to_ascii_lowercase();
     let first = s.as_bytes()[0];
-    let prefix_ok = first == b'@'
-        || first.is_ascii_alphanumeric()
-        || lower.starts_with("github:")
+    let protocol_ok = lower.starts_with("github:")
         || lower.starts_with("gitlab:")
         || lower.starts_with("bitbucket:")
         || lower.starts_with("git+ssh://")
         || lower.starts_with("git+https://")
         || lower.starts_with("https://")
         || lower.starts_with("http://");
-    if !prefix_ok {
-        return false;
-    }
-    if s.starts_with('.') || s.starts_with('_') || s.starts_with('-') {
-        return false;
-    }
     // 按 # 切分主体与参数段（URL 中 # 只作 git 参数起始符）
     let (body, params) = match s.split_once('#') {
         Some((b, p)) => (b, Some(p)),
         None => (s, None),
     };
+    if !protocol_ok {
+        // 非协议形式只允许 @scope/pkg 与 npm 包名/owner-repo（字母数字开头且无冒号）
+        if !(first == b'@' || first.is_ascii_alphanumeric()) {
+            return false;
+        }
+        if body.contains(':') {
+            return false; // git: / git:// / file: / jsr: / workspace: 等非白名单协议
+        }
+    }
+    if s.starts_with('.') || s.starts_with('_') || s.starts_with('-') {
+        return false;
+    }
     if body.is_empty()
         || !body
             .bytes()
@@ -855,7 +914,21 @@ fn valid_pkg_name(s: &str) -> bool {
 Run: `cd apps/desktop/src-tauri && cargo test pkg_name_validation`
 Expected: PASS（新合法/非法各 20+ 断言全过）
 
-- [ ] **Step 5: 全量测试 + clippy + 提交**
+- [ ] **Step 5: 更新 plugin_op 报错文案（与新校验规则一致）**
+
+`plugin.rs` 约 368 行，把：
+
+```rust
+        return Err("包名不合法（仅允许字母、数字与 @ . _ - / ~，且不能以 - 开头）".to_string());
+```
+
+替换为：
+
+```rust
+        return Err("包名不合法：支持 npm 包名（@scope/pkg）、Git 源（owner/repo、github:owner/repo、git+ssh://…、git+https://…、https://…）与 tarball URL；不允许空白、shell 特殊字符、以 - 开头的参数或本地路径".to_string());
+```
+
+- [ ] **Step 6: 全量测试 + clippy + 提交**
 
 ```bash
 cd apps/desktop/src-tauri && cargo test && cargo clippy -D warnings

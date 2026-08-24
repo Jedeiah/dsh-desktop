@@ -28,7 +28,7 @@
 - **后端**：
   - `registry.rs` 新增 `version_exists(registry, ver) -> Result<bool, String>`：`GET {registry}/{pkg}/{ver}`，200→true、404→false、其它→Err；200 但响应体含 `error` 字段按不存在处理（部分 registry 镜像行为）。
   - `main.rs` 新增 `version_exists_cmd(app, window, ver) -> Result<bool, String>`：`ensure_shell_window` + `valid_version` 白名单；registry 用 settings 默认值；网络查询走 `spawn_blocking`。
-  - `list_dsh_versions_cmd` 收敛：只返回最近 10 个（引导页下拉 + dsh tab 列表共用，数据源根治全量拉取）。
+  - `list_dsh_versions_cmd` 与 `get_dsh_state` 的版本列表都收敛：只返回最近 10 个（前者供引导页下拉，后者供 dsh tab 列表——审核确认 dsh tab 数据源是 `get_dsh_state`，两处都收敛才根治全量拉取）。
 - **前端 dsh tab**：移除搜索框（HTML/CSS/JS 全删）；`renderVersions` 只渲染最近 10 个；新增「输入版本号 + 安装」输入框与按钮——点击 → trim → 后端 `version_exists_cmd` 校验 → 存在则 `updateDsh(ver)`，不存在提示「版本 X 不存在」；已安装版本仍显示「切换」。
 - **前端引导页**：`setupVer` 下拉靠 `list_dsh_versions_cmd` 收敛自动生效（最近 10 个）；同样加输入版本安装入口。
 - 移除 `dshRender` 全量缓存（不再需要）。
