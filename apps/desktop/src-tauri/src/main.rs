@@ -648,10 +648,30 @@ async fn list_dsh_versions_cmd(app: AppHandle, registry: Option<String>) -> Vec<
                 .as_deref()
                 .or(load_settings_at(&p.app_data).registry.as_deref()),
         );
-        crate::registry::list_versions(&reg).unwrap_or_default()
+        // 收敛：只返回最近 10 个（引导页下拉 + dsh tab 列表共用），避免版本非常多时
+        // 全量拉取到内存。输入指定版本走 version_exists_cmd 单独校验。
+        crate::registry::list_versions(&reg).unwrap_or_default().into_iter().take(10).collect()
     })
     .await
     .unwrap_or_default()
+}
+
+/// 校验指定版本是否存在于 registry（下载前校验,避免输入不存在的版本白白下载）。
+#[tauri::command]
+async fn version_exists_cmd(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+    ver: String,
+) -> Result<bool, String> {
+    crate::ensure_shell_window(&window)?;
+    if !crate::registry::valid_version(&ver) {
+        return Err("版本号不合法（应为 x.y.z 或 x.y.z-pre，如 0.1.1-rc.2）".to_string());
+    }
+    let p = paths_from_app(&app);
+    let reg = crate::registry::registry_url(load_settings_at(&p.app_data).registry.as_deref());
+    tauri::async_runtime::spawn_blocking(move || crate::registry::version_exists(&reg, &ver))
+        .await
+        .map_err(|e| format!("校验线程异常: {e}"))?
 }
 
 /// dsh 版本管理状态（壳页「更新」Tab 查询）。
@@ -682,8 +702,10 @@ async fn get_dsh_state(app: AppHandle) -> DshState {
     let installed = crate::dsh::installed_versions(&p);
     // 网络查询（list_versions）离开主线程：同步 command 在主线程执行，
     // 阻塞网络会冻结 UI（0.3.0 卡死根因，见 list_dsh_versions_cmd）。
+    // 收敛：只返回最近 10 个（与 list_dsh_versions_cmd 一致，dsh tab 数据源在此，
+    // 避免版本非常多时全量拉取到内存——spec V1「数据源根治」）。
     let versions = tauri::async_runtime::spawn_blocking(move || {
-        crate::registry::list_versions(&reg).unwrap_or_default()
+        crate::registry::list_versions(&reg).unwrap_or_default().into_iter().take(10).collect()
     })
     .await
     .unwrap_or_default();
@@ -1627,6 +1649,7 @@ fn main() {
             setup_state_cmd,
             setup_cancel_cmd,
             list_dsh_versions_cmd,
+            version_exists_cmd,
         ])
         .setup(|app| {
             // 托盘最小集：显示主窗口 / 退出（左键点击即显示主窗口；
