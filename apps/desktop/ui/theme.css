@@ -412,17 +412,8 @@ select:disabled { opacity: 0.55; }
   border: 1px dashed var(--dsh-border-strong); color: var(--dsh-fg-subtle); font-size: 13px;
 }
 
-/* 版本列表搜索框：搜的是全部已发布版本（默认列表只展示最近 5 个） */
-.version-search { margin-bottom: 10px; }
-.version-search input {
-  width: 100%; padding: 8px 12px; border-radius: var(--dsh-radius-sm);
-  border: 1px solid var(--dsh-border-strong); background: var(--dsh-bg-soft);
-  color: var(--dsh-fg); font-size: 13px; font-family: inherit;
-}
-.version-search input:focus { outline: none; border-color: var(--dsh-accent); box-shadow: var(--dsh-ring, none); }
-.version-search-hint {
-  display: block; margin-top: 5px; font-size: var(--dsh-text-xs, 11.5px); color: var(--dsh-fg-subtle);
-}
+/* 版本列表输入安装行：输入框复用通用 input 样式 */
+.version-install { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
 
 /* ---- dsh 面板：版本大字 / 更新卡 ---- */
 /* 注意：必须显式 flex-direction: row——.card（theme.css 通用组件卡）声明了
