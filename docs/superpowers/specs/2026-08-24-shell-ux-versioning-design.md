@@ -25,7 +25,7 @@
 
 ### V1 版本管理（后端 + 双 tab 前端）
 - **后端**：
-  - `registry.rs` 新增 `version_exists(registry, ver) -> Result<bool, String>`：`GET {registry}/{pkg}/{ver}`，200→true、404→false、其它→Err。
+  - `registry.rs` 新增 `version_exists(registry, ver) -> Result<bool, String>`：`GET {registry}/{pkg}/{ver}`，200→true、404→false、其它→Err；200 但响应体含 `error` 字段按不存在处理（部分 registry 镜像行为）。
   - `main.rs` 新增 `version_exists_cmd(app, window, ver) -> Result<bool, String>`：`ensure_shell_window` + `valid_version` 白名单；registry 用 settings 默认值；网络查询走 `spawn_blocking`。
   - `list_dsh_versions_cmd` 收敛：只返回最近 10 个（引导页下拉 + dsh tab 列表共用，数据源根治全量拉取）。
 - **前端 dsh tab**：移除搜索框（HTML/CSS/JS 全删）；`renderVersions` 只渲染最近 10 个；新增「输入版本号 + 安装」输入框与按钮——点击 → trim → 后端 `version_exists_cmd` 校验 → 存在则 `updateDsh(ver)`，不存在提示「版本 X 不存在」；已安装版本仍显示「切换」。
@@ -48,35 +48,47 @@
 - `shell.js` 给 `.brand` 加 click → 重载工作台 iframe（`loadWorkbench(currentUrl, true)` 或 `wb.src = wb.src`），不动壳页。
 
 ### V7 双击工作台 tab 浏览器打开
-- `shell.js` 「工作台」tab 加 `dblclick` → `invoke('get_dsh_url')` → 系统浏览器打开（后端已有 `open_url`；需暴露或复用 open_browser 类命令）。
+- `shell.js` 「工作台」tab 加 `dblclick` → `invoke('open_workbench_url_cmd')` → 系统浏览器打开。新增该命令：取当前工作台 URL（复用 `get_dsh_url` 逻辑）→ 复用私有 `open_url`（main.rs:891）。不复用现有 `open_browser_cmd`（main.rs:1242，硬编码 releases 页）。
 
 ### V8 下拉框样式
 - `theme.css` select 加 `appearance: none` + 自定义箭头（CSS 背景），统一跨平台（macOS/Windows）。
 
-### V9 插件安装支持非 npm 包规格（git: 等变种）
-- **问题**：当前 `valid_pkg_name`（plugin.rs:61）白名单仅允许 `@ . _ - / ~` + 字母数字，且不能以 `.`/`_`/`-` 开头。因此 `git:xxx/xxx`、`github:owner/repo`、`git+https://…` 等 npm/pnpm 支持的包规格会被拒。
-- **设计**：扩展 `valid_pkg_name`（或新增独立校验）以允许 npm/pnpm 合法包规格变种，同时**保持防注入**：
-  - 允许 `:`、`+`、`git:`/`github:`/`gitlab:` 前缀、`https://` 等 npm 支持的 spec；
-  - 仍禁止：以 `-` 开头（pnpm 选项混淆）、空白字符、控制字符、`|`/`&`/`;`/`$`/反引号等 shell 注入面（命令用 `arg()` 无 shell，但防 pnpm 参数注入仍需）；
-  - 长度上限保留。
-- **交互**：插件输入框提示更新为「支持 npm 包名（@scope/pkg）与 git 类源（git:xxx/xxx、github:owner/repo、git+https://…）」。
+### V9 插件安装支持非 npm 包规格（git 类 / tarball 等）
+- **问题**：当前 `valid_pkg_name`（plugin.rs:61）白名单仅允许 `@ . _ - / ~` + 字母数字，且不能以 `.`/`_`/`-` 开头。因此 `github:user/repo`、`git+https://…`、`https://…tgz`、`user/repo` 等 pnpm 支持的包规格会被拒。
+- **调研结论（pnpm 官方文档 package-sources，2026-08 核实）**：
+  - **不存在 `git:xxx/xxx` 这种裸 `git:` 前缀写法**（用户举例的格式在 pnpm/npm 中非法）；`git` 仅以 `git+ssh://`/`git+https://` 组合 scheme 出现，明文 `git://` 协议不开放。
+  - pnpm 实际支持的包规格（与本产品相关的）：
+    - npm 包名：`pkg`、`@scope/pkg`、`pkg@version`、`pkg@tag`（含空格的版本范围 `pkg@">=0.1.0 <0.2.0"` 官方支持，但 UI 输入不开放）
+    - Git 简写（默认 GitHub）：`owner/repo`（如 `kevva/is-positive`）
+    - 托管商简写：`github:owner/repo`、`gitlab:owner/repo`、`bitbucket:owner/repo`
+    - 完整 Git URL：`git+ssh://…`、`git+https://…`、`https://…git`（官方示例为 git+ssh 与 https；git+https 为 npm 常见变体；可带 `#ref`/`#semver:`/`#path:`，多参数用 `&` 组合，如 `#beta&path:/packages/app`）
+    - 远程 tarball：`https://…tgz`（http/https 开头）
+    - 本地路径/tarball：`./dir`、`./pkg.tgz`（本产品场景不适用，不开放）
+    - JSR / named registry / workspace：本产品场景不适用，不开放
+- **设计**：扩展校验以允许上述「适用于本产品」的规格，同时**保持防注入**。定稿为两级校验（`valid_pkg_name` 或新增独立函数，实施时按此规则）：
+  - **第一级（前缀白名单）**：仅允许以下开头——`@`（scoped npm 包）、字母数字（npm 包名 / `owner/repo` Git 简写）、`github:`、`gitlab:`、`bitbucket:`、`git+ssh://`、`git+https://`、`https://`、`http://`。其余（`git://`、`git+http://`、`file:`、`jsr:`、`workspace:`、`./`、`../`、`-` 开头等）一律拒绝。
+  - **第二级（字符白名单）**：仅允许字母数字与 `@ . _ - / ~ : + # &`，以及出现在 `#semver:` 参数段内的 `< > = ^`。空白、控制字符、管道符/分号/美元符/反引号/单双引号/括号/星号/感叹号/问号等一律拒绝。
+  - **`#` 参数段规则**：`#` 之后为参数段，支持 `#<ref>`（commit hash / 分支 / tag，含 `v` 前缀）、`#semver:<range>`（含 `^`、`~`、`<`、`<=`、`>`、`>=`、`v` 前缀）、`#path:<dir>`（monorepo 子目录）；多个参数用 `&` 分隔（如 `#beta&path:/packages/app`）。`&` 仅允许出现在参数段内。
+  - **不开放**：`?` query 参数（tarball 带 token 场景暂无真实需求）、含空格的版本范围、本地路径 / `file:`、明文协议 `git://`。
+  - 长度上限保留；不以 `.`/`_` 开头（排除本地路径形态）。
+- **交互**：插件输入框提示更新为「支持 npm 包名（@scope/pkg）与 Git/tarball 源（owner/repo、github:owner/repo、git+ssh://…、git+https://…、https://…tgz），可用 #ref、#semver:、#path: 指定版本」。
 
 ## 3. 实施批次与验证
 
 - 批次 1：V1（版本管理，核心）
 - 批次 2：V2、V3、V4（修复类）
 - 批次 3：V5、V6、V7、V8（体验增强）
+- 批次 4：V9（插件安装包规格扩展）
 - 每批：`cargo test`（22 用例）/ `cargo clippy -D warnings` / `node --check` + review 子代理复审。
 - 全部完成后本地构建 v0.3.1 dmg 供实测。
 
 ## 4. 已确认 / 待确认
 
-已确认（用户已表态）：
+已确认（用户已表态 / 调研定稿）：
 - 版本列表最近 10 个；去搜索；输入版本安装 + 下载前校验；双 tab 一致。
 - V3 每行卸载按钮（用户原话认可方向）；V6 刷新工作台；V7 仅「工作台」tab。
-- V9 插件安装需支持 git: 等非 npm 包规格变种。
+- V9 插件安装需支持非 npm 包规格（git 类 / tarball）；白名单已按 pnpm 官方文档定稿（见 V9 两级校验）。
 
 待确认（实施中如遇歧义再确认）：
 - V3 卸载按钮是否要二次确认。
 - V7 双击浏览器打开是否需要当前 URL 为空时的提示。
-- V9 具体允许的 spec 白名单范围（git:/github:/gitlab:/git+https:/https: 等，需在实施时结合 pnpm 实际支持面定稿并保持防注入）。
