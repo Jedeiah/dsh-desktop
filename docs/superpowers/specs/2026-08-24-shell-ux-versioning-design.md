@@ -53,6 +53,14 @@
 ### V8 下拉框样式
 - `theme.css` select 加 `appearance: none` + 自定义箭头（CSS 背景），统一跨平台（macOS/Windows）。
 
+### V9 插件安装支持非 npm 包规格（git: 等变种）
+- **问题**：当前 `valid_pkg_name`（plugin.rs:61）白名单仅允许 `@ . _ - / ~` + 字母数字，且不能以 `.`/`_`/`-` 开头。因此 `git:xxx/xxx`、`github:owner/repo`、`git+https://…` 等 npm/pnpm 支持的包规格会被拒。
+- **设计**：扩展 `valid_pkg_name`（或新增独立校验）以允许 npm/pnpm 合法包规格变种，同时**保持防注入**：
+  - 允许 `:`、`+`、`git:`/`github:`/`gitlab:` 前缀、`https://` 等 npm 支持的 spec；
+  - 仍禁止：以 `-` 开头（pnpm 选项混淆）、空白字符、控制字符、`|`/`&`/`;`/`$`/反引号等 shell 注入面（命令用 `arg()` 无 shell，但防 pnpm 参数注入仍需）；
+  - 长度上限保留。
+- **交互**：插件输入框提示更新为「支持 npm 包名（@scope/pkg）与 git 类源（git:xxx/xxx、github:owner/repo、git+https://…）」。
+
 ## 3. 实施批次与验证
 
 - 批次 1：V1（版本管理，核心）
@@ -66,7 +74,9 @@
 已确认（用户已表态）：
 - 版本列表最近 10 个；去搜索；输入版本安装 + 下载前校验；双 tab 一致。
 - V3 每行卸载按钮（用户原话认可方向）；V6 刷新工作台；V7 仅「工作台」tab。
+- V9 插件安装需支持 git: 等非 npm 包规格变种。
 
 待确认（实施中如遇歧义再确认）：
 - V3 卸载按钮是否要二次确认。
 - V7 双击浏览器打开是否需要当前 URL 为空时的提示。
+- V9 具体允许的 spec 白名单范围（git:/github:/gitlab:/git+https:/https: 等，需在实施时结合 pnpm 实际支持面定稿并保持防注入）。
