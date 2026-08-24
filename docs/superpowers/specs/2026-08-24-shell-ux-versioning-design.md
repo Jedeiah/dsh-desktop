@@ -20,6 +20,7 @@
 - **V6**：tab 行左侧品牌（图标+App名）无点击事件，期望点击刷新工作台（等同右键 reload）。
 - **V7**：期望双击「工作台」tab 用系统浏览器打开当前工作台。
 - **V8**：Windows 上引导页 dsh 版本下拉框保留原生 select 外观（无 `appearance:none`），样式不统一、难看。
+- **V9**：插件安装只接受 npm 包名（`@scope/pkg`），`github:owner/repo`、`git+https://…`、`https://…tgz` 等 pnpm 支持的包规格无法输入（`valid_pkg_name` 白名单过窄）。
 
 ## 2. 设计
 
@@ -36,7 +37,7 @@
 - `shell.html` 的 `<iframe id="workbenchFrame">` 加 `allow="clipboard-write"`（一行）。iframe 内 `navigator.clipboard.writeText()` 即可用。
 
 ### V3 插件 tab 每行卸载按钮
-- `shell.js` 已装插件行（`list_installed_plugins` 渲染处）每行加「卸载」按钮 → 调现有 `plugin_op`（op=remove）。需确认按钮交互（防误触：可点击后变「确认卸载」二次确认）。
+- `shell.js` 已装插件行（`list_installed_plugins` 渲染处）每行加「卸载」按钮 → 点击后按钮变为「确认卸载」→ 再点才调现有 `plugin_op`（op=remove）执行（**二次确认防误触，已确认**）。
 
 ### V4 壳页快捷键复制
 - `shell.js` 全局 keydown 增加 `Cmd/Ctrl+C`：当焦点在壳页且存在选中文字时，用 `document.getSelection()` 复制（`navigator.clipboard.writeText`）；不拦截 iframe 内的复制（V2 已覆盖）。
@@ -48,7 +49,7 @@
 - `shell.js` 给 `.brand` 加 click → 重载工作台 iframe（`loadWorkbench(currentUrl, true)` 或 `wb.src = wb.src`），不动壳页。
 
 ### V7 双击工作台 tab 浏览器打开
-- `shell.js` 「工作台」tab 加 `dblclick` → `invoke('open_workbench_url_cmd')` → 系统浏览器打开。新增该命令：取当前工作台 URL（复用 `get_dsh_url` 逻辑）→ 复用私有 `open_url`（main.rs:891）。不复用现有 `open_browser_cmd`（main.rs:1242，硬编码 releases 页）。
+- `shell.js` 「工作台」tab 加 `dblclick` → `invoke('open_workbench_url_cmd')` → 系统浏览器打开。新增该命令：取当前工作台 URL（复用 `get_dsh_url` 逻辑）→ 复用私有 `open_url`（main.rs:891）。不复用现有 `open_browser_cmd`（main.rs:1242，硬编码 releases 页）。**工作台 URL 为空（dsh web 未就绪/启动中）时双击无效、不提示（已确认）**。
 
 ### V8 下拉框样式
 - `theme.css` select 加 `appearance: none` + 自定义箭头（CSS 背景），统一跨平台（macOS/Windows）。
@@ -86,9 +87,8 @@
 
 已确认（用户已表态 / 调研定稿）：
 - 版本列表最近 10 个；去搜索；输入版本安装 + 下载前校验；双 tab 一致。
-- V3 每行卸载按钮（用户原话认可方向）；V6 刷新工作台；V7 仅「工作台」tab。
+- V3 每行卸载按钮 + **二次确认**（点击后变「确认卸载」再执行）。
+- V6 刷新工作台；V7 仅「工作台」tab，**URL 为空（未就绪/启动中）时双击无效、不提示**。
 - V9 插件安装需支持非 npm 包规格（git 类 / tarball）；白名单已按 pnpm 官方文档定稿（见 V9 两级校验）。
 
-待确认（实施中如遇歧义再确认）：
-- V3 卸载按钮是否要二次确认。
-- V7 双击浏览器打开是否需要当前 URL 为空时的提示。
+待确认：无（所有决策点已定稿）。
