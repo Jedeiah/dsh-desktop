@@ -772,9 +772,10 @@
           const btn = document.createElement('button');
           btn.className = 'sm danger-ghost';
           btn.textContent = '卸载';
+          // 按钮级持久闭包变量：首次点击记录还原定时器 id，确认点击时即时清理
+          let timer = null;
           btn.addEventListener('click', async () => {
             // 二次确认：第一次点击变「确认卸载」，3 秒未再点自动还原；再点才执行
-            let timer = null;
             if (btn.textContent !== '确认卸载') {
               btn.textContent = '确认卸载';
               const t0 = Date.now();
