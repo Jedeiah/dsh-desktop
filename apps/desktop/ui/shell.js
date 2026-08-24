@@ -159,6 +159,7 @@
   const btnSetupRetry = $('btnSetupRetry');
   const setupReg = $('setupReg');
   const setupVer = $('setupVer');
+  const setupVerInput = $('setupVerInput');
   const setupAdv = $('setupAdv');
   let setupCancelled = false;
   // 装完等待工作台就绪态：此时「取消」按钮语义为「放弃等待」（回初始页、不调
@@ -214,11 +215,26 @@
     if (setupStarting) return;
     setupStarting = true;
     const myRun = ++setupRunId;
-    const ver = setupVer.value;
+    const inputVer = setupVerInput.value.trim();
+    const ver = inputVer || setupVer.value;
     if (!ver) {
       setupStarting = false;
-      showSetupError('无法开始安装', '版本列表为空。请检查网络连接或更换 Registry 源后重试。');
+      showSetupError('无法开始安装', '版本列表为空，或未输入版本号。请检查网络连接或更换 Registry 源后重试。');
       return;
+    }
+    if (inputVer) {
+      try {
+        const exists = await invoke('version_exists_cmd', { ver: inputVer });
+        if (!exists) {
+          setupStarting = false;
+          showSetupError('版本不存在', '版本 ' + inputVer + ' 不存在，请检查后重试。');
+          return;
+        }
+      } catch (e) {
+        setupStarting = false;
+        showSetupError('版本校验失败', (typeof e === 'string' ? e : (e && e.message) || String(e)));
+        return;
+      }
     }
     const registry = setupReg.value.trim() || 'https://registry.npmmirror.com';
     // 预检期锁定 + 给反馈：上次安装/取消可能还在后端收尾（SETUP_BUSY 仍 true）——
