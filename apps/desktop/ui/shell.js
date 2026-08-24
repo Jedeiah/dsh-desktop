@@ -572,13 +572,6 @@
       return row;
     };
     slice.forEach((v) => dshVersionsEl.appendChild(mkRow(v)));
-    // 默认仅展示最近 10 个的提示
-    const tip = document.createElement('div');
-    tip.className = 'empty';
-    if (versions.length > slice.length) {
-      tip.textContent = '共 ' + versions.length + ' 个版本，默认展示最近 ' + slice.length + ' 个；可输入版本号安装任意已发布版本';
-    }
-    if (tip.textContent) dshVersionsEl.appendChild(tip);
   }
 
   async function updateDsh(ver) {
@@ -781,10 +774,11 @@
           btn.textContent = '卸载';
           btn.addEventListener('click', async () => {
             // 二次确认：第一次点击变「确认卸载」，3 秒未再点自动还原；再点才执行
+            let timer = null;
             if (btn.textContent !== '确认卸载') {
               btn.textContent = '确认卸载';
               const t0 = Date.now();
-              const timer = setInterval(() => {
+              timer = setInterval(() => {
                 if (btn.textContent === '确认卸载' && Date.now() - t0 >= 3000) {
                   btn.textContent = '卸载';
                   clearInterval(timer);
@@ -792,6 +786,7 @@
               }, 500);
               return;
             }
+            if (timer) clearInterval(timer);
             btn.disabled = true;
             try {
               const text = await invoke('plugin_op', { op: 'remove', pkg: p.name });
