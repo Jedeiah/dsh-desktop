@@ -60,6 +60,18 @@
 
   // ⌘K / Ctrl+K：循环切换；Esc：管理页返回工作台
   window.addEventListener('keydown', (e) => {
+    // V4：Cmd/Ctrl+C 复制选中文字（仅壳页：输入框内走浏览器默认；
+    // iframe 内焦点时 keydown 不会冒泡到父文档，天然不拦截 iframe 内复制）
+    if ((e.metaKey || e.ctrlKey) && (e.key === 'c' || e.key === 'C')) {
+      const t = e.target;
+      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return;
+      const sel = document.getSelection();
+      const text = sel ? sel.toString() : '';
+      if (!text) return;
+      e.preventDefault();
+      navigator.clipboard.writeText(text).catch(() => {});
+      return;
+    }
     if ((e.metaKey || e.ctrlKey) && (e.key === 'k' || e.key === 'K')) {
       e.preventDefault();
       const cur = [...tabs].find((t) => t.classList.contains('active'));
