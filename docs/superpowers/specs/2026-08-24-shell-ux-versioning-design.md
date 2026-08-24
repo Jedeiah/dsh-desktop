@@ -1,0 +1,72 @@
+# DSh Desktop 壳页 UX 与版本管理增强（v0.3.1+）
+
+日期：2026-08-24
+状态：草案，待用户审阅批准
+
+## 1. 背景与问题
+
+在 v0.3.1 发版准备期间，用户提出一批壳页体验问题与版本管理改进需求。均为对现有代码的定向增强（bounded 组合），无新子系统。
+
+### 版本管理（原待办）
+- **V1**：版本列表当前全量拉取到前端内存（`list_versions` 返回 registry 全量版本），版本非常多时网络/内存成本高；搜索框依赖全量缓存，引导页下拉同样全量。
+  - 方案已确认：版本列表只显示最近 10 个；去掉搜索框；新增「输入版本号安装」，下载前校验版本是否存在。
+
+### 新问题（用户 2026-08-24 反馈）
+- **V2**：dsh web（iframe）内 AI 回答文本块右上角复制按钮无反应。
+  - 根因（探索确认）：`<iframe id="workbenchFrame">`（shell.html:308）**没有 `allow="clipboard-write"`**，Permissions Policy 默认 allowlist 为 `'self'`，跨源 iframe（http://127.0.0.1:PORT）里 `navigator.clipboard.writeText()` 被拒（NotAllowedError）。
+- **V3**：插件 tab 已安装插件列表每行没有卸载按钮；卸载需在「安装插件」输入框输包名，交互别扭。
+- **V4**：App 内选中文字键盘快捷键复制不可用（壳页无 Cmd/Ctrl+C 处理）。
+- **V5**：顶部伸缩 tab 行折叠时「内容隐藏但没完全缩上去」——内容只 `translateY(-10px)`，未随顶栏高度（46→28px）完整收起，观感不一致。
+- **V6**：tab 行左侧品牌（图标+App名）无点击事件，期望点击刷新工作台（等同右键 reload）。
+- **V7**：期望双击「工作台」tab 用系统浏览器打开当前工作台。
+- **V8**：Windows 上引导页 dsh 版本下拉框保留原生 select 外观（无 `appearance:none`），样式不统一、难看。
+
+## 2. 设计
+
+### V1 版本管理（后端 + 双 tab 前端）
+- **后端**：
+  - `registry.rs` 新增 `version_exists(registry, ver) -> Result<bool, String>`：`GET {registry}/{pkg}/{ver}`，200→true、404→false、其它→Err。
+  - `main.rs` 新增 `version_exists_cmd(app, window, ver) -> Result<bool, String>`：`ensure_shell_window` + `valid_version` 白名单；registry 用 settings 默认值；网络查询走 `spawn_blocking`。
+  - `list_dsh_versions_cmd` 收敛：只返回最近 10 个（引导页下拉 + dsh tab 列表共用，数据源根治全量拉取）。
+- **前端 dsh tab**：移除搜索框（HTML/CSS/JS 全删）；`renderVersions` 只渲染最近 10 个；新增「输入版本号 + 安装」输入框与按钮——点击 → trim → 后端 `version_exists_cmd` 校验 → 存在则 `updateDsh(ver)`，不存在提示「版本 X 不存在」；已安装版本仍显示「切换」。
+- **前端引导页**：`setupVer` 下拉靠 `list_dsh_versions_cmd` 收敛自动生效（最近 10 个）；同样加输入版本安装入口。
+- 移除 `dshRender` 全量缓存（不再需要）。
+
+### V2 iframe 剪贴板权限
+- `shell.html` 的 `<iframe id="workbenchFrame">` 加 `allow="clipboard-write"`（一行）。iframe 内 `navigator.clipboard.writeText()` 即可用。
+
+### V3 插件 tab 每行卸载按钮
+- `shell.js` 已装插件行（`list_installed_plugins` 渲染处）每行加「卸载」按钮 → 调现有 `plugin_op`（op=remove）。需确认按钮交互（防误触：可点击后变「确认卸载」二次确认）。
+
+### V4 壳页快捷键复制
+- `shell.js` 全局 keydown 增加 `Cmd/Ctrl+C`：当焦点在壳页且存在选中文字时，用 `document.getSelection()` 复制（`navigator.clipboard.writeText`）；不拦截 iframe 内的复制（V2 已覆盖）。
+
+### V5 折叠动画
+- `shell.html` 折叠 CSS：`.titlebar.collapsed .brand/.tabs` 的 `translateY(-10px)` 改为与顶栏高度差同步（46→28px 为 18px），或简化为「内容淡出 + 顶栏干净收起」，使观感为整体缩上去。
+
+### V6 brand 点击刷新
+- `shell.js` 给 `.brand` 加 click → 重载工作台 iframe（`loadWorkbench(currentUrl, true)` 或 `wb.src = wb.src`），不动壳页。
+
+### V7 双击工作台 tab 浏览器打开
+- `shell.js` 「工作台」tab 加 `dblclick` → `invoke('get_dsh_url')` → 系统浏览器打开（后端已有 `open_url`；需暴露或复用 open_browser 类命令）。
+
+### V8 下拉框样式
+- `theme.css` select 加 `appearance: none` + 自定义箭头（CSS 背景），统一跨平台（macOS/Windows）。
+
+## 3. 实施批次与验证
+
+- 批次 1：V1（版本管理，核心）
+- 批次 2：V2、V3、V4（修复类）
+- 批次 3：V5、V6、V7、V8（体验增强）
+- 每批：`cargo test`（22 用例）/ `cargo clippy -D warnings` / `node --check` + review 子代理复审。
+- 全部完成后本地构建 v0.3.1 dmg 供实测。
+
+## 4. 已确认 / 待确认
+
+已确认（用户已表态）：
+- 版本列表最近 10 个；去搜索；输入版本安装 + 下载前校验；双 tab 一致。
+- V3 每行卸载按钮（用户原话认可方向）；V6 刷新工作台；V7 仅「工作台」tab。
+
+待确认（实施中如遇歧义再确认）：
+- V3 卸载按钮是否要二次确认。
+- V7 双击浏览器打开是否需要当前 URL 为空时的提示。
