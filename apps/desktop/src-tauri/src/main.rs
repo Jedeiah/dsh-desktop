@@ -1246,6 +1246,17 @@ fn open_browser_cmd(_app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// V7：双击「工作台」tab → 用系统浏览器打开当前工作台 URL。
+/// URL 为空（dsh 未就绪/启动中）时静默返回：双击无效、不提示（已确认）。
+#[tauri::command]
+fn open_workbench_url_cmd(window: tauri::WebviewWindow) -> Result<(), String> {
+    crate::ensure_shell_window(&window)?;
+    if let Some(url) = get_dsh_url() {
+        open_url(&url);
+    }
+    Ok(())
+}
+
 /// 在系统浏览器打开仓库主页（关于页「项目主页」链接）。
 #[tauri::command]
 fn open_repo_cmd(_app: AppHandle) -> Result<(), String> {
@@ -1642,6 +1653,7 @@ fn main() {
             get_shell_state,
             save_registry_cmd,
             open_browser_cmd,
+            open_workbench_url_cmd,
             open_repo_cmd,
             get_dsh_state,
             update_dsh_cmd,

@@ -58,6 +58,14 @@
   }
   tabs.forEach((t) => t.addEventListener('click', () => selectTab(t.dataset.tab)));
 
+  // V7：双击「工作台」tab → 系统浏览器打开当前工作台（URL 未就绪时后端静默忽略）
+  const workbenchTab = [...tabs].find((t) => t.dataset.tab === 'workbench');
+  if (workbenchTab) {
+    workbenchTab.addEventListener('dblclick', () => {
+      invoke('open_workbench_url_cmd').catch(() => {});
+    });
+  }
+
   // ⌘K / Ctrl+K：循环切换；Esc：管理页返回工作台
   window.addEventListener('keydown', (e) => {
     // V4：Cmd/Ctrl+C 复制选中文字（仅壳页：输入框内走浏览器默认；
