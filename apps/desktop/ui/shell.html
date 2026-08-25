@@ -136,7 +136,7 @@
            展开时用默认规则（立即显示，不遮挡淡入） */
         transition: opacity 0.22s var(--dsh-ease), transform 0.22s var(--dsh-ease), visibility 0s linear 0.22s;
       }
-      .titlebar.collapsed .brand { transform: translateY(-18px); } /* 46→28px 高度差 18px，内容完整缩入 */
+      .titlebar.collapsed .brand { transform: translateY(-18px); } /* 顶栏收起时内容上移淡出 */
       .titlebar.collapsed .tabs { transform: translate(-50%, -18px); } /* 覆盖居中位移，避免横向漂移 */
 
       .workarea {
