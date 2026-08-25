@@ -19,8 +19,9 @@
   function applyTabsCollapsed(c) {
     titlebar.classList.toggle('collapsed', c);
     // 顶栏高度联动 workspace 与把手（.workarea top / .tb-toggle top 均用
-    // var(--dsh-topbar-h)，transition 同步产生伸缩动画）
-    document.documentElement.style.setProperty('--dsh-topbar-h', c ? '28px' : '46px');
+    // var(--dsh-topbar-h)，transition 同步产生伸缩动画）。折叠 = 顶栏完全收起
+    // （0px，"行全没"——用户实测确认期望：不是留 28px 窄条）。
+    document.documentElement.style.setProperty('--dsh-topbar-h', c ? '0px' : '46px');
     btnTabsToggle.classList.toggle('collapsed', c);  // 控制 CSS 三角朝向
     btnTabsToggle.title = c ? '展开导航栏' : '收起导航栏';
     btnTabsToggle.setAttribute('aria-expanded', String(!c));

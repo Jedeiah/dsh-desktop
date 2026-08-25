@@ -43,7 +43,8 @@
 - `shell.js` 全局 keydown 增加 `Cmd/Ctrl+C`：当焦点在壳页且存在选中文字时，用 `document.getSelection()` 复制（`navigator.clipboard.writeText`）；不拦截 iframe 内的复制（V2 已覆盖）。
 
 ### V5 折叠动画
-- `shell.html` 折叠 CSS：`.titlebar.collapsed .brand/.tabs` 的 `translateY(-10px)` 改为与顶栏高度差同步（46→28px 为 18px），或简化为「内容淡出 + 顶栏干净收起」，使观感为整体缩上去。
+- **需求澄清（用户 v0.3.2 实测确认）**：折叠后顶栏应**完全收起（行全没）**，而非收成 28px 窄条（此前 translateY(-10px→-18px) 只影响动画位移，窄条观感不变——方向修正）。
+- `shell.js` `applyTabsCollapsed`：折叠时 `--dsh-topbar-h` 设为 `0px`（展开 46px）；`shell.html` `.titlebar.collapsed { height: 0; border-bottom: none; }`；brand/tabs 淡出（opacity 0 + visibility hidden）不变；把手 `.tb-toggle` 随 `top: var(--dsh-topbar-h)` 浮到窗口顶部，点击展开。工作区 `top: var(--dsh-topbar-h)` 联动全屏。
 
 ### V6 brand 点击刷新
 - `shell.js` 给 `.brand` 加 click → 重载工作台 iframe（`loadWorkbench(currentUrl, true)` 或 `wb.src = wb.src`），不动壳页。
