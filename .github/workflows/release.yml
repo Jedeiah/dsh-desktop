@@ -40,7 +40,7 @@ jobs:
         run: |
           cd apps/desktop/src-tauri
           python3 - "${{ steps.ver.outputs.app_version }}" <<'PY'
-          import json, re, sys
+          import json, re, sys, pathlib
           v = sys.argv[1]
           p = "tauri.conf.json"
           d = json.load(open(p))
@@ -51,6 +51,16 @@ jobs:
           c = open("Cargo.toml").read()
           c = re.sub(r'^version = ".*"$', f'version = "{v}"', c, count=1, flags=re.M)
           open("Cargo.toml", "w").write(c)
+          # cache-busting：ui 资源引用（theme.css/shell.js/modal.js 的 ?v=）同步为
+          # 当前版本——防止 Windows WebView2 缓存旧 css/js（0.3.2 实测：HTML 更新了
+          # 但 theme.css 命中旧缓存，V8 select 样式不生效）。
+          for f in ["../ui/shell.html", "../ui/modal.html"]:
+              fp = pathlib.Path(f)
+              s = fp.read_text()
+              s2 = re.sub(r"\?v=[0-9.]+", f"?v={v}", s)
+              if s2 != s:
+                  fp.write_text(s2)
+                  print("cache-bust ->", f, v)
           print("version ->", v)
           PY
 
