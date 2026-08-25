@@ -159,6 +159,8 @@ pub async fn app_update_cmd(
 /// 从 `hdiutil attach -plist` 的 XML 输出解析挂载点。
 /// 卷名可能含空格（产品名 "DeepSeek Harness Desktop"，多次挂载还会带 " 1" 序号），
 /// 旧实现按行尾 token 解析会取错（"1"）→ read_dir 报 os error 2（0.3.2 更新失败根因）。
+/// 仅 macOS 使用（install_macos）；Windows 编译需排除，否则 clippy -D warnings 报 dead_code。
+#[cfg(any(target_os = "macos", test))]
 fn parse_mount_point(plist: &str) -> Option<String> {
     let key = "<key>mount-point</key>";
     let idx = plist.find(key)?;
