@@ -156,20 +156,41 @@ pub async fn app_update_cmd(
     Ok(())
 }
 
+/// 从 `hdiutil attach -plist` 的 XML 输出解析挂载点。
+/// 卷名可能含空格（产品名 "DeepSeek Harness Desktop"，多次挂载还会带 " 1" 序号），
+/// 旧实现按行尾 token 解析会取错（"1"）→ read_dir 报 os error 2（0.3.2 更新失败根因）。
+fn parse_mount_point(plist: &str) -> Option<String> {
+    let key = "<key>mount-point</key>";
+    let idx = plist.find(key)?;
+    let rest = &plist[idx + key.len()..];
+    let s = rest.find("<string>")? + "<string>".len();
+    let e = rest[s..].find("</string>")?;
+    let v = &rest[s..s + e];
+    if v.is_empty() {
+        None
+    } else {
+        Some(v.to_string())
+    }
+}
+
 #[cfg(target_os = "macos")]
 fn install_macos(dmg: &Path) -> Result<(), String> {
     use std::process::Command;
-    // 1. mount
+    // 1. mount（-plist 输出结构化挂载点——卷名含空格时按行解析会取错，
+    //    0.3.2 更新失败根因：取到最后一个 token "1" → "读取 DMG 内容失败"）
     let out = Command::new("hdiutil")
-        .args(["attach", "-nobrowse", "-readonly"])
+        .args(["attach", "-plist", "-nobrowse", "-readonly"])
         .arg(dmg)
         .output()
         .map_err(|e| format!("挂载 DMG 失败: {e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "挂载 DMG 失败: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
     let stdout = String::from_utf8_lossy(&out.stdout);
-    let mount = stdout
-        .lines()
-        .rev()
-        .find_map(|l| l.split_whitespace().last().map(|s| s.to_string()))
+    let mount = parse_mount_point(&stdout)
         .ok_or_else(|| format!("无法解析挂载点:\n{stdout}"))?;
     // 2. find .app
     let app_name = std::fs::read_dir(&mount)
@@ -253,5 +274,24 @@ mod tests {
             "Windows: {}",
             asset_url("0.3.1").unwrap()
         );
+    }
+
+    #[test]
+    fn parse_mount_point_extracts_plist_value() {
+        // 卷名含空格 + 序号（产品名 "DeepSeek Harness Desktop" 挂载后可能带 " 1"）——
+        // 0.3.2 更新失败根因：旧行解析取到最后一个 token（"1"），read_dir 报 os error 2
+        let plist = r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>system-entities</key><array><dict>
+<key>mount-point</key><string>/Volumes/DeepSeek Harness Desktop 1</string>
+</dict></array></dict></plist>"#;
+        assert_eq!(
+            parse_mount_point(plist).as_deref(),
+            Some("/Volumes/DeepSeek Harness Desktop 1")
+        );
+        // 无挂载点（attach 失败/无卷）→ None
+        assert_eq!(parse_mount_point("<plist><dict></dict></plist>"), None);
+        assert_eq!(parse_mount_point(""), None);
     }
 }
