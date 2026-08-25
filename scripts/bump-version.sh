@@ -12,6 +12,9 @@ PYTHON_BIN="$(command -v python3 || command -v python)"
 [ -n "$PYTHON_BIN" ] || { echo "bump-version: 找不到 python3/python" >&2; exit 1; }
 "$PYTHON_BIN" - "$NEW" <<'PY'
 import json, re, sys, pathlib
+# Windows runner 的 python stdout 默认 cp1252，print 中文（如"(无变化——代码已是该版本)"）
+# 会 UnicodeEncodeError——显式切 utf-8（python 3.7+ reconfigure）。
+sys.stdout.reconfigure(encoding="utf-8")
 v = sys.argv[1]
 if not re.fullmatch(r"\d+\.\d+\.\d+", v):
     sys.exit(f"版本号格式应为 x.y.z，实际: {v}")
