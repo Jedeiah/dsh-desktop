@@ -101,7 +101,7 @@ pub fn installed_versions(p: &Paths) -> Vec<String> {
 static SETUP_CHILD: Mutex<Option<u32>> = Mutex::new(None);
 
 /// 安装日志（诊断安装慢/卡死）：npm 输出逐行落盘，带相对时间戳（自本次安装开始）。
-/// 路径 `<app-data>/dsh/install.log`，每次安装覆盖写新段落。
+/// 路径 `<app-data>/logs/install.log`（与 launcher.log 并排），追加模式保留历史。
 /// 用法：安装慢/卡住后读取该文件，定位卡在哪一阶段、哪一行之后无输出。
 static INSTALL_LOG: Mutex<Option<std::fs::File>> = Mutex::new(None);
 static INSTALL_LOG_START: Mutex<Option<Instant>> = Mutex::new(None);
@@ -340,12 +340,15 @@ pub fn install_version(
     std::fs::create_dir_all(&dsh_dir).map_err(|e| format!("创建目录失败: {e}"))?;
 
     // 安装日志：**追加模式**（保留多次安装历史——覆盖写会丢上次失败原因；
-    // 每次安装写段落头 + 分隔线）。路径 `<app-data>/dsh/install.log`。
+    // 每次安装写段落头 + 分隔线）。路径 `<app-data>/logs/install.log`——
+    // 与 launcher.log 并排（日志归日志目录，不混入 dsh 闭包管理目录）。
+    let log_dir = dsh_dir.parent().map(|p| p.join("logs")).unwrap_or_else(|| dsh_dir.clone());
+    let _ = std::fs::create_dir_all(&log_dir);
     if let Ok(mut g) = INSTALL_LOG.lock() {
         *g = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
-            .open(dsh_dir.join("install.log"))
+            .open(log_dir.join("install.log"))
             .ok();
     }
     if let Ok(mut s) = INSTALL_LOG_START.lock() {
