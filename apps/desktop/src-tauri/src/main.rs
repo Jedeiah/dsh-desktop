@@ -1313,6 +1313,10 @@ async fn uninstall_run(app: AppHandle, window: tauri::WebviewWindow, wipe: bool)
     // teardown（可能耗时：杀进程 + 删除重试）移到阻塞线程
     let app2 = app.clone();
     let teardown = tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
+        // Windows 分支不使用 paths（数据清理移交 NSIS sidecar），前缀下划线避免 unused
+        #[cfg(target_os = "windows")]
+        let _p = paths_from_app(&app2);
+        #[cfg(not(target_os = "windows"))]
         let p = paths_from_app(&app2);
         #[cfg(target_os = "windows")]
         {
