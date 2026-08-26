@@ -182,6 +182,12 @@ fn install_and_verify(
     let mut child = cmd
         .arg("install")
         .arg(format!("@deepseek-ai/dsh@{ver}"))
+        // node-linker=hoisted：平铺真实文件树（硬链接至 store，性能优势保留）。
+        // **必须**：默认 isolated linker 在 Windows 无特权环境用 NTFS junction
+        // （绝对路径指向 -tmp 目录），promote rename tmp→v<ver> 后链接全部断裂
+        // →「安装成功但工作台永远起不来」死循环（与 plugin.rs profile 的
+        // nodeLinker: hoisted 选择一致）。
+        .arg("--config.node-linker=hoisted")
         .args(["--ignore-scripts", "--reporter=append-only"])
         .arg("--registry")
         .arg(registry)
@@ -194,6 +200,27 @@ fn install_and_verify(
         .map_err(|e| format!("运行内置 pnpm 失败: {e}"))?;
     // 记录子进程 PID 供 setup_cancel_cmd 取消；无论 wait 成败都先清空
     *SETUP_CHILD.lock().unwrap() = Some(child.id());
+    // stderr 必须**持续 drain**（管道缓冲 ~64KB，pnpm 警告堆积超限会阻塞子进程
+    // → 安装假死）；内容入日志，失败时已可用。
+    let stderr_handle = std::thread::spawn({
+        let mut err = child.stderr.take();
+        move || {
+            let mut out = String::new();
+            if let Some(e) = err.as_mut() {
+                use std::io::Read;
+                let mut buf = [0u8; 4096];
+                loop {
+                    match e.read(&mut buf) {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => {
+                            out.push_str(&String::from_utf8_lossy(&buf[..n]));
+                        }
+                    }
+                }
+            }
+            out
+        }
+    });
     // 流式读 stdout（pnpm 进度行），每行经 progress 回调推送 UI 与日志
     let mut lines = String::new();
     if let Some(mut out) = child.stdout.take() {
@@ -217,13 +244,10 @@ fn install_and_verify(
     }
     let wait = child.wait();
     *SETUP_CHILD.lock().unwrap() = None;
+    let err_out = stderr_handle.join().unwrap_or_default();
     let status = wait.map_err(|e| format!("等待内置 pnpm 失败: {e}"))?;
     if !status.success() {
-        // 失败时补读 stderr（量小：警告/错误）进日志与错误信息
-        let mut err_out = String::new();
-        if let Some(mut err) = child.stderr.take() {
-            let _ = std::io::Read::read_to_string(&mut err, &mut err_out);
-        }
+        // 失败时 stderr（警告/错误）已由 drain 线程收集
         let err_tail = err_out.trim();
         install_log(&format!("pnpm install 退出码异常: {status}"));
         if !err_tail.is_empty() {
