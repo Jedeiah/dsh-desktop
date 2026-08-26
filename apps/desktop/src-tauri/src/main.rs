@@ -1312,7 +1312,7 @@ async fn uninstall_run(app: AppHandle, window: tauri::WebviewWindow, wipe: bool)
     std::thread::sleep(Duration::from_millis(300)); // 等 WebView2 进程释放数据目录
     // teardown（可能耗时：杀进程 + 删除重试）移到阻塞线程
     let app2 = app.clone();
-    let teardown = tauri::async_runtime::spawn_blocking(move || {
+    let teardown = tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
         let p = paths_from_app(&app2);
         #[cfg(target_os = "windows")]
         {
@@ -1324,10 +1324,11 @@ async fn uninstall_run(app: AppHandle, window: tauri::WebviewWindow, wipe: bool)
             if wipe {
                 let dsh_home = crate::home_dir().join(".dsh");
                 if dsh_home.exists() {
-                    remove_dir_all_retry(&dsh_home).map_err(|e| format!("删除 ~/.dsh 失败: {e}"))?;
+                    remove_dir_all_retry(&dsh_home)
+                        .map_err(|e| format!("删除 ~/.dsh 失败: {e}"))?;
                 }
             }
-            Ok(())
+            Ok::<(), String>(())
         }
         #[cfg(not(target_os = "windows"))]
         {
