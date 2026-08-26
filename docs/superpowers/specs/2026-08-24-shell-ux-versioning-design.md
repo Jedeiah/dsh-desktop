@@ -53,7 +53,8 @@
 - `shell.js` 「工作台」tab 加 `dblclick` → `invoke('open_workbench_url_cmd')` → 系统浏览器打开。新增该命令：取当前工作台 URL（复用 `get_dsh_url` 逻辑）→ 复用私有 `open_url`（main.rs:891）。不复用现有 `open_browser_cmd`（main.rs:1242，硬编码 releases 页）。**工作台 URL 为空（dsh web 未就绪/启动中）时双击无效、不提示（已确认）**。
 
 ### V8 下拉框样式
-- `theme.css` select 加 `appearance: none` + 自定义箭头（CSS 背景），统一跨平台（macOS/Windows）。
+- **需求澄清（用户 v0.3.4 实测）**：`appearance:none` 只改 select 框外观；Windows WebView2 的 option **弹出列表是系统原生渲染**（白底），CSS 无法定制，mac/win 无法统一。
+- **方案（已实施）**：引导页版本下拉**自绘组件**（`.cselect`：button 触发器 + 暗色菜单面板 + 点击/失焦/Esc/Enter 交互），替代原生 select——mac/win 视觉完全一致；样式见 `theme.css` `.cselect-*`。全项目仅 `setupVer` 一处 select。
 
 ### V9 插件安装支持非 npm 包规格（git 类 / tarball 等）
 - **问题**：当前 `valid_pkg_name`（plugin.rs:61）白名单仅允许 `@ . _ - / ~` + 字母数字，且不能以 `.`/`_`/`-` 开头。因此 `github:user/repo`、`git+https://…`、`https://…tgz`、`user/repo` 等 pnpm 支持的包规格会被拒。

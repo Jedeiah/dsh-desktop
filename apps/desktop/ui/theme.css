@@ -384,6 +384,44 @@ select.input, select {
 select:focus { border-color: var(--dsh-accent); box-shadow: 0 0 0 3px rgba(123, 127, 232, 0.22); }
 select:disabled { opacity: 0.55; }
 
+/* ---- 自绘下拉（替代原生 select：Windows WebView2 的 option 弹出列表是系统
+   原生渲染、无法 CSS 定制（白底），自绘后 mac/win 完全统一） ---- */
+.cselect { position: relative; min-width: 0; }
+.cselect-trigger {
+  width: 100%;
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 8px 10px;
+  border-radius: var(--dsh-radius-sm);
+  border: 1px solid var(--dsh-border-strong);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--dsh-fg);
+  font-size: 13px; font-family: inherit;
+  cursor: pointer; outline: none;
+  text-align: left;
+}
+.cselect-trigger:hover { background: rgba(255, 255, 255, 0.07); }
+.cselect-trigger:focus-visible { border-color: var(--dsh-accent); box-shadow: 0 0 0 3px rgba(123, 127, 232, 0.22); }
+.cselect-caret {
+  width: 0; height: 0; flex: none;
+  border-left: 5px solid transparent; border-right: 5px solid transparent;
+  border-top: 6px solid var(--dsh-fg-muted);
+}
+.cselect-menu {
+  position: absolute; top: calc(100% + 4px); left: 0; right: 0; z-index: 20;
+  max-height: 240px; overflow-y: auto;
+  margin: 0; padding: 4px; list-style: none;
+  border: 1px solid var(--dsh-border-strong);
+  border-radius: var(--dsh-radius-sm);
+  background: var(--dsh-bg-soft, rgba(22, 25, 36, 0.98));
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+}
+.cselect-option {
+  padding: 7px 10px; border-radius: 6px;
+  cursor: pointer; font-size: 13px; color: var(--dsh-fg);
+}
+.cselect-option:hover { background: rgba(123, 127, 232, 0.18); }
+.cselect-option.cselect-empty { color: var(--dsh-fg-muted); cursor: default; }
+
 /* ---- 状态行 / 徽标 ---- */
 .status { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--dsh-fg-muted); min-height: 18px; line-height: 1.5; }
 .status.ok  { color: var(--dsh-success); }
@@ -552,7 +590,7 @@ select:disabled { opacity: 0.55; }
 
 label.field { display: block; margin-bottom: 14px; }
 label.field .label-text { display: block; font-size: 12.5px; font-weight: 600; color: var(--dsh-fg-muted); margin-bottom: 7px; }
-label.field .input, label.field input, label.field select { width: 100%; }
+label.field .input, label.field input, label.field select, label.field .cselect { width: 100%; }
 .adv { margin-top: 22px; border-top: 1px solid var(--dsh-border); padding-top: 6px; }
 .adv summary {
   list-style: none; display: flex; align-items: center; gap: 8px;

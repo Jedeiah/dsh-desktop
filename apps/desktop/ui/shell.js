@@ -184,7 +184,10 @@
   const btnSetupCancel = $('btnSetupCancel');
   const btnSetupRetry = $('btnSetupRetry');
   const setupReg = $('setupReg');
-  const setupVer = $('setupVer');
+  const setupVerTrigger = $('setupVerTrigger');
+  const setupVerLabel = $('setupVerLabel');
+  const setupVerMenu = $('setupVerMenu');
+  let setupVerValue = ''; // 自定义下拉当前选中版本（替代原生 select.value）
   const setupVerInput = $('setupVerInput');
   const setupAdv = $('setupAdv');
   let setupCancelled = false;
@@ -217,23 +220,59 @@
   }
 
   async function loadSetupVersions(registry) {
-    setupVer.innerHTML = '<option value="">加载中…</option>';
+    setupVerLabel.textContent = '加载中…';
     let list = [];
     try {
       list = await invoke('list_dsh_versions_cmd', { registry: registry || null });
     } catch (e) { /* 网络失败：下方给提示项 */ }
     if (Array.isArray(list) && list.length) {
-      setupVer.innerHTML = '';
+      // 自绘下拉（替代原生 select——Windows 弹出列表无法 CSS 定制，自绘统一 mac/win）
+      setupVerMenu.innerHTML = '';
       list.forEach((v) => {
-        const o = document.createElement('option');
-        o.value = v;
-        o.textContent = 'v' + v;
-        setupVer.appendChild(o);
+        const li = document.createElement('li');
+        li.className = 'cselect-option';
+        li.setAttribute('role', 'option');
+        li.textContent = 'v' + v;
+        li.dataset.value = v;
+        li.addEventListener('click', () => selectSetupVersion(v));
+        setupVerMenu.appendChild(li);
       });
+      // 与原生 select 行为一致：默认选中第一个（最新版本）
+      selectSetupVersion(list[0], true);
     } else {
-      setupVer.innerHTML = '<option value="">未获取到版本列表（检查网络后重试）</option>';
+      setupVerMenu.innerHTML = '';
+      const li = document.createElement('li');
+      li.className = 'cselect-option cselect-empty';
+      li.textContent = '未获取到版本列表（检查网络后重试）';
+      setupVerMenu.appendChild(li);
+      setupVerLabel.textContent = '未获取到版本列表';
     }
   }
+
+  function selectSetupVersion(v, silent) {
+    setupVerValue = v;
+    setupVerLabel.textContent = 'v' + v;
+    if (!silent) closeSetupVerMenu();
+  }
+  function closeSetupVerMenu() {
+    setupVerMenu.hidden = true;
+    setupVerTrigger.setAttribute('aria-expanded', 'false');
+  }
+  function toggleSetupVerMenu() {
+    const open = setupVerMenu.hidden;
+    setupVerMenu.hidden = !open;
+    setupVerTrigger.setAttribute('aria-expanded', String(open));
+  }
+  setupVerTrigger.addEventListener('click', (e) => { e.stopPropagation(); toggleSetupVerMenu(); });
+  // 点击组件外部 / Esc 关闭；Enter/Space 展开
+  document.addEventListener('click', () => closeSetupVerMenu());
+  setupVerTrigger.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') { e.preventDefault(); closeSetupVerMenu(); }
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleSetupVerMenu(); }
+  });
+  setupVerMenu.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') { e.preventDefault(); closeSetupVerMenu(); setupVerTrigger.focus(); }
+  });
 
   let setupRunId = 0; // 安装运行令牌：取消/失败的旧 run 不得覆盖新 run 的 UI
   let setupStarting = false; // 预检/启动期防重入（连点会并发两个 runSetup → 轮询 timer 泄漏）
@@ -242,7 +281,7 @@
     setupStarting = true;
     const myRun = ++setupRunId;
     const inputVer = setupVerInput.value.trim();
-    const ver = inputVer || setupVer.value;
+    const ver = inputVer || setupVerValue;
     if (!ver) {
       setupStarting = false;
       showSetupError('无法开始安装', '版本列表为空，或未输入版本号。请检查网络连接或更换 Registry 源后重试。');

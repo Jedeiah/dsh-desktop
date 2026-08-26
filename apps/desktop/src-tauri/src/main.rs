@@ -1314,7 +1314,25 @@ async fn uninstall_run(app: AppHandle, window: tauri::WebviewWindow, wipe: bool)
     let app2 = app.clone();
     let teardown = tauri::async_runtime::spawn_blocking(move || {
         let p = paths_from_app(&app2);
-        uninstall_teardown(&p, wipe)
+        #[cfg(target_os = "windows")]
+        {
+            // Windows：数据清理（app_data / WebView2 缓存）**交给 NSIS 卸载器确认后的
+            // --self-uninstall-full sidecar**（installer-hooks.nsh PREUNINSTALL）——
+            // 卸载器界面立即出现，不再因 App 侧删大目录（dsh 闭包数百 MB）拖延
+            // （v0.3.4 实测"App 退出后卸载器迟迟不出现"根因）。
+            // 这里只删 ~/.dsh（wipe 时）：小目录秒级；sidecar 调用不带 --wipe。
+            if wipe {
+                let dsh_home = crate::home_dir().join(".dsh");
+                if dsh_home.exists() {
+                    remove_dir_all_retry(&dsh_home).map_err(|e| format!("删除 ~/.dsh 失败: {e}"))?;
+                }
+            }
+            Ok(())
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            uninstall_teardown(&p, wipe)
+        }
     })
     .await
     .map_err(|e| format!("卸载线程异常：{e}"))?;
@@ -1337,10 +1355,9 @@ async fn uninstall_run(app: AppHandle, window: tauri::WebviewWindow, wipe: bool)
     }
     #[cfg(target_os = "windows")]
     {
-        // 唯一卸载链：调用系统卸载器（uninstall.exe）完成程序文件删除（含 NSIS
-        // PREUNINSTALL 钩子 → --self-uninstall-full 兜底清理数据）。数据侧已在
-        // teardown 完成；这里退出自身并唤起卸载器，交给 NSIS 删 $INSTDIR。
-        // 不再出现"请到设置里卸载"的割裂兜底。
+        // 唯一卸载链：调用系统卸载器（uninstall.exe）完成程序文件删除（其 NSIS
+        // PREUNINSTALL 钩子 → --self-uninstall-full sidecar 清理用户数据，见上方
+        // spawn_blocking 注释）。这里退出自身并唤起卸载器，交给 NSIS 处理。
         let exe = std::env::current_exe().unwrap_or_default();
         let uninstaller = exe.parent().unwrap_or(Path::new(".")).join("uninstall.exe");
         let mut spawned = false;
