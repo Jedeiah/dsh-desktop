@@ -134,7 +134,7 @@ fn valid_pkg_name(s: &str) -> bool {
 
 /// 内置 pnpm 可执行文件名（prepare-resources 打包：macOS/Linux 产出 `pnpm`
 /// shim，Windows 产出 `pnpm.cmd`——与 Rust 侧存在性检查必须保持一致）。
-fn bundled_pnpm_file_name() -> &'static str {
+pub(crate) fn bundled_pnpm_file_name() -> &'static str {
     if cfg!(windows) {
         "pnpm.cmd"
     } else {

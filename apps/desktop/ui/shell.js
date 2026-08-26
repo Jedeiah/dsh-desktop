@@ -481,6 +481,13 @@
     if (!text) return;
     if (text === setupLastProgress) return; // 双通道同一行只处理一次
     setupLastProgress = text;
+    // pnpm --reporter=append-only 的进度行：只显示解析/复用/下载计数，不刷屏
+    const pm = text.match(/Progress: resolved (\d+), reused (\d+), downloaded (\d+)/);
+    if (pm) {
+      setupStage.textContent = '正在安装依赖…';
+      setupMeta.textContent = '已解析 ' + pm[1] + ' 个依赖（复用缓存 ' + pm[2] + '，下载 ' + pm[3] + '）';
+      return;
+    }
     // npm --loglevel=info 的 fetch 行形如 "npm http fetch GET 200 <url> <ms>"：
     // 只计数，不逐行刷 stage（否则满屏 url）；同时把阶段从「正在连接 registry」
     // 推进到「正在下载依赖包」（否则 stage 滞留旧文案与 meta 计数矛盾）。

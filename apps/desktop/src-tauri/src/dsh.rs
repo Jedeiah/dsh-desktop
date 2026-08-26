@@ -154,56 +154,52 @@ fn install_and_verify(
     registry: &str,
     progress: &dyn Fn(&str),
 ) -> Result<(), String> {
-    let node = crate::node_bin(&p.resources);
-    let npm = p.resources.join("npm/bin/npm-cli.js");
-    if !node.is_file() || !npm.is_file() {
-        return Err(format!(
-            "内置 node/npm 缺失 (node={}, npm={})",
-            node.display(),
-            npm.display()
-        ));
+    // 闭包安装用**内置 pnpm**（实测：npm 11 装 678 包依赖树 ~10 分钟 CPU；
+    // pnpm 同包 ~21 秒，内容寻址 store + 硬链接）。pnpm-bin 内含 shim
+    // （mac/linux `pnpm`、Windows `pnpm.cmd`，均用内置 node 执行）。
+    let node = crate::node_bin(&p.resources); // 自检（--version 等）用
+    let pnpm = p
+        .resources
+        .join("pnpm-bin")
+        .join(crate::plugin::bundled_pnpm_file_name());
+    if !pnpm.is_file() {
+        return Err(format!("内置 pnpm 缺失: {}", pnpm.display()));
     }
-    let mut cmd = Command::new(&node);
+    let store = p.app_data.join("dsh/pnpm-store");
+    let mut cmd = Command::new(&pnpm);
     #[cfg(target_os = "windows")]
     {
         cmd = crate::no_console(cmd);
     }
     install_log(&format!(
-        "cmd: {} {} install --prefix {} @deepseek-ai/dsh@{ver} --ignore-scripts --no-audit --no-fund --loglevel=info --registry {registry} --cache {}",
-        node.display(),
-        npm.display(),
-        target.display(),
-        p.app_data.join("dsh/npm-cache").display()
+        "cmd: {} install @deepseek-ai/dsh@{ver} --ignore-scripts --reporter=append-only --registry {registry} --store-dir {} (cwd={})",
+        pnpm.display(),
+        store.display(),
+        target.display()
     ));
-    // npm 输出流式转发（真实进度行让用户看到"正在下载/解析依赖"而非无反馈等待）：
-    // --loglevel=info 输出 fetch/reify 行；每行经 progress 回调推送 UI 与 SETUP_PROGRESS。
+    // pnpm 进度/警告全走 stdout（stderr 基本为空，实测）；--reporter=append-only
+    // 避免交互式进度条污染管道。
     let mut child = cmd
-        .arg(&npm)
         .arg("install")
-        .arg("--prefix")
-        .arg(target)
         .arg(format!("@deepseek-ai/dsh@{ver}"))
-        .args(["--ignore-scripts", "--no-audit", "--no-fund", "--loglevel=info"])
+        .args(["--ignore-scripts", "--reporter=append-only"])
         .arg("--registry")
         .arg(registry)
-        .arg("--cache")
-        .arg(p.app_data.join("dsh/npm-cache"))
-        .env("NODE_OPTIONS", "--max-old-space-size=6144")
+        .arg("--store-dir")
+        .arg(&store)
         .current_dir(target)
-        // stdout 只承载少量总结行（"added N packages"，实验证实 fetch/reify 全走
-        // stderr）；置 null 避免管道缓冲理论风险（不读的 piped 流可能堵死子进程）。
-        .stdout(Stdio::null())
+        .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|e| format!("运行内置 npm 失败: {e}"))?;
+        .map_err(|e| format!("运行内置 pnpm 失败: {e}"))?;
     // 记录子进程 PID 供 setup_cancel_cmd 取消；无论 wait 成败都先清空
     *SETUP_CHILD.lock().unwrap() = Some(child.id());
-    // 流式读 stderr（npm 进度/警告输出地；stdout 同读，先到为准）
-    if let Some(mut err) = child.stderr.take() {
-        let mut lines = String::new();
+    // 流式读 stdout（pnpm 进度行），每行经 progress 回调推送 UI 与日志
+    let mut lines = String::new();
+    if let Some(mut out) = child.stdout.take() {
         let mut buf = [0u8; 4096];
         loop {
-            match std::io::Read::read(&mut err, &mut buf) {
+            match std::io::Read::read(&mut out, &mut buf) {
                 Ok(0) => break,
                 Ok(n) => {
                     lines.push_str(&String::from_utf8_lossy(&buf[..n]));
@@ -221,12 +217,24 @@ fn install_and_verify(
     }
     let wait = child.wait();
     *SETUP_CHILD.lock().unwrap() = None;
-    let status = wait.map_err(|e| format!("等待内置 npm 失败: {e}"))?;
+    let status = wait.map_err(|e| format!("等待内置 pnpm 失败: {e}"))?;
     if !status.success() {
-        install_log(&format!("npm install 退出码异常: {status}"));
-        return Err(format!("npm install @deepseek-ai/dsh@{ver} 失败 (exit {status})"));
+        // 失败时补读 stderr（量小：警告/错误）进日志与错误信息
+        let mut err_out = String::new();
+        if let Some(mut err) = child.stderr.take() {
+            let _ = std::io::Read::read_to_string(&mut err, &mut err_out);
+        }
+        let err_tail = err_out.trim();
+        install_log(&format!("pnpm install 退出码异常: {status}"));
+        if !err_tail.is_empty() {
+            install_log(&format!("pnpm stderr: {err_tail}"));
+        }
+        return Err(format!(
+            "pnpm install @deepseek-ai/dsh@{ver} 失败 (exit {status}){}",
+            if err_tail.is_empty() { String::new() } else { format!(": {err_tail}") }
+        ));
     }
-    install_log("npm install 完成，开始自检…");
+    install_log("pnpm install 完成，开始自检…");
     let bin = target.join("node_modules/@deepseek-ai/dsh/lib/bin.js");
     let mut ver_cmd = Command::new(&node);
     #[cfg(target_os = "windows")]
