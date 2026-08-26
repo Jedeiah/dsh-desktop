@@ -14,9 +14,11 @@
 // so a failed install never breaks the running version. The registry is
 // configurable (default npmmirror for CN users; official npmjs is supported).
 
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Mutex;
+use std::time::Instant;
 
 use crate::Paths;
 
@@ -98,6 +100,28 @@ pub fn installed_versions(p: &Paths) -> Vec<String> {
 /// The npm install child PID while an install is running (for cancel).
 static SETUP_CHILD: Mutex<Option<u32>> = Mutex::new(None);
 
+/// 安装日志（诊断安装慢/卡死）：npm 输出逐行落盘，带相对时间戳（自本次安装开始）。
+/// 路径 `<app-data>/dsh/install.log`，每次安装覆盖写新段落。
+/// 用法：安装慢/卡住后读取该文件，定位卡在哪一阶段、哪一行之后无输出。
+static INSTALL_LOG: Mutex<Option<std::fs::File>> = Mutex::new(None);
+static INSTALL_LOG_START: Mutex<Option<Instant>> = Mutex::new(None);
+
+fn install_log(msg: &str) {
+    let rel = INSTALL_LOG_START
+        .lock()
+        .ok()
+        .and_then(|s| s.map(|t| {
+            let d = t.elapsed();
+            format!("{:02}:{:02}", d.as_secs() / 60, d.as_secs() % 60)
+        }))
+        .unwrap_or_else(|| "--:--".to_string());
+    if let Ok(mut g) = INSTALL_LOG.lock() {
+        if let Some(f) = g.as_mut() {
+            let _ = writeln!(f, "[{rel}] {msg}");
+        }
+    }
+}
+
 /// Cancel a running install (kill the npm child; install_version then fails,
 /// cleans tmp, and the caller can retry). Best-effort per platform.
 pub fn cancel_install() {
@@ -137,6 +161,13 @@ fn install_and_verify(
     {
         cmd = crate::no_console(cmd);
     }
+    install_log(&format!(
+        "cmd: {} {} install --prefix {} @deepseek-ai/dsh@{ver} --ignore-scripts --no-audit --no-fund --loglevel=info --registry {registry} --cache {}",
+        node.display(),
+        npm.display(),
+        target.display(),
+        p.app_data.join("dsh/npm-cache").display()
+    ));
     // npm 输出流式转发（真实进度行让用户看到"正在下载/解析依赖"而非无反馈等待）：
     // --loglevel=info 输出 fetch/reify 行；每行经 progress 回调推送 UI 与 SETUP_PROGRESS。
     let mut child = cmd
@@ -183,8 +214,10 @@ fn install_and_verify(
     *SETUP_CHILD.lock().unwrap() = None;
     let status = wait.map_err(|e| format!("等待内置 npm 失败: {e}"))?;
     if !status.success() {
+        install_log(&format!("npm install 退出码异常: {status}"));
         return Err(format!("npm install @deepseek-ai/dsh@{ver} 失败 (exit {status})"));
     }
+    install_log("npm install 完成，开始自检…");
     let bin = target.join("node_modules/@deepseek-ai/dsh/lib/bin.js");
     let mut ver_cmd = Command::new(&node);
     #[cfg(target_os = "windows")]
@@ -197,6 +230,7 @@ fn install_and_verify(
         .output()
         .map_err(|e| format!("校验新闭包版本失败: {e}"))?;
     let got = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    install_log(&format!("自检 --version => {got:?}"));
     if got != ver {
         return Err(format!("新闭包版本校验失败: 期望 {ver}, 实际 {got}"));
     }
@@ -263,6 +297,26 @@ pub fn install_version(
 ) -> Result<(), String> {
     let dsh_dir = p.app_data.join("dsh");
     std::fs::create_dir_all(&dsh_dir).map_err(|e| format!("创建目录失败: {e}"))?;
+
+    // 安装日志：覆盖写 install.log（保留最近一次完整安装轨迹，诊断慢/卡死）
+    if let Ok(mut g) = INSTALL_LOG.lock() {
+        *g = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .open(dsh_dir.join("install.log"))
+            .ok();
+    }
+    if let Ok(mut s) = INSTALL_LOG_START.lock() {
+        *s = Some(Instant::now());
+    }
+    install_log(&format!("===== 安装 dsh@{ver} registry={registry} ====="));
+    // progress 包装：每行转发到日志（npm 输出经 progress 逐行回调，落盘可见卡点）
+    let orig = progress;
+    let progress = &|msg: &str| {
+        install_log(msg);
+        orig(msg);
+    };
 
     let final_dir = dsh_dir.join(format!("v{ver}"));
     // 目标版本目录已存在且可用（closure_is_usable：版本匹配 + 入口完整）：直接复用，
