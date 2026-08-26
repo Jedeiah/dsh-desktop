@@ -130,6 +130,13 @@ pub fn cancel_install() {
         #[cfg(unix)]
         {
             let _ = unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM) };
+            // npm 在 CPU 密集阶段（idealTree/reify）信号处理会被事件循环延迟——
+            // SIGTERM 可能迟迟不生效（用户实测"点好几次取消才取消"）。5 秒后强制
+            // SIGKILL 兜底；npm 若已正常退出，kill 返回 ESRCH 忽略。
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_secs(5));
+                let _ = unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
+            });
         }
         #[cfg(windows)]
         {
@@ -183,7 +190,9 @@ fn install_and_verify(
         .arg(p.app_data.join("dsh/npm-cache"))
         .env("NODE_OPTIONS", "--max-old-space-size=6144")
         .current_dir(target)
-        .stdout(Stdio::piped())
+        // stdout 只承载少量总结行（"added N packages"，实验证实 fetch/reify 全走
+        // stderr）；置 null 避免管道缓冲理论风险（不读的 piped 流可能堵死子进程）。
+        .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| format!("运行内置 npm 失败: {e}"))?;
@@ -298,12 +307,12 @@ pub fn install_version(
     let dsh_dir = p.app_data.join("dsh");
     std::fs::create_dir_all(&dsh_dir).map_err(|e| format!("创建目录失败: {e}"))?;
 
-    // 安装日志：覆盖写 install.log（保留最近一次完整安装轨迹，诊断慢/卡死）
+    // 安装日志：**追加模式**（保留多次安装历史——覆盖写会丢上次失败原因；
+    // 每次安装写段落头 + 分隔线）。路径 `<app-data>/dsh/install.log`。
     if let Ok(mut g) = INSTALL_LOG.lock() {
         *g = std::fs::OpenOptions::new()
             .create(true)
-            .truncate(true)
-            .write(true)
+            .append(true)
             .open(dsh_dir.join("install.log"))
             .ok();
     }

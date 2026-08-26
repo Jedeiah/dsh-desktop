@@ -591,6 +591,8 @@ select:disabled { opacity: 0.55; }
 label.field { display: block; margin-bottom: 14px; }
 label.field .label-text { display: block; font-size: 12.5px; font-weight: 600; color: var(--dsh-fg-muted); margin-bottom: 7px; }
 label.field .input, label.field input, label.field select, label.field .cselect { width: 100%; }
+/* 版本下拉与手动输入框的间距（用户反馈"挨太近"） */
+label.field .cselect + .input { margin-top: 12px; }
 .adv { margin-top: 22px; border-top: 1px solid var(--dsh-border); padding-top: 6px; }
 .adv summary {
   list-style: none; display: flex; align-items: center; gap: 8px;
