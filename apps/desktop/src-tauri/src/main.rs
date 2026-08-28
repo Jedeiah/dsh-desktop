@@ -1749,7 +1749,18 @@ fn main() {
                     .separator()
                     .item(&quit_item)
                     .build()?;
-                let main_menu = Menu::with_items(app, &[&app_menu])?;
+                // 标准 Edit 菜单（macOS 文本编辑必需）——缺它时 Cmd+C/V/X/A
+                // 被菜单系统吞掉，壳页/输入框内快捷键复制粘贴全部失效（实测反馈）。
+                let edit_menu = SubmenuBuilder::new(app, "编辑")
+                    .undo()
+                    .redo()
+                    .separator()
+                    .cut()
+                    .copy()
+                    .paste()
+                    .select_all()
+                    .build()?;
+                let main_menu = Menu::with_items(app, &[&app_menu, &edit_menu])?;
                 app.set_menu(main_menu)?;
                 app.on_menu_event(move |app, event| {
                     if event.id.as_ref() == "menu-quit" {
