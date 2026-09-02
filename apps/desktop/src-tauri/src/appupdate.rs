@@ -224,7 +224,15 @@ fn install_macos(dmg: &Path) -> Result<(), String> {
     }
     // 4. detach (best-effort)
     let _ = Command::new("hdiutil").args(["detach"]).arg(&mount).output();
-    let _ = Command::new("open").arg(&dst).spawn();
+    // 5. 重启新版——不能在这里直接 `open`：当前实例随即 app.exit(0)，
+    //    open 请求会被 Launch Services 路由给"仍注册中的旧实例"（实测更新后
+    //    App 消失且无新进程）。改用独立延迟进程：sleep 等旧实例退净后
+    //    `open -n` 强制启动新实例（-n 防单实例路由残留）。失败仅致不自动
+    //    重启（可手动打开），不影响安装结果。
+    let app_path = dst.display().to_string();
+    let _ = Command::new("/bin/sh")
+        .args(["-c", &format!("sleep 2; open -n \"{app_path}\"")])
+        .spawn();
     Ok(())
 }
 
@@ -237,6 +245,21 @@ fn install_windows(exe: &Path) -> Result<(), String> {
         .map_err(|e| format!("启动安装器失败: {e}"))?;
     if !status.success() {
         return Err(format!("安装器退出码异常: {status}"));
+    }
+    // 重启新版（与 macOS 同理）：当前实例随即 app.exit(0)，安装器不会自动
+    // 拉起 App。用独立 powershell 延迟启动——升级为原位覆盖安装，current_exe()
+    // 即新版路径。失败仅致不自动重启（可手动打开），不影响安装结果。
+    if let Ok(exe) = std::env::current_exe() {
+        let exe = exe.display().to_string();
+        let _ = crate::no_console(Command::new("powershell"))
+            .args([
+                "-NoProfile",
+                "-WindowStyle",
+                "Hidden",
+                "-Command",
+                &format!("Start-Sleep -Seconds 2; Start-Process -FilePath '{exe}'"),
+            ])
+            .spawn();
     }
     Ok(())
 }
