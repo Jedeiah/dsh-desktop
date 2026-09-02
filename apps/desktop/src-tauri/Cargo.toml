@@ -20,6 +20,16 @@ tauri-plugin-single-instance = "2"
 # 仅 unix 用 PID+SIGTERM 结束 dsh 子进程（dsh.rs 与 capture_user_env）
 libc = "0.2"
 
+[target.'cfg(target_os = "macos")'.dependencies]
+# WKHTTPCookieStore 注入（工作台 iframe 认证桥）；版本锁定与 wry 依赖树一致
+objc2 = "=0.6.4"
+objc2-foundation = "=0.3.2"
+block2 = "=0.6.2"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+# CoreWebView2CookieManager 注入（工作台 iframe 认证桥）；版本锁定与 wry 依赖树一致
+webview2-com = "=0.38.2"
+
 [target.'cfg(windows)'.dependencies]
 # Windows 专属：回收站（卸载时移入回收站）。
 trash = "5"

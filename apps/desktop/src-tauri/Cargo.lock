@@ -833,8 +833,11 @@ dependencies = [
 name = "dsh-desktop"
 version = "0.3.8"
 dependencies = [
+ "block2",
  "dirs",
  "libc",
+ "objc2",
+ "objc2-foundation",
  "serde",
  "serde_json",
  "sha2",
@@ -843,6 +846,7 @@ dependencies = [
  "tauri-plugin-single-instance",
  "trash",
  "ureq",
+ "webview2-com",
 ]
 
 [[package]]
@@ -2297,6 +2301,7 @@ checksum = "e3e0adef53c21f888deb4fa59fc59f7eb17404926ee8a6f59f5df0fd7f9f3272"
 dependencies = [
  "bitflags 2.13.1",
  "block2",
+ "libc",
  "objc2",
  "objc2-core-foundation",
 ]

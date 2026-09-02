@@ -29,6 +29,7 @@ mod appupdate;
 mod dsh;
 mod plugin;
 mod registry;
+mod webview_auth;
 
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -796,6 +797,9 @@ pub(crate) fn boot(app: AppHandle) {
                 if let Some(idx) = l.find("http://127.0.0.1:") {
                     let url = l[idx..].split_whitespace().next().unwrap_or("").to_string();
                     if !url.is_empty() {
+                        // 认证桥：先完成会话预认证 + cookie 注入，再让壳页拿到
+                        // URL——保证 iframe 首帧即带 cookie（注入失败容忍跳过）
+                        crate::webview_auth::preauth_and_inject(&app, &url);
                         *mlock(&DSH_URL) = Some(url.clone());
                         CRASHES.store(0, Ordering::SeqCst); // healthy
                         let app2 = app.clone();
