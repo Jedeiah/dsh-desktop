@@ -847,6 +847,7 @@ dependencies = [
  "trash",
  "ureq",
  "webview2-com",
+ "windows 0.61.3",
 ]
 
 [[package]]

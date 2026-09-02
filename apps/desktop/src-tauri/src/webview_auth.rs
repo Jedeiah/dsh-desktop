@@ -150,8 +150,10 @@ pub mod windows {
     use super::*;
     use tauri::WebviewWindow;
     use webview2_com::Microsoft::Web::WebView2::Win32::{
-        COREWEBVIEW2_COOKIE_SAME_SITE_KIND_NONE, ICoreWebView2,
+        COREWEBVIEW2_COOKIE_SAME_SITE_KIND_NONE, ICoreWebView2, ICoreWebView2_4,
+        ICoreWebView2Controller,
     };
+    use windows::core::{Interface, PCWSTR};
 
     pub fn inject_windows(
         window: &WebviewWindow,
@@ -161,24 +163,50 @@ pub mod windows {
         let (tx, rx) = std::sync::mpsc::channel::<Result<(), String>>();
         let _ = window.with_webview(move |webview| {
             let r = (|| -> Result<(), String> {
-                let controller = webview.controller();
-                let core: ICoreWebView2 = controller
-                    .CoreWebView2()
-                    .map_err(|e| format!("CoreWebView2: {e}"))?;
-                let mgr = core
-                    .GetCookieManager()
-                    .map_err(|e| format!("GetCookieManager: {e}"))?;
-                let cookie = mgr
-                    .CreateCookie(&name, &value, "127.0.0.1", "/")
-                    .map_err(|e| format!("CreateCookie: {e}"))?;
-                cookie
-                    .SetSameSite(COREWEBVIEW2_COOKIE_SAME_SITE_KIND_NONE)
-                    .map_err(|e| format!("SetSameSite: {e}"))?;
-                cookie
-                    .SetIsSecure(true)
-                    .map_err(|e| format!("SetIsSecure: {e}"))?;
-                mgr.AddOrUpdateCookie(&cookie)
-                    .map_err(|e| format!("AddOrUpdateCookie: {e}"))?;
+                let controller: &ICoreWebView2Controller = webview.controller();
+                let core: ICoreWebView2 = unsafe {
+                    controller
+                        .CoreWebView2()
+                        .map_err(|e| format!("CoreWebView2: {e}"))?
+                };
+                // CookieManager 位于版本化接口（webview2-com 去 Get 前缀命名），
+                // 基类→版本接口用 cast（QueryInterface）
+                let core4: ICoreWebView2_4 = core
+                    .cast()
+                    .map_err(|e| format!("cast ICoreWebView2_4: {e}"))?;
+                let mgr = unsafe {
+                    core4
+                        .CookieManager()
+                        .map_err(|e| format!("CookieManager: {e}"))?
+                };
+                // CreateCookie 收 PCWSTR（宽字符串），Vec<u16> 需存活到调用结束
+                let to_wide =
+                    |s: &str| -> Vec<u16> { s.encode_utf16().chain(std::iter::once(0)).collect() };
+                let (name_w, value_w, domain_w, path_w) = (
+                    to_wide(&name),
+                    to_wide(&value),
+                    to_wide("127.0.0.1"),
+                    to_wide("/"),
+                );
+                let cookie = unsafe {
+                    mgr.CreateCookie(
+                        PCWSTR(name_w.as_ptr()),
+                        PCWSTR(value_w.as_ptr()),
+                        PCWSTR(domain_w.as_ptr()),
+                        PCWSTR(path_w.as_ptr()),
+                    )
+                    .map_err(|e| format!("CreateCookie: {e}"))?
+                };
+                unsafe {
+                    cookie
+                        .SetSameSite(COREWEBVIEW2_COOKIE_SAME_SITE_KIND_NONE)
+                        .map_err(|e| format!("SetSameSite: {e}"))?;
+                    cookie
+                        .SetIsSecure(true)
+                        .map_err(|e| format!("SetIsSecure: {e}"))?;
+                    mgr.AddOrUpdateCookie(&cookie)
+                        .map_err(|e| format!("AddOrUpdateCookie: {e}"))?;
+                }
                 Ok(())
             })();
             let _ = tx.send(r);
