@@ -908,6 +908,16 @@ pub(crate) fn no_console(mut cmd: Command) -> Command {
     cmd
 }
 
+/// 从 dsh 就绪 URL 提取端口（兼容 dsh stdout 截取出的完整 URL 串）。
+/// dsh 0.1.2-alpha.5 起工作台地址带 ?token=<token> 本地鉴权参数（如
+/// http://127.0.0.1:51940/?token=…），旧实现 rsplit(':') 会把
+/// "51940/?token=…" 整段当端口解析而失败（wanted=None），工作台被误判为
+/// 外链 → 导航策略拦截 iframe 并转交系统浏览器（卡"正在启动"+刷新跳浏览器）。
+/// 改用标准 URL 解析取 port。
+fn dsh_url_port(raw: &str) -> Option<u16> {
+    tauri::Url::parse(raw).ok()?.port()
+}
+
 /// 是否为允许在 WebView 内导航的地址：App 内置页（tauri://localhost /
 /// http(s)://tauri.localhost）与 **dsh 工作台源端口**（http://127.0.0.1:<dsh
 /// 实际端口>）。只放行"当前 dsh 端口"，其它一律放行到外部。未就绪
@@ -921,9 +931,7 @@ fn is_internal_webview_url(url: &tauri::Url) -> bool {
             Some("tauri.localhost") => return true,
             Some("127.0.0.1") | Some("localhost") => {
                 // 仅放行与 dsh 工作台一致的目标端口
-                let wanted = mlock(&DSH_URL)
-                    .as_ref()
-                    .and_then(|u| u.rsplit(':').next().and_then(|p| p.parse::<u16>().ok()));
+                let wanted = mlock(&DSH_URL).as_ref().and_then(|u| dsh_url_port(u));
                 return Some(url.port().unwrap_or(0)) == wanted;
             }
             _ => return false,
@@ -1864,5 +1872,35 @@ mod tests {
         assert_eq!(strip_verbatim_prefix(r"C:\foo"), None);
         assert_eq!(strip_verbatim_prefix(r"\\host\share\x"), None);
         assert_eq!(strip_verbatim_prefix(""), None);
+    }
+
+    #[test]
+    fn dsh_url_port_extracts_port_from_token_url() {
+        // 回归：dsh 0.1.2-alpha.5 起就绪 URL 带 ?token= 本地鉴权参数，
+        // 旧实现 rsplit(':') 会把 "51940/?token=…" 整段当端口解析而失败。
+        assert_eq!(
+            dsh_url_port("http://127.0.0.1:51940/?token=ZMlI9JBlPYkNLI7cNAsXQkkKIZ-CztMYppkXZWDT_NQ"),
+            Some(51940)
+        );
+        // 旧格式（无 token）与带尾斜杠仍正常
+        assert_eq!(dsh_url_port("http://127.0.0.1:65430"), Some(65430));
+        assert_eq!(dsh_url_port("http://127.0.0.1:51940/"), Some(51940));
+        assert_eq!(dsh_url_port("not a url"), None);
+    }
+
+    #[test]
+    fn webview_internal_url_matches_dsh_port_with_token() {
+        // 回归：DSH_URL 带 ?token= 时，同端口工作台 URL 必须放行（内嵌 iframe），
+        // 异端口/外部地址仍拦截转浏览器。
+        *mlock(&DSH_URL) = Some("http://127.0.0.1:51940/?token=abc".into());
+        let same = tauri::Url::parse("http://127.0.0.1:51940/?token=abc").unwrap();
+        assert!(is_internal_webview_url(&same), "同源端口带 token 应放行");
+        let other_port = tauri::Url::parse("http://127.0.0.1:9999/").unwrap();
+        assert!(!is_internal_webview_url(&other_port), "异端口应拦截");
+        let external = tauri::Url::parse("https://example.com/").unwrap();
+        assert!(!is_internal_webview_url(&external), "外部地址应拦截");
+        let builtin = tauri::Url::parse("tauri://localhost/shell.html").unwrap();
+        assert!(is_internal_webview_url(&builtin), "内置页应放行");
+        *mlock(&DSH_URL) = None; // 复位，不影响其它测试
     }
 }
