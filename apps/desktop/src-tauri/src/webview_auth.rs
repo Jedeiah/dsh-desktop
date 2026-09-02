@@ -153,7 +153,7 @@ pub mod windows {
         COREWEBVIEW2_COOKIE_SAME_SITE_KIND_NONE, ICoreWebView2, ICoreWebView2_4,
         ICoreWebView2Controller,
     };
-    use windows::core::{Interface, PCWSTR};
+    use windows_core::{Interface, PCWSTR};
 
     pub fn inject_windows(
         window: &WebviewWindow,
@@ -163,7 +163,8 @@ pub mod windows {
         let (tx, rx) = std::sync::mpsc::channel::<Result<(), String>>();
         let _ = window.with_webview(move |webview| {
             let r = (|| -> Result<(), String> {
-                let controller: &ICoreWebView2Controller = webview.controller();
+                // PlatformWebview.controller() 返回拥有的 ICoreWebView2Controller
+                let controller: ICoreWebView2Controller = webview.controller();
                 let core: ICoreWebView2 = unsafe {
                     controller
                         .CoreWebView2()
