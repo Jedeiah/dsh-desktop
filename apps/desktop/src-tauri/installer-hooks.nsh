@@ -11,8 +11,7 @@
 ;
 ; 方案：PREUNINSTALL 先调用本应用卸载 sidecar `--self-uninstall-full`：
 ;   - 结束其它运行实例（进程树杀）→ 释放文件锁；
-;   - 复用现有 uninstall_teardown 清理用户数据（app 数据 / WebView2 / 登录自启，
-;     可选 ~/.dsh）。
+;   - 复用现有 uninstall_teardown 清理用户数据（app 数据 / WebView2，可选 ~/.dsh）。
 ;   - sidecar 失败/退出码非 0 不阻断 NSIS 删程序文件（容忍清理）。
 ; 注意：sidecar 由 NSIS 直接以系统账户权限运行（同用户态），无需提权脚本。
 ; =============================================================================
@@ -21,6 +20,12 @@
   ; 逃生舱（默认不可用）：若需跳过卸载 sidecar，可在打包命令注入
   ; `-DSH_SKIP_SELF_UNINSTALL`（makensis 定义），此处即不执行。正常构建不定义。
   !ifndef DSH_SKIP_SELF_UNINSTALL
+    ; App 内点击"卸载"会以 /S 静默方式启动本卸载器（App 侧已弹过确认窗）：静默模式下
+    ; 模板的确认页被跳过，其"删除应用数据"勾选框（$DeleteAppDataCheckboxState）恒为 0，
+    ; 所以 app 数据 / WebView2 缓存由下面的 sidecar 无条件清理，不依赖该勾选框。
+    ; 从系统"已安装的应用"卸载时确认页会出现，但该勾选框同样不影响本钩子——数据清理
+    ; 始终发生（app 数据视为可再生成，见 uninstall_teardown）。若将来要尊重勾选，
+    ; 需在此把状态作为参数传给 sidecar。
     ; 结束运行实例 + 清理用户数据。nsExec::Exec 同步等待 sidecar 结束，
     ; 但失败（退出码 / 超时）不中断卸载：用 ExecWait 拿退出码后忽略。
     ; ${MAINBINARYNAME} 在本处可用（installer.nsi:52 已定义；宏在 Section

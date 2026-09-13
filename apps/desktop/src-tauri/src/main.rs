@@ -1712,11 +1712,13 @@ async fn uninstall_run(app: AppHandle, webview: tauri::Webview, wipe: bool) -> R
         let p = paths_from_app(&app2);
         #[cfg(target_os = "windows")]
         {
-            // Windows：数据清理（app_data / WebView2 缓存）**交给 NSIS 卸载器确认后的
+            // Windows：数据清理（app_data / WebView2 缓存）**交给 NSIS 卸载器的
             // --self-uninstall-full sidecar**（installer-hooks.nsh PREUNINSTALL）——
-            // 卸载器界面立即出现，不再因 App 侧删大目录（dsh 闭包数百 MB）拖延
+            // App 侧不删大目录（dsh 闭包数百 MB），程序文件删除不被拖延
             // （v0.3.4 实测"App 退出后卸载器迟迟不出现"根因）。
             // 这里只删 ~/.dsh（wipe 时）：小目录秒级；sidecar 调用不带 --wipe。
+            // 卸载器以 /S 静默运行（App 侧已确认过），不存在"取消"路径，故此处
+            // 先删数据不会留下"数据已删、卸载却被取消"的中间态。
             if wipe {
                 let dsh_home = crate::home_dir().join(".dsh");
                 if dsh_home.exists() {
@@ -1755,20 +1757,39 @@ async fn uninstall_run(app: AppHandle, webview: tauri::Webview, wipe: bool) -> R
         // 唯一卸载链：调用系统卸载器（uninstall.exe）完成程序文件删除（其 NSIS
         // PREUNINSTALL 钩子 → --self-uninstall-full sidecar 清理用户数据，见上方
         // spawn_blocking 注释）。这里退出自身并唤起卸载器，交给 NSIS 处理。
+        //
+        // `/S` 静默：App 侧已经弹过确认窗，卸载器再弹确认页会多出一条"取消"路径——
+        // 而 wipe 分支在拉起卸载器之前就已删除 ~/.dsh，用户在确认页取消就会变成
+        // "数据没了、程序还在、界面已退出"的中间态。静默化后该路径不存在。
+        // 副作用：静默模式跳过确认页，模板的"删除应用数据"勾选框恒为未选中，故
+        // app 数据/WebView2 缓存改由 PREUNINSTALL 的 sidecar 无条件清理。
         let exe = std::env::current_exe().unwrap_or_default();
         let uninstaller = exe.parent().unwrap_or(Path::new(".")).join("uninstall.exe");
         let mut spawned = false;
         if uninstaller.is_file() {
-            let ok = no_console(Command::new(&uninstaller)).spawn().is_ok();
+            let ok = no_console(Command::new(&uninstaller)).arg("/S").spawn().is_ok();
             if ok {
                 spawned = true;
-                logln!("[uninstall] spawned system uninstaller: {}", uninstaller.display());
+                logln!("[uninstall] spawned system uninstaller (/S): {}", uninstaller.display());
             }
         }
         if !spawned {
+            // 便携版（解压即用，没有 uninstall.exe）：没有系统卸载器可委托，只能自己
+            // 清理用户数据。此前这里只发通知、什么都不删，文案却写着"应用数据已清理"
+            // ——既留下数百 MB 的 dsh 闭包与 WebView2 缓存，又误报。
+            let p = paths_from_app(&app);
+            if let Err(e) = uninstall_teardown(&p, wipe) {
+                UNINSTALLING.store(false, Ordering::SeqCst);
+                notify("卸载未完成", &e);
+                let app2 = app.clone();
+                let _ = app2
+                    .clone()
+                    .run_on_main_thread(move || reveal_main_window(&app2, None));
+                return Err(e);
+            }
             notify(
-                "请通过系统卸载",
-                "应用数据已清理。请到“设置 → 应用 → 已安装的应用”中卸载 DeepSeek Harness Desktop。",
+                "便携版：数据已清理",
+                "程序文件未自动删除。便携版直接删除所在文件夹即可。",
             );
         }
     }
