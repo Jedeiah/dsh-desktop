@@ -165,15 +165,20 @@
   function setChromeCollapsed(v) {
     document.body.classList.toggle('chrome-collapsed', v);
     $('chromeRestore').hidden = !v;
-    try { localStorage.setItem('chromeCollapsed', v ? '1' : '0'); } catch (e) { /* 忽略 */ }
     invoke('workbench_set_collapsed_cmd', { collapsed: v }).catch(() => {});
   }
   $('btnCollapseChrome').addEventListener('click', () => setChromeCollapsed(true));
   $('chromeRestore').addEventListener('click', () => setChromeCollapsed(false));
+  // 启动总是展开顶栏（不恢复上次折叠状态）：
+  // 用户实测反馈——折叠状态一旦持久化，重启应用就会看到「管理那一行整行消失」，
+  // 而展开把手只是窗口顶部中央一个 52×18 的小条，不易发现，体验不可接受。
+  // 折叠功能本身保留（右上角按钮 / ⌘K「收起导航栏」），仅不再跨会话记忆；
+  // 同时清除历史遗留标记，避免旧值继续影响。
+  setChromeCollapsed(false);
   try {
-    setChromeCollapsed(localStorage.getItem('chromeCollapsed') === '1' ? true
-      : localStorage.getItem('tabsCollapsed') === '1');
-  } catch (e) { setChromeCollapsed(false); }
+    localStorage.removeItem('chromeCollapsed');
+    localStorage.removeItem('tabsCollapsed');
+  } catch (e) { /* 忽略 */ }
 
   // 「收起导航栏」防误触开关：抽屉 / 命令面板打开期间禁用折叠按钮——两者都是
 // 右上角附近的浮层，用户常把折叠按钮当作浮层关闭按钮点击，导致整个顶栏消失

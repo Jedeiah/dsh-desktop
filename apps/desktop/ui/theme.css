@@ -309,17 +309,19 @@ kbd {
 #btnCollapseChrome:disabled { opacity: 0.35; cursor: default; pointer-events: none; }
 
 /* 折叠后的唤出把手（原交互）：折叠时出现在窗口顶部中央，点击展开。
-   折叠态工作台从 --h-handle 条下方开始，把手不会被原生工作台盖住。 */
+   折叠态工作台从 --h-handle 条下方开始，把手不会被原生工作台盖住。
+   视觉上做得明显（浅色底 + 阴影），避免用户找不到展开入口。 */
 .chrome-restore {
   position: absolute; top: 0; left: 50%; transform: translateX(-50%); z-index: 46;
   width: 52px; height: var(--h-handle); padding: 0;
   display: grid; place-items: center;
   border: 1px solid var(--border); border-top: 0;
   border-radius: 0 0 9px 9px;
-  background: var(--surface-2); color: var(--fg-subtle); cursor: pointer;
+  background: var(--surface-3); color: var(--fg-muted); cursor: pointer;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.35);
   transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
 }
-.chrome-restore:hover { background: var(--surface-3); color: var(--fg); }
+.chrome-restore:hover { background: var(--surface-2); color: var(--fg); }
 .chrome-restore .ic { width: 12px; height: 12px; }
 
 /* =============================================================================
