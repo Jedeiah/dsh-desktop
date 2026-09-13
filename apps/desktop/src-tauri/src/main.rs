@@ -29,6 +29,7 @@ mod appupdate;
 mod dsh;
 mod plugin;
 mod registry;
+mod workbench;
 
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
