@@ -19,3 +19,7 @@ build/
 
 # Reasonix 会话产物（截图/任务日志），不入库
 .reasonix/
+
+# 本地调试产物（截图/会话），不入库
+.devshots/
+.superpowers/

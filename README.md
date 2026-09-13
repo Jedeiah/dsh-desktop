@@ -30,7 +30,7 @@
 | 跨平台原生 App | macOS：菜单栏托盘 / Dock；Windows：系统托盘 / 任务栏，符合各平台使用习惯 |
 | **零环境依赖** | **不需要 Node / npm / bun / dsh 或任何开发环境**——运行时内置，dsh 自动安装（默认最新版，可指定版本） |
 | 瘦壳、首次自动装 dsh | 不内置 dsh 闭包（安装包约 50MB）；首次运行引导安装，**不依赖系统 bun / npm / node** |
-| dsh 版本管理 | dsh 页查看当前版本与最近 10 个已发布版本：一键更新到最新、输入版本号安装（下载前校验存在性）、切换已装版本；registry 源可配 |
+| dsh 版本管理 | 管理抽屉 dsh 分段查看当前版本与最近 5 个已发布版本：一键更新到最新、输入版本号安装（下载前校验存在性）、安装 / 切换 / 回滚；registry 源可配 |
 | App 内更新 | 关于页检查 GitHub Releases 新版 → 下载（校验）→ 自动安装 → 重启新版本 |
 | 插件管理 | 插件页列出已装插件（`~/.dsh/profiles/web`），安装/卸载后自动重启工作台生效 |
 | 干净卸载 | 两档：保留 `~/.dsh` / 连会话凭据一起删；Windows 走"唯一卸载链"彻底清理 |
@@ -87,7 +87,12 @@ powershell -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.c
 
 ### 3.3 日常操作
 
-壳页共 **4 个 Tab**：**工作台 / dsh / 插件 / 关于**；`⌘K`（Windows `Ctrl+K`）循环切换 Tab，`Esc` 返回工作台（焦点位于工作台 iframe 内时快捷键由 dsh 工作台自身响应，属预期）。
+壳页是「满屏工作台 + 36px 可折叠顶栏」。管理入口有两个：
+
+- **命令面板**：点顶栏「管理」或按 `⌘K`（Windows `Ctrl+K`），可就地搜索并直达区域或执行命令（刷新工作台、在浏览器打开工作台、检查 dsh / App 更新、收起导航栏）。
+- **管理抽屉**：右侧滑出的面板，分 **dsh / 插件 / 关于** 三个分段。
+
+快捷键：`⌘1`–`⌘4` 直达 工作台 / dsh / 插件 / 关于；`Esc` 逐级关闭 确认弹窗 → 命令面板 → 抽屉；单击左上角品牌 = 刷新工作台，双击 = 在系统浏览器打开当前工作台地址。工作台是独立原生 WebView：焦点在工作台内时，macOS 由系统菜单转发 `⌘K`，Windows 用顶栏按钮。
 
 | 操作 | macOS | Windows |
 |---|---|---|
@@ -97,41 +102,41 @@ powershell -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.c
 | 打开外链 | 工作台内点击外链（https 等）自动在系统浏览器打开 | 同左 |
 | 退出 | `Cmd+Q` 或托盘 *退出* | 托盘 *退出*（连带结束 dsh，无残留） |
 | 崩溃自愈 | dsh 意外退出自动重启（1s→2s→…→15s 退避）；连续 5 次后停止并弹窗提示日志路径 | 同左 |
-| dsh 版本管理 | 壳页 *dsh* Tab（详见 3.4） | 同左 |
-| 插件管理 | 壳页 *插件* Tab（详见 3.5） | 同左 |
-| App 更新 | 壳页 *关于* Tab（详见 3.6） | 同左 |
-| 卸载 | 壳页 *关于* Tab（详见 3.7） | 同左 |
+| dsh 版本管理 | 管理抽屉 · *dsh* 分段（详见 3.4） | 同左 |
+| 插件管理 | 管理抽屉 · *插件* 分段（详见 3.5） | 同左 |
+| App 更新 | 管理抽屉 · *关于* 分段（详见 3.6） | 同左 |
+| 卸载 | 管理抽屉 · *关于* 分段（详见 3.7） | 同左 |
 
-> 管理功能全部集中在主窗壳页 Tab，托盘仅保留 **显示主窗口 / 管理台 / 退出** 三项（管理台 = 切到 *dsh* Tab）。
+> 管理功能全部集中在主窗的抽屉与命令面板里，托盘仅保留 **显示主窗口 / 退出** 两项（左键点托盘图标即召回主窗口；退出会连带结束后台 dsh）。
 
 ### 3.4 dsh 版本管理（dsh 页）
 
 - **当前版本**：显示正在运行的 dsh 版本；启动时静默检查 registry `latest`，有新版时在 dsh 页提示（**不自动安装**）。
 - **更新到最新**：一键安装 `latest` → 自检 → 原子切换 → 工作台自动重启为新版。
-- **指定版本安装**：版本列表展示**最近 10 个**已发布版本（semver 倒序），点选 → 确认 → 安装（同一路径）；或**输入版本号**安装——下载前先校验版本存在，不存在即提示（避免无效下载）。
-- **回滚**：在版本列表选择已安装的旧版本「切换」即可（当前/上一版本始终各保留一份）。
+- **指定版本安装**：版本列表展示**最近 5 个**已发布版本（semver 倒序），每行按状态给出 安装 / 切换 / 回滚，点击后弹窗二次确认再执行；也可**输入版本号**安装（下载前先校验版本存在，不存在即提示）。
+- **回滚**：列表对「低于当前版本的已安装最高版本」给出独立的**回滚**按钮，确认后回退（当前/上一版本始终各保留一份）。
 - **Registry 源**：可配置（默认官方 npmjs；国内可换 `https://registry.npmmirror.com`），写入 `settings.json`。
 - 任何安装/更新失败都不影响当前可用版本（tmp 清理、版本标记不动）。
 
 ### 3.5 插件管理（插件页）
 
 - **插件列表**：进入插件页自动读取 `~/.dsh/profiles/web` 已装插件（名称/版本/状态）。
-- **安装**：输入 npm 包名（如 `@linxin666/dsh-web-ui-all`）或 **Git/tarball 源**（`owner/repo`、`github:owner/repo`、`git+ssh://…`、`git+https://…`、`https://…tgz`，可用 `#ref`、`#semver:`、`#path:` 指定版本）→ 输出区**实时滚动**显示 pnpm 进度（下载、依赖解析、构建脚本等）→ 完成后退出码与结果。
-- **卸载**：插件行内「卸载」按钮 → 点击变「确认卸载」→ 再点执行（3 秒未再点自动还原，防误触）。
+- **安装**：输入 npm 包名（如 `@your-scope/dsh-plugin-demo`）或 **Git/tarball 源**（`owner/repo`、`github:owner/repo`、`git+ssh://…`、`git+https://…`、`https://…tgz`，可用 `#ref`、`#semver:`、`#path:` 指定版本）→ 输出区**实时滚动**显示 pnpm 进度（下载、依赖解析、构建脚本等）→ 完成后退出码与结果。
+- **卸载**：插件行内「卸载」按钮 → 弹窗二次确认（危险色「卸载」）→ 确认后执行。
 - 安装/卸载写入 `~/.dsh/profiles/web`（与终端 dsh 完全共用）；**完成后自动重启工作台生效**（无需手动操作）。
 
 **内置 pnpm，零环境依赖**：App 打包 pnpm 运行库 + 启动器，安装/卸载不需要你装 Node/pnpm。自动处理 pnpm 11 门禁（构建脚本授权 `allowBuilds`、新包发布年龄 `minimumReleaseAge: 0`），遇到被忽略的构建脚本会解析包名自动补授权重试。卸载后自动清扫残留空目录。仅限壳页调用，工作台页面无法触发。
 
 ### 3.6 App 更新（关于页）
 
-- 壳页 **关于** Tab 点 **检查更新**（检查 `github.com/Jedeiah/dsh-desktop/releases/latest`，失败静默提示）。
-- 有新版 → 点 **下载并安装**：下载安装包到临时目录（校验大小）→ macOS 挂载 DMG 复制到 `/Applications`（弹系统授权）→ 自动重启新版本；Windows 静默运行 NSIS 安装器（`/S`）→ 退出 → 由安装器启动新版。
+- 管理抽屉 · **关于** 分段点 **检查更新**（检查 `github.com/Jedeiah/dsh-desktop/releases/latest`，失败静默提示）。
+- 有新版 → 点 **下载并安装**：下载安装包到临时目录（校验大小）→ macOS 挂载 DMG 复制到 `/Applications`（弹系统授权）→ 自动重启新版本；Windows 静默运行 NSIS 安装器（`/S /R`）→ 安装器结束后台实例 → 由安装器拉起新版。
 - **macOS x86_64 兜底**：CI 仅构建 arm64 产物，x86_64 无安装包 → 点 **在浏览器打开下载页** 手动下载安装。
 - 下载/安装失败不影响当前版本，可重试或走手动下载。
 
 ### 3.7 卸载
 
-壳页 **关于** Tab 的 *卸载* 区（macOS/Windows 一致，中文两选项）：
+管理抽屉 · **关于** 分段的 *卸载* 区（macOS/Windows 一致，中文两选项）：
 
 | 按钮 | 效果 |
 |---|---|
@@ -210,11 +215,11 @@ dsh-desktop/
 └── apps/desktop/
     ├── ui/                      # 内置资产页（tauri://localhost，零构建链）
     │   ├── theme.css            # 共享设计系统（颜色/圆角/字体/按钮/弹窗 token）
-    │   ├── shell.html/.js       # 壳页（主窗）：工作台/dsh/插件/关于 4 Tab + 首次引导视图
+    │   ├── shell.html/.js       # 壳页（主窗）：36px 顶栏 + 命令面板 + 管理抽屉（dsh/插件/关于）+ 首次引导浮层
     │   ├── modal.html/.js       # 自绘弹窗（替代 rfd 系统对话框：启动失败/崩溃/更新确认）
     │   └── icon.png             # 壳页图标
     └── src-tauri/
-        ├── Cargo.toml           # tauri2(tray-icon,image-png) + serde + serde_json + ureq + dirs（unix: libc；windows: trash）
+        ├── Cargo.toml           # tauri2(tray-icon,image-png,macos-private-api,unstable) + serde + serde_json + ureq + dirs（macOS: objc；unix: libc；windows: trash）
         ├── tauri.conf.json      # identifier / bundle.resources / CSP / withGlobalTauri / nsis(installerHooks) / dmg
         ├── installer-hooks.nsh  # NSIS 卸载钩子：PREUNINSTALL 调 --self-uninstall-full（完全卸载）
         ├── icons/               # icon.png(RGBA 1024) + icon.icns(macOS) + icon.ico(Windows)
@@ -253,7 +258,7 @@ resources/
 - **GC**：当前版本与上一版本始终各保留一份（约 300MB × 2，用于回滚）；更旧版本自动清理。
 - **失败安全**：切换前任何失败都不动当前版本；安装中可取消（SIGTERM / taskkill 子进程）。
 
-**插件管理**（`plugin.rs`）：壳页「插件」Tab（`shell.html`），经 `plugin_op`/`plugin_list_cmd` command 读写 `~/.dsh/profiles/web`（`dsh plugin --profile web add|remove <包名>`）：内置 pnpm（`resources/pnpm-bin`，PATH 前置）运行安装，stdout/stderr 逐行 `emit` 实时回显；安装前自动写入 profile 的 `pnpm-workspace.yaml` 门禁配置（`allowBuilds` + `minimumReleaseAge: 0`），`ERR_PNPM_IGNORED_BUILDS` 时解析包名自动补授权重试；卸载后清扫残留空目录。装/卸完成后自动重启工作台。命令仅接受壳页调用（window label 校验），插件操作全局串行锁保护。**工作台在 iframe 内，拿不到 `window.__TAURI__`，远程内容无法触发插件操作（比 label 白名单更安全）。**
+**插件管理**（`plugin.rs`）：壳页「插件」Tab（`shell.html`），经 `plugin_op`/`plugin_list_cmd` command 读写 `~/.dsh/profiles/web`（`dsh plugin --profile web add|remove <包名>`）：内置 pnpm（`resources/pnpm-bin`，PATH 前置）运行安装，stdout/stderr 逐行 `emit` 实时回显；安装前自动写入 profile 的 `pnpm-workspace.yaml` 门禁配置（`allowBuilds` + `minimumReleaseAge: 0`），`ERR_PNPM_IGNORED_BUILDS` 时解析包名自动补授权重试；卸载后清扫残留空目录。装/卸完成后自动重启工作台。命令仅接受壳页调用（webview label 校验），插件操作全局串行锁保护。工作台是独立原生 WebView 的顶层文档，它同样能拿到 `window.__TAURI__`，因此边界完全依赖 label 校验（工作台 label 不匹配 → 拒绝）。
 
 **app 数据目录**（卸载时整个删除；macOS 为 `~/Library/Application Support/…`，Windows 为 `%APPDATA%\…`）：
 
@@ -284,9 +289,9 @@ dsh-desktop --self-trash-test              # 把自身移入废纸篓/回收站�
 
 - **只绑 loopback**：dsh 强制 `127.0.0.1`（`--host 0.0.0.0` 被 dsh 自身拒绝）。
 - **端口无冲突**：`--port 0` 随机分配，由 stdout 回传。
-- **数据本地**：凭据/会话在 `~/.dsh`（Windows 为 `%USERPROFILE%\.dsh`），App 不额外落盘敏感数据；日志本地，不上传。
+- **数据本地**：凭据/会话在 `~/.dsh`（Windows 为 `%USERPROFILE%\.dsh`），App 不额外落盘敏感数据；日志本地（`<app-data>/logs/`，其中工作台地址的 token 已脱敏），不上传。
 - **安装可信**：dsh 安装走 npm（校验 `dist.integrity` sha512）；切换前双重自检，失败不动当前版本。App 更新校验下载大小与 Release asset 一致，不符即失败清理。
-- **WebView CSP**：最小策略（`default-src 'self'` + 允许连 127.0.0.1）；dsh 页面为外部 localhost，CSP 只约束内置资产页。
+- **WebView CSP**：最小策略（`default-src 'self'` + 允许连 127.0.0.1，未放行 `frame-src`）；只约束内置资产页——工作台是独立原生 WebView 的顶层文档，不受壳页 CSP 约束。
 - **并发**：单实例；安装/更新期间串行锁，避免重复操作。
 - **已知限制**：App 未签名（个人使用）——macOS 首次打开需右键→打开；Windows SmartScreen 可能提示"未知发布者"，点"仍要运行"即可。如需分发可后续补签名/公证。
 
