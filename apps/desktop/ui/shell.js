@@ -24,13 +24,21 @@
     chevron: '<svg class="ic" viewBox="0 0 20 20"><path d="M7.5 5l5 5-5 5"/></svg>',
   };
 
+  // ---------------- HTML 转义（toast/任务中心/版本表等外部数据进入 innerHTML 前必须过） ----------------
+  // 壳页持有 __TAURI__（IPC 权限面），registry 版本键/插件输出/错误串都是不可信数据，
+  // 不能直接拼进 innerHTML（详见代码审查 #1）；面板内静态常量（REGIONS/COMMANDS 图标）
+  // 是可信代码，不经此函数。
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  }
+
   // ---------------- Toast（短反馈，2.8s 消失） ----------------
   function toast(msg, kind) {
     const el = document.createElement('div');
     el.className = 'toast';
     const iconCls = kind === 'ok' ? 't-ok' : kind === 'err' ? 't-err' : 't-acc';
     const icon = kind === 'err' ? ICON.alert : kind === 'ok' ? ICON.check : ICON.info;
-    el.innerHTML = '<span class="' + iconCls + '">' + icon + '</span><span>' + msg + '</span>';
+    el.innerHTML = '<span class="' + iconCls + '">' + icon + '</span><span>' + escapeHtml(msg) + '</span>';
     $('toasts').appendChild(el);
     setTimeout(() => { el.classList.add('leaving'); setTimeout(() => el.remove(), 220); }, 2800);
   }
@@ -67,10 +75,10 @@
     const head = tasks[0];
     pill.hidden = false;
     pill.innerHTML = head.state === 'run'
-      ? '<span class="spinner"></span><span>' + head.label + (head.detail ? ' · ' + head.detail : '') + '</span>'
+      ? '<span class="spinner"></span><span>' + escapeHtml(head.label) + (head.detail ? ' · ' + escapeHtml(head.detail) : '') + '</span>'
       : (head.state === 'ok'
-          ? '<span class="tick">' + ICON.check + '</span><span>' + (head.detail || head.label) + '</span>'
-          : '<span class="warn">' + ICON.alert + '</span><span>' + (head.detail || head.label + ' 未完成') + '</span>');
+          ? '<span class="tick">' + ICON.check + '</span><span>' + escapeHtml(head.detail || head.label) + '</span>'
+          : '<span class="warn">' + ICON.alert + '</span><span>' + escapeHtml(head.detail || head.label + ' 未完成') + '</span>');
     list.innerHTML = '';
     tasks.forEach((t) => {
       const row = document.createElement('div');
@@ -78,8 +86,8 @@
       const icon = t.state === 'run' ? '<span class="spinner"></span>'
         : t.state === 'ok' ? '<span style="color:var(--success)">' + ICON.check + '</span>'
         : '<span style="color:var(--danger)">' + ICON.alert + '</span>';
-      row.innerHTML = icon + '<div><div class="ti-label">' + t.label + '</div>' +
-        (t.detail ? '<div class="ti-detail">' + t.detail + '</div>' : '') + '</div>';
+      row.innerHTML = icon + '<div><div class="ti-label">' + escapeHtml(t.label) + '</div>' +
+        (t.detail ? '<div class="ti-detail">' + escapeHtml(t.detail) + '</div>' : '') + '</div>';
       list.appendChild(row);
     });
   }
@@ -369,7 +377,6 @@
   const btnEnterWorkbench = $('btnEnterWorkbench');
   let setupVerValue = ''; // 自定义下拉当前选中版本（替代原生 select.value）
   let setupCancelled = false;
-  let setupInstalled = false; // 装完等待工作台就绪态
   let setupProgressTimer = null; // 安装进度轮询（setup_state_cmd 兜底）
   let waitBusyReset = false; // 撞 BUSY 分支：等后端收尾结束后回初始页
   let setupFetchCount = 0;
@@ -587,7 +594,6 @@
   // 回到初始引导页：清进度/错误/取消态，恢复「安装」按钮（取消后可重新安装）
   function resetSetupInitial() {
     setupCancelled = false;
-    setupInstalled = false; // 退出"装完等待"态（装完后点「放弃等待」也走这里回初始）
     waitBusyReset = false;
     clearInterval(setupProgressTimer); // 幂等：所有回初始的路径都停轮询，防空转泄漏
     setupProgress.hidden = true;
@@ -606,13 +612,26 @@
   // 安装完成 → 「dsh 已就绪」完成视图（进入工作台按钮）；dsh_url 就绪后由
   // startSetupProgressPolling 自动收起引导——「进入工作台」是未就绪时的手动出口。
   function markSetupInstalled(ver) {
-    setupInstalled = true;
     setupDoneVer.textContent = 'v' + ver;
     setSetupPhase('done');
   }
   btnEnterWorkbench.addEventListener('click', () => {
     hideSetupView();
     invoke('show_workbench_cmd').catch(() => {});
+    // 工作台若迟迟不就绪（dsh boot 失败等）：30s 后回到引导错误视图可重试，
+    // 避免永久停在启动占位（旧「放弃等待」出口的等价恢复路径）
+    (async () => {
+      for (let i = 0; i < 30; i++) {
+        await new Promise((r) => setTimeout(r, 1000));
+        if (setupActive) return; // 期间用户已重新进入引导，放弃本轮
+        try {
+          if (await invoke('workbench_ready_cmd')) return;
+        } catch (e) { /* 单次失败忽略 */ }
+      }
+      if (!setupActive) {
+        showSetupError('工作台未能启动', 'dsh 已安装，但工作台长时间未就绪。可点「重试」再试，或关闭应用后重新打开。');
+      }
+    })();
   });
 
   // 高级区：Registry 源右侧「刷新版本」→ 按当前输入值重新获取可用版本
@@ -789,7 +808,14 @@
       if (isCur) st += '<span class="badge badge-current">当前</span> ';
       if (isInst && !isCur) st += '<span class="badge badge-installed">已安装</span>';
       if (!st) st = '<span class="v-none">未安装</span>';
-      tr.innerHTML = '<td class="v-ver mono">v' + v + '</td><td>' + st + '</td>';
+      // 版本号来自 registry（用户可配置源，不可信）——用 textContent 而非 innerHTML
+      const tdVer = document.createElement('td');
+      tdVer.className = 'v-ver mono';
+      tdVer.textContent = 'v' + v;
+      const tdSt = document.createElement('td');
+      tdSt.innerHTML = st; // st 全部由上文内部徽标串构造，无外部数据
+      tr.appendChild(tdVer);
+      tr.appendChild(tdSt);
 
       const ops = document.createElement('div');
       ops.className = 'ops';
@@ -1106,8 +1132,9 @@
     }
   }
 
-  // 卸载执行（modal 确认后调用，列表行与输入框旁按钮共用）
+  // 卸载执行（modal 确认后调用，列表行与输入框旁按钮共用）；执行期间锁全局安装入口
   async function doRemovePlugin(pkg) {
+    setPluginBusy(true);
     const tid = 'pkg-' + pkg;
     taskStart(tid, '卸载插件');
     taskUpdate(tid, pkg);
@@ -1124,20 +1151,21 @@
       taskFinish(tid, 'err', msg);
       toast('卸载失败', 'err');
     } finally {
+      setPluginBusy(false);
       refreshPlugins();
     }
   }
 
-  async function runPlugin(op) {
+  async function runPlugin() {
     const name = pkgInputEl.value.trim();
     if (!name) { toast('请输入包名', 'err'); return; }
     setPluginBusy(true);
     const tid = 'pkg-' + name;
-    taskStart(tid, op === 'add' ? '安装插件' : '卸载插件');
+    taskStart(tid, '安装插件');
     taskUpdate(tid, name);
-    logLine(op === 'add' ? '正在解析 ' + name + '…' : '正在卸载 ' + name + '…');
+    logLine('正在解析 ' + name + '…');
     try {
-      const text = await invoke('plugin_op', { op, pkg: name });
+      const text = await invoke('plugin_op', { op: 'add', pkg: name });
       if (text) logLine(text);
       logLine(name + ' 已安装，工作台正在重启…', 'l-ok');
       taskFinish(tid, 'ok', name + ' 已安装');
@@ -1153,7 +1181,7 @@
       refreshPlugins();
     }
   }
-  btnInstallPkgEl.addEventListener('click', () => runPlugin('add'));
+  btnInstallPkgEl.addEventListener('click', () => runPlugin());
   btnRemovePkgEl.addEventListener('click', () => {
     const name = pkgInputEl.value.trim();
     if (!name) { toast('请输入包名', 'err'); return; }
@@ -1164,7 +1192,7 @@
       onAccept: () => doRemovePlugin(name),
     });
   });
-  pkgInputEl.addEventListener('keydown', (e) => { if (e.key === 'Enter') runPlugin('add'); });
+  pkgInputEl.addEventListener('keydown', (e) => { if (e.key === 'Enter') runPlugin(); });
   $('btnClearLog').addEventListener('click', clearPluginLog);
 
   // 实时输出：插件构建脚本的行级推送（后端已自动重启工作台）
