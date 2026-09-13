@@ -140,6 +140,10 @@
  * ========================================================================= */
 * { margin: 0; padding: 0; box-sizing: border-box; }
 html, body { height: 100%; overflow: hidden; }
+/* html 也必须给底色：壳页里 .chrome/.stage/.ambient 都是绝对定位，body 无流内
+   内容时背景不铺满，透明区会露出 WebView 默认白底（用户反馈「启动后背景是白色」）。
+   #151517 = --dsh-bg，与工作台同底。 */
+html { background: var(--dsh-bg); }
 body {
   position: relative;
   background: var(--bg);

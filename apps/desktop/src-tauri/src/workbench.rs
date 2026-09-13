@@ -423,12 +423,21 @@ pub fn workbench_ready_cmd() -> bool {
     READY.load(Ordering::SeqCst)
 }
 
-/// 顶栏折叠态同步（shell.js applyTabsCollapsed 调用）。
+/// 顶栏折叠态同步（shell.js 折叠按钮 / 展开把手调用）。
+///
+/// 几何延迟到顶栏 CSS 动画（theme.css --dur，150ms）结束后再应用：工作台是
+/// 原生 webview，位置无法参与 CSS 动画，若立即 set_bounds 会出现「工作台已
+/// 跳到新位置、顶栏还在滑动」的重叠/露底闪烁（用户反馈「伸缩有问题」）。
 #[tauri::command]
 pub fn workbench_set_collapsed_cmd(app: AppHandle, collapsed: bool) {
     crate::logln(&format!("[workbench] collapsed 同步: {collapsed}"));
     COLLAPSED.store(collapsed, Ordering::SeqCst);
-    sync_bounds(&app);
+    let app2 = app.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(170));
+        // sync_bounds 内部检查 SUPPRESSED：抽屉/命令面板打开期间不会被移动
+        sync_bounds(&app2);
+    });
 }
 
 #[cfg(test)]
