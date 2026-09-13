@@ -126,9 +126,9 @@ pub async fn check_app_update_cmd() -> Option<String> {
 #[tauri::command]
 pub async fn app_update_cmd(
     app: tauri::AppHandle,
-    window: tauri::WebviewWindow,
+    webview: tauri::Webview,
 ) -> Result<(), String> {
-    crate::ensure_shell_window(&window)?;
+    crate::ensure_shell_webview(&webview)?;
     let ver = latest_app_version()?;
     let url = asset_url(&ver).ok_or_else(|| "当前平台暂不支持自动安装".to_string())?;
     let tmp = std::env::temp_dir().join(format!("dsh-desktop-update-{ver}"));
@@ -239,27 +239,22 @@ fn install_macos(dmg: &Path) -> Result<(), String> {
 #[cfg(target_os = "windows")]
 fn install_windows(exe: &Path) -> Result<(), String> {
     use std::process::Command;
+    // 必须同时传 `/R`（安装完成后由安装器拉起新版）。
+    //
+    // 只传 `/S` 是不行的：Tauri 的 NSIS 模板在安装 Section 开头就执行
+    // `CheckIfAppIsRunning`，而该宏在静默模式下**不询问、直接
+    // KillProcessCurrentUser**（tauri-bundler 的 nsis/utils.nsh：`IfSilent kill_…`）。
+    // 也就是说 `/S` 一开始就会杀掉「正阻塞在 .status() 上等它结束」的本进程，
+    // 于是本函数之后的任何代码（包括原先那段 powershell 延迟启动）都是死代码，
+    // 表现为「App 内更新后程序消失、不自动重启」。`/R` 让安装器自己在
+    // `.onInstSuccess` 里 RunAsUser 拉起新版（installer.nsi 的 /R 分支）。
     let status = crate::no_console(Command::new(exe))
         .arg("/S")
+        .arg("/R")
         .status()
         .map_err(|e| format!("启动安装器失败: {e}"))?;
     if !status.success() {
         return Err(format!("安装器退出码异常: {status}"));
-    }
-    // 重启新版（与 macOS 同理）：当前实例随即 app.exit(0)，安装器不会自动
-    // 拉起 App。用独立 powershell 延迟启动——升级为原位覆盖安装，current_exe()
-    // 即新版路径。失败仅致不自动重启（可手动打开），不影响安装结果。
-    if let Ok(exe) = std::env::current_exe() {
-        let exe = exe.display().to_string();
-        let _ = crate::no_console(Command::new("powershell"))
-            .args([
-                "-NoProfile",
-                "-WindowStyle",
-                "Hidden",
-                "-Command",
-                &format!("Start-Sleep -Seconds 2; Start-Process -FilePath '{exe}'"),
-            ])
-            .spawn();
     }
     Ok(())
 }

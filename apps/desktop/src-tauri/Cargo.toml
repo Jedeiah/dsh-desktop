@@ -34,3 +34,9 @@ trash = "5"
 strip = true
 lto = true
 codegen-units = 1
+
+# objc 的 msg_send!/class! 宏内部使用 `cfg(cargo-clippy)`，在较新的 rustc 上会触发
+# unexpected_cfgs（CI 用 `clippy --all-targets -- -D warnings` 把关，警告即失败）。
+# 把该 cfg 声明为已知值，同时不影响其它未知 cfg 的检查。
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("cargo-clippy"))'] }

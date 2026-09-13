@@ -17,7 +17,7 @@ pub const TOPBAR_H_LOGICAL: f64 = 36.0;
 /// 折叠态留给「展开把手」的条高（逻辑 px）。原生 child webview 盖在所有壳页
 /// 元素之上：折叠时若工作台顶到窗口最顶，展开把手会被盖住、点不到（用户实测
 /// 「看不到展开的按钮」）。故折叠态预留这条把手空间，把手常驻于此。
-/// 与 ui/theme.css `--dsh-handle-h`（18px）、shell.js 折叠布局保持一致。
+/// 与 ui/theme.css `--dsh-h-handle`（18px）、shell.js 折叠布局保持一致。
 pub const HANDLE_H_LOGICAL: f64 = 18.0;
 
 /// macOS 标题栏高（逻辑 pt，带装饰窗口 frame 顶到内容顶的差值）。
@@ -105,10 +105,16 @@ static APP: OnceLock<AppHandle> = OnceLock::new();
 /// 创建失败自动降级为独立窗口（路径 C），仅降级一次。
 pub fn ensure_ready(app: &AppHandle, url: &str) {
     let _ = APP.set(app.clone());
-    READY.store(false, Ordering::SeqCst); // 新导航开始：占位层需重新盖住
-    // 根因修复：导航前清历史 dsh 会话 cookie（防 Cookie 头累计超 dsh 16KB 上限 →
-    // 431 → 空白工作台）。**必须在主线程之外调用**，见 purge_stale_auth_cookies。
-    let _ = purge_stale_auth_cookies(app);
+    // 只有「真的会导航」（首次创建 / dsh 换端口换 token）才复位就绪态并清 cookie：
+    // dsh 偶尔会把同一个就绪 URL 输出两次，第二次若也清 cookie，会把当前活跃会话
+    // 那张删掉、而页面并没有重载 → SPA 后续请求变成未认证（且 ready 不再补发）。
+    let navigating = crate::mlock(&CUR_URL).as_deref() != Some(url);
+    if navigating {
+        READY.store(false, Ordering::SeqCst); // 新导航开始：占位层需重新盖住
+        // 根因修复：导航前清历史 dsh 会话 cookie（防 Cookie 头累计超 dsh 16KB 上限 →
+        // 431 → 空白工作台）。**必须在主线程之外调用**，见 purge_stale_auth_cookies。
+        let _ = purge_stale_auth_cookies(app);
+    }
     let created = {
         let app2 = app.clone();
         let u = url.to_string();
@@ -186,23 +192,32 @@ fn ensure_ready_on_main(app: &AppHandle, url: &str) -> bool {
         crate::logln("[workbench] 无法解析 dsh URL，跳过");
         return false;
     };
-    if FALLBACK.load(Ordering::SeqCst) {
-        if let Some(w) = app.get_webview_window(LABEL) {
-            let _ = w.navigate(parsed);
-            let _ = w.show();
-        }
-        return true; // 降级态：窗口路径自洽，不再尝试 child
-    }
     let Some(window) = app.get_window(crate::WINDOW_LABEL) else {
         return false;
     };
     // 已创建：仅 URL 变化时重导航（dsh 崩溃自愈换端口/token）
     if let Some(wv) = window.get_webview(LABEL) {
-        if url_changed(CUR_URL.lock().unwrap().as_deref(), url) {
+        // 自愈：child 确实存在 ⇒ 撤销降级标记。FALLBACK 会被「主线程拥塞超 5s 的
+        // recv_timeout」等瞬时原因误置，而旧实现一旦置位就再不复位，工作台会永久停在
+        // 屏幕外（后续 apply_bounds / hide 全部走 fallback 分支）。
+        FALLBACK.store(false, Ordering::SeqCst);
+        if url_changed(crate::mlock(&CUR_URL).as_deref(), url) {
             let _ = wv.navigate(parsed);
-            *CUR_URL.lock().unwrap() = Some(url.to_string());
+            *crate::mlock(&CUR_URL) = Some(url.to_string());
         }
         return true;
+    }
+    if FALLBACK.load(Ordering::SeqCst) {
+        // 降级态（路径 C）：独立窗口承载工作台。换 URL 重导航后必须重新宣告就绪，
+        // 否则壳页 workbench_ready_cmd 恒为 false、占位层永不撤（旧实现此处只
+        // navigate 不置 READY）。
+        if let Some(w) = app.get_webview_window(LABEL) {
+            let _ = w.navigate(parsed);
+            let _ = w.show();
+            READY.store(true, Ordering::SeqCst);
+            let _ = w.emit("workbench:ready", ());
+        }
+        return true; // 降级态：窗口路径自洽，不再尝试 child
     }
     let builder = WebviewBuilder::new(LABEL, WebviewUrl::External(parsed))
         .initialization_script(DARK_BG_JS)
@@ -210,14 +225,17 @@ fn ensure_ready_on_main(app: &AppHandle, url: &str) -> bool {
         .on_new_window(crate::webview_new_window_policy)
         .on_page_load(|wv, payload| {
             if payload.event() == tauri::webview::PageLoadEvent::Finished {
-                crate::logln(&format!("[workbench] page loaded: {}", payload.url()));
+                crate::logln(&format!(
+                    "[workbench] page loaded: {}",
+                    crate::redact_token(payload.url().as_ref())
+                ));
                 // 诊断探针：记录 content-type/title/href——区分「工作台 HTML」与
                 // 「认证失败纯文本页」（历史教训：工作台空白时日志无据可查）。
                 // href 还能判断 token→303 是否真的发生（停在带 token 的原 URL ⇒
                 // 请求未通过认证链）。
                 // 只取元信息（不读正文），避免把工作台内容写进日志。
                 let _ = wv.eval_with_callback(
-                    "JSON.stringify({href:location.href,ct:document.contentType,t:document.title,vw:innerWidth,vh:innerHeight,sw:document.documentElement.scrollWidth,sh:document.documentElement.scrollHeight,dpr:devicePixelRatio})",
+                    "JSON.stringify({href:location.origin+location.pathname,ct:document.contentType,t:document.title,vw:innerWidth,vh:innerHeight,sw:document.documentElement.scrollWidth,sh:document.documentElement.scrollHeight,dpr:devicePixelRatio})",
                     |r| crate::logln(&format!("[workbench] probe: {r}")),
                 );
                 // 借鉴 main 的启动衔接：dsh 是 SPA，page-load Finished 早于首帧渲染
@@ -333,13 +351,21 @@ fn bounds_on_main(app: &AppHandle) -> Option<Rect> {
     // 尺寸一致）。**不要加标题栏补偿**——曾误加 28pt（把「顶栏被折叠」误判为
     // 「标题栏遮挡」），导致工作台整体下移 28pt：顶部露出壳页底色一条、底部
     // 超出 content 被窗口裁掉（用户报告的「dsh 内容显示不全」）。
-    // inset（outer-inner 尺寸差）在 macOS 上为 0，保留以兼容其他平台。
+    // set_bounds 的坐标基准是「窗口客户区」，所以**不能**再叠加 outer−inner 的
+    // 标题栏/边框差值：
+    //   - macOS：本环境实测 outer==inner（inset=0），子视图坐标即内容视图坐标；
+    //   - Windows：wry 把 WebView2 装进 WS_CHILD 容器窗口（wry webview2/mod.rs 的
+    //     create_container_hwnd 用 WS_CHILD | WS_CLIPCHILDREN），SetWindowPos 的坐标
+    //     相对父窗口客户区，而 Tauri 的 inner_size() 在 Windows 上就是客户区尺寸；
+    //   - Linux(webkit2gtk)：同为窗口内子控件。
+    // 叠加差值会让工作台整体下移一个标题栏高度、底边被窗口裁掉（Windows 100% DPI
+    // 约 39px），顶栏下方还会多出一条壳页底色。
     let outer_h = window.outer_size().unwrap_or(size).height as i64;
-    let inset = (outer_h - size.height as i64).max(0) as u32;
+    let inset = (outer_h - size.height as i64).max(0) as u32; // 仅用于日志观测
     let g = geom(size.width, size.height, scale, collapsed);
-    // frame 相对坐标：顶栏 + 标题栏；高度再扣掉标题栏（见 TITLEBAR_H_PT 注释）
+    // 顶栏 + 标题栏补偿（见 TITLEBAR_H_PT 注释）；高度再扣掉标题栏
     let tb_px = (TITLEBAR_H_PT * scale).round() as u32;
-    let y = g.y as u32 + inset + tb_px;
+    let y = g.y as u32 + tb_px;
     let h = g.h.saturating_sub(tb_px);
     let desc = format!(
         "y={} h={} scale={} collapsed={} win={}x{} inset={} titlebar_pt={}",
@@ -373,10 +399,13 @@ static WORKBENCH_VISIBLE: AtomicBool = AtomicBool::new(false);
 /// 壳页 webview 的可视高度（逻辑 pt；0 = 全窗），并应用到原生视图：
 /// - 工作台可见且无浮层 → 顶栏高（折叠态 = 把手条高）
 /// - 启动加载页 / 抽屉 / 命令面板 / 关到后台 → 全窗
-fn apply_shell_clip_on_main(app: &AppHandle) {
+fn apply_shell_clip_on_main(_app: &AppHandle) {
+    // 非 macOS 平台本函数为空实现；参数统一写成 `_app`，否则 Windows 上会触发
+    // unused_variables —— CI 的 Windows job 用 `clippy --all-targets -- -D warnings`
+    // 把关，警告即失败。
     #[cfg(target_os = "macos")]
     {
-        let Some(w) = crate::main_window(app) else {
+        let Some(w) = crate::main_window(_app) else {
             return;
         };
         let clipped = WORKBENCH_VISIBLE.load(Ordering::SeqCst)

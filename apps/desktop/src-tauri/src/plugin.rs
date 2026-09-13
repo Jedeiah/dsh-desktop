@@ -412,16 +412,21 @@ fn run_dsh_plugin(
 /// 页面（http://127.0.0.1，含第三方插件 bundle）也能拿到 window.__TAURI__
 /// （withGlobalTauri），本校验把 plugin_op 的授权面收回到壳页窗口，防止远程
 /// 内容诱导安装任意 npm 包并执行其构建脚本。
-/// 瘦壳后主窗口为「壳页 + iframe」：远程 dsh 工作台在 iframe 内，拿不到
-/// window.__TAURI__（Tauri 仅往主 frame 注入），因此只有壳页能调 IPC。
+/// 管理命令只允许壳页调用。注意工作台现在是**顶层原生 child webview**（不再是
+/// iframe）：Tauri 的 IPC 与 `withGlobalTauri` 脚本按「webview 自身的主 frame」注入，
+/// 所以远程工作台同样能拿到 `window.__TAURI__` —— 安全边界完全依赖这里的
+/// `webview.label()` 校验（child 的 label 是 workbench，会被拒绝）。
+/// **不要**把参数换回 `tauri::WebviewWindow`：add_child 之后主窗的
+/// `is_webview_window()` 恒为 false，会让命令直接失效（详见 main.rs
+/// `ensure_shell_webview` 注释）。
 #[tauri::command]
 pub async fn plugin_op(
     app: tauri::AppHandle,
-    window: tauri::WebviewWindow,
+    webview: tauri::Webview,
     op: String,
     pkg: String,
 ) -> Result<String, String> {
-    if !matches!(window.label(), crate::WINDOW_LABEL) {
+    if !matches!(webview.label(), crate::WINDOW_LABEL) {
         return Err("该操作仅限壳页使用".to_string());
     }
     if op != "add" && op != "remove" {

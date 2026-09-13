@@ -57,9 +57,13 @@ use tauri::Emitter;
 /// - `AppHandle::hide()`（NSApp hide）能隐藏窗口，但随后 `webview_windows()` 返回空、
 ///   `get_webview_window` 返回 None——召回时 reveal 误走「重建壳页」分支，新窗口
 ///   没有 child webview（用户看到「只有壳页背景、没有工作台」）。
-/// 因此直接调用 AppKit 的 orderOut: / makeKeyAndOrderFront:：两者实测可靠，
-/// 且完全不触碰 Tauri 的窗口注册表。
+///   因此直接调用 AppKit 的 orderOut: / makeKeyAndOrderFront:：两者实测可靠，
+///   且完全不触碰 Tauri 的窗口注册表。
 #[cfg(target_os = "macos")]
+// objc 的 msg_send! 需要显式标注返回类型，所以本模块内普遍写作 `let _: () = msg_send![…]`，
+// 会被 clippy::let_unit_value 判为「let 绑定到 unit 值」。改为去掉标注会让返回值类型
+// 无法推断，故这里集中放行该 lint（仅此 FFI 模块）。
+#[allow(clippy::let_unit_value)]
 mod macwin {
     #[repr(C)]
     #[derive(Clone, Copy)]
@@ -128,14 +132,18 @@ mod macwin {
     ///   1. 关掉 WKWebView 自身的背景绘制（`drawsBackground=false`，WKWebView 的
     ///      事实标准 key）→ 页面空白时不再画白底；
     ///   2. 窗口背景色（NSWindow.backgroundColor）设为 #151517 → 空白时露出深色。
-    /// **仅主线程调用**；幂等。
+    ///      **仅主线程调用**；幂等。
     pub fn set_page_bg_dark(w: &WebviewWindow) {
         use objc::runtime::{Object, Sel};
         use objc::{class, msg_send, sel, sel_impl};
-        #[link(name = "WebKit", kind = "framework")]
+        // 同一个 extern 块上写多个 #[link] 只有第一个生效（rustc duplicated_attributes），
+        // 所以分块声明：CGColorCreateSRGB 属于 CoreGraphics，objc_msgSend 来自 objc
+        // crate 已链接的 libobjc（此处仅声明）。
         #[link(name = "CoreGraphics", kind = "framework")]
         extern "C" {
             fn CGColorCreateSRGB(r: f64, g: f64, b: f64, a: f64) -> *mut std::ffi::c_void;
+        }
+        extern "C" {
             fn objc_msgSend();
         }
         let Some(ns) = ns_ptr(w) else {
@@ -413,6 +421,21 @@ pub(crate) fn logln(msg: &str) {
     }
 }
 
+/// 日志/诊断用：抹掉 URL 里的 `token=` 会话凭据。
+///
+/// dsh 的就绪 URL 形如 `http://127.0.0.1:<port>/?token=<secret>`，而日志会长期
+/// 留存在 `<app-data>/logs/` 且常被一起贴出来排障——会话 token 不该落盘。
+/// 只影响展示，不影响任何请求（真实 URL 仍原样交给 WebView）。
+pub(crate) fn redact_token(url: &str) -> String {
+    match url.find("token=") {
+        None => url.to_string(),
+        Some(i) => {
+            let end = url[i..].find('&').map(|k| i + k).unwrap_or(url.len());
+            format!("{}token=***{}", &url[..i], &url[end..])
+        }
+    }
+}
+
 macro_rules! logln {
     ($($arg:tt)*) => { crate::logln(&format!($($arg)*)) };
 }
@@ -571,8 +594,19 @@ pub(crate) fn paths_from_cli() -> Paths {
 /// tauri.conf.json 的 withGlobalTauri 为 true、且该前提随平台/版本可能变化——
 /// 统一在此校验调用窗口，防止任何来源诱导安装/更新/卸载/改写设置等破坏性
 /// 操作（纵深防御，不单靠 iframe 隔离）。
-pub(crate) fn ensure_shell_window(window: &tauri::WebviewWindow) -> Result<(), String> {
-    if window.label() != WINDOW_LABEL {
+/// 校验调用方是壳页 webview（拒绝工作台/弹窗等其它 webview 调用管理命令）。
+///
+/// 用 `tauri::Webview` 而不是 `tauri::WebviewWindow` 作命令参数是**必须的**：
+/// `WebviewWindow::from_command` 内部会调 `Window::is_webview_window()`，而该判定
+/// 要求「这个窗口下所有 webview 的 label 都等于窗口 label」。工作台一旦经
+/// `window.add_child()` 挂到主窗（自身 label=workbench、window_label=main），主窗
+/// 就不再满足该条件，于是**所有以 `WebviewWindow` 为参数的命令都会直接报
+/// "current webview is not a WebviewWindow"**——插件安装/卸载、dsh 更新/切换、
+/// 应用自更新、卸载、保存 Registry、双击品牌开浏览器会全部静默失效（工作台就绪后
+/// 必然发生）。`Webview::from_command` 不走该判定，且 `webview.label()` 依然能精确
+/// 区分壳页 / 工作台 / 弹窗，安全边界不变。
+pub(crate) fn ensure_shell_webview(webview: &tauri::Webview) -> Result<(), String> {
+    if webview.label() != WINDOW_LABEL {
         return Err("该操作仅限壳页窗口使用".to_string());
     }
     Ok(())
@@ -852,11 +886,11 @@ static SETUP_PROGRESS: Mutex<Option<String>> = Mutex::new(None);
 #[tauri::command]
 async fn setup_dsh_cmd(
     app: AppHandle,
-    window: tauri::WebviewWindow,
+    webview: tauri::Webview,
     ver: String,
     registry: String,
 ) -> Result<(), String> {
-    crate::ensure_shell_window(&window)?;
+    crate::ensure_shell_webview(&webview)?;
     // M2：入口白名单校验，防止任意字符串（npm 参数注入）进入安装流程
     if !crate::registry::valid_version(&ver) {
         return Err("版本号不合法".to_string());
@@ -896,8 +930,8 @@ async fn setup_dsh_cmd(
 /// 终止进行中的 npm 安装（规格 5.1「可取消」）；取消后 install 返回 Err →
 /// tmp 清理 → 引导页可重试。
 #[tauri::command]
-fn setup_cancel_cmd(window: tauri::WebviewWindow) {
-    if crate::ensure_shell_window(&window).is_err() {
+fn setup_cancel_cmd(webview: tauri::Webview) {
+    if crate::ensure_shell_webview(&webview).is_err() {
         return;
     }
     crate::dsh::cancel_install();
@@ -938,10 +972,10 @@ async fn list_dsh_versions_cmd(app: AppHandle, registry: Option<String>) -> Vec<
 #[tauri::command]
 async fn version_exists_cmd(
     app: AppHandle,
-    window: tauri::WebviewWindow,
+    webview: tauri::Webview,
     ver: String,
 ) -> Result<bool, String> {
-    crate::ensure_shell_window(&window)?;
+    crate::ensure_shell_webview(&webview)?;
     if !crate::registry::valid_version(&ver) {
         return Err("版本号不合法（应为 x.y.z 或 x.y.z-pre，如 0.1.1-rc.2）".to_string());
     }
@@ -998,8 +1032,8 @@ async fn get_dsh_state(app: AppHandle) -> DshState {
 
 /// 安装指定版本 dsh 并自动重启工作台（新版本生效）。
 #[tauri::command]
-async fn update_dsh_cmd(app: AppHandle, window: tauri::WebviewWindow, ver: String) -> Result<(), String> {
-    crate::ensure_shell_window(&window)?;
+async fn update_dsh_cmd(app: AppHandle, webview: tauri::Webview, ver: String) -> Result<(), String> {
+    crate::ensure_shell_webview(&webview)?;
     // M2：入口白名单校验，防止任意字符串（npm 参数注入）进入安装流程
     if !crate::registry::valid_version(&ver) {
         return Err("版本号不合法".to_string());
@@ -1045,7 +1079,7 @@ pub(crate) fn boot(app: AppHandle) {
             logln!("failed to spawn dsh: {e}");
             let logs = paths_from_app(&app).app_data.join("logs");
             let msg = format!(
-                "无法启动内置 dsh：\n{e}\n\n日志位置：\n{}\n（托盘菜单 Open Logs 可直接打开）",
+                "无法启动内置 dsh：\n{e}\n\n日志位置：\n{}",
                 logs.display()
             );
             show_modal(
@@ -1070,7 +1104,7 @@ pub(crate) fn boot(app: AppHandle) {
     for line in reader.lines() {
         match line {
             Ok(l) => {
-                logln!("[dsh] {l}");
+                logln!("[dsh] {}", redact_token(&l));
                 if let Some(idx) = l.find("http://127.0.0.1:") {
                     let url = l[idx..].split_whitespace().next().unwrap_or("").to_string();
                     if !url.is_empty() {
@@ -1106,7 +1140,7 @@ pub(crate) fn boot(app: AppHandle) {
             logln!("dsh crashed {n} times in a row; giving up");
             let logs = paths_from_app(&app).app_data.join("logs");
             let msg = format!(
-                "dsh 连续崩溃 {n} 次，已停止自动重启。\n\n日志位置：\n{}\n\n可点托盘菜单 Open Logs 查看 dsh.log 的异常信息。",
+                "dsh 连续崩溃 {n} 次，已停止自动重启。\n\n日志位置：\n{}\n\n其中 dsh.log 记录了 dsh 的异常输出。",
                 logs.display()
             );
             show_modal(
@@ -1308,6 +1342,16 @@ pub(crate) fn kill_dsh() {
     // and never spawns a restart after the app is quitting (avoids orphans).
     INTENTIONAL_STOP.store(true, Ordering::SeqCst);
     if let Some(mut c) = mlock(&CHILD).take() {
+        // Windows：先按进程树整棵结束——node 派生的 dsh 执行器不会随
+        // TerminateProcess 一起结束，残留进程会占住 ~/.dsh 的 profile 锁，导致下次
+        // 启动「dsh 连续崩溃」。范式与 dsh.rs::cancel_install 一致；随后仍无条件
+        // c.kill() 兜底（taskkill 失败时至少保证直接子进程结束）。
+        #[cfg(target_os = "windows")]
+        {
+            let _ = no_console(Command::new("taskkill"))
+                .args(["/PID", &c.id().to_string(), "/T", "/F"])
+                .spawn();
+        }
         let _ = c.kill();
         let _ = c.wait();
     }
@@ -1320,17 +1364,25 @@ pub(crate) fn restart_dsh(app: &AppHandle) {
     // 分支启动的轮询 / 引导等待态轮询)会拿到已死端口的旧 URL 而误重载。dsh:url 事件
     // 实测会丢失,前端主通道是轮询 get_dsh_url；先清空,等新 dsh 写入新 URL 后轮询才拿对。
     *mlock(&DSH_URL) = None;
+    // 程序化重启 ≠ 用户关窗：**不能再走 `w.close()`**。close 会触发 CloseRequested，
+    // 那里会 prevent_close 并把状态标成「用户关到后台」（USER_HIDDEN）+ 隐藏 child
+    // （SUPPRESSED）；紧接着新 dsh 就绪时 reveal_main_window 被 USER_HIDDEN 拦掉、
+    // child 也被 SUPPRESSED 挡住 → 窗口永久消失只剩托盘（dsh 更新 / 插件装卸后
+    // 「App 不见了」）。
+    // 这里改为：复位隐藏态 + 刷新壳页（等价于原先 close 想要的「壳页重置」效果），
+    // 窗口留在屏幕上，新工作台就绪后照常移入。
+    crate::workbench::show_child(app);
     if let Some(w) = main_window(app) {
-        let _ = w.close();
+        let _ = w.eval("location.reload()");
     }
     let handle = app.clone();
     std::thread::spawn(move || boot(handle));
 }
 
 // ---------------------------------------------------------------------------
-// P3：插件管理 / 卸载 已并入壳页（shell.html）Tab，不再有独立窗口；主窗为
-// 壳页（shell.html），工作台经 iframe 内嵌。所有窗口（主窗 + 弹窗）统一由
-// uninstall_run 的 destroy 列表销毁。
+// P3：插件管理 / 卸载 已并入壳页（shell.html）阶段，不再有独立窗口；主窗为
+// 壳页（shell.html），工作台是 workbench.rs 创建的原生 child webview（非 iframe）。
+// 所有窗口（主窗 + 弹窗）统一由 uninstall_run 的 destroy 列表销毁。
 // ---------------------------------------------------------------------------
 // 自绘弹窗（modal.html）：替代系统对话框，统一玻璃卡片风格、可居中。
 // ---------------------------------------------------------------------------
@@ -1436,8 +1488,8 @@ fn open_modal_window(app: &AppHandle) -> bool {
 
 /// 自绘弹窗：读取待显示内容（modal.html 加载时调用）。
 #[tauri::command]
-fn modal_spec(window: tauri::WebviewWindow) -> Result<ModalSpec, String> {
-    if window.label() != MODAL_LABEL {
+fn modal_spec(webview: tauri::Webview) -> Result<ModalSpec, String> {
+    if webview.label() != MODAL_LABEL {
         return Err("该操作仅限弹窗窗口使用".to_string());
     }
     mlock(&MODAL_SPEC)
@@ -1447,15 +1499,15 @@ fn modal_spec(window: tauri::WebviewWindow) -> Result<ModalSpec, String> {
 
 /// 自绘弹窗：用户点击按钮后回传结果并关闭窗口（accept = 用户选择确定）。
 #[tauri::command]
-fn modal_respond(window: tauri::WebviewWindow, accept: bool) -> Result<(), String> {
-    if window.label() != MODAL_LABEL {
+fn modal_respond(webview: tauri::Webview, accept: bool) -> Result<(), String> {
+    if webview.label() != MODAL_LABEL {
         return Err("该操作仅限弹窗窗口使用".to_string());
     }
     if let Some(tx) = mlock(&MODAL_RESULT).take() {
         let _ = tx.send(accept);
     }
     mlock(&MODAL_SPEC).take();
-    let _ = window.close();
+    let _ = webview.close();
     Ok(())
 }
 
@@ -1550,8 +1602,8 @@ fn get_shell_state(app: AppHandle) -> ShellState {
 /// 开头，规范化后写入 settings.json；后续 list_dsh_versions_cmd / get_dsh_state
 /// 都从 settings 读 registry，保存后自动生效。
 #[tauri::command]
-fn save_registry_cmd(app: AppHandle, window: tauri::WebviewWindow, registry: String) -> Result<(), String> {
-    crate::ensure_shell_window(&window)?;
+fn save_registry_cmd(app: AppHandle, webview: tauri::Webview, registry: String) -> Result<(), String> {
+    crate::ensure_shell_webview(&webview)?;
     let trimmed = registry.trim();
     if trimmed.is_empty() {
         return Err("Registry 源不能为空".into());
@@ -1577,10 +1629,13 @@ fn open_browser_cmd(_app: AppHandle) -> Result<(), String> {
 /// V7：双击「工作台」tab → 用系统浏览器打开当前工作台 URL。
 /// URL 为空（dsh 未就绪/启动中）时静默返回：双击无效、不提示（已确认）。
 #[tauri::command]
-fn open_workbench_url_cmd(window: tauri::WebviewWindow) -> Result<(), String> {
-    crate::ensure_shell_window(&window)?;
+fn open_workbench_url_cmd(webview: tauri::Webview) -> Result<(), String> {
+    crate::ensure_shell_webview(&webview)?;
     if let Some(url) = get_dsh_url() {
-        logln(&format!("[main] 双击品牌 → 系统浏览器打开工作台: {url}"));
+        logln(&format!(
+            "[main] 双击品牌 → 系统浏览器打开工作台: {}",
+            redact_token(&url)
+        ));
         open_url(&url);
     } else {
         logln("[main] 双击品牌 → 工作台地址未就绪，忽略");
@@ -1600,8 +1655,8 @@ fn open_repo_cmd(_app: AppHandle) -> Result<(), String> {
 /// 卸载入口（关于页按钮）：先弹自绘确认窗（yesno，自定义按钮文案），
 /// 用户确认后才执行 uninstall_run；取消则无操作。
 #[tauri::command]
-async fn confirm_uninstall_cmd(app: AppHandle, window: tauri::WebviewWindow, wipe: bool) -> Result<(), String> {
-    crate::ensure_shell_window(&window)?;
+async fn confirm_uninstall_cmd(app: AppHandle, webview: tauri::Webview, wipe: bool) -> Result<(), String> {
+    crate::ensure_shell_webview(&webview)?;
     let app2 = app.clone();
     let confirmed = tauri::async_runtime::spawn_blocking(move || {
         let (title, msg) = if wipe {
@@ -1620,15 +1675,15 @@ async fn confirm_uninstall_cmd(app: AppHandle, window: tauri::WebviewWindow, wip
     .await
     .map_err(|e| format!("弹窗线程异常：{e}"))?;
     if confirmed {
-        uninstall_run(app, window, wipe).await
+        uninstall_run(app, webview, wipe).await
     } else {
         Ok(())
     }
 }
 
 #[tauri::command]
-async fn uninstall_run(app: AppHandle, window: tauri::WebviewWindow, wipe: bool) -> Result<(), String> {
-    crate::ensure_shell_window(&window)?;
+async fn uninstall_run(app: AppHandle, webview: tauri::Webview, wipe: bool) -> Result<(), String> {
+    crate::ensure_shell_webview(&webview)?;
     // 卸载链进行中：ExitRequested 必须 prevent_exit（见 run 循环），
     // 否则 destroy 全部窗口会触发默认退出，teardown 永远来不及执行
     //（0.3.0 卸载"程序退出但没卸载"根因）。
@@ -2135,11 +2190,10 @@ fn main() {
                     _ => {}
                 });
             }
-            // P3：主窗口 = 壳页（ui/shell.html）。壳页顶部是 Tab 栏（工作台/常规/
-            // 网络/插件/更新/卸载），工作台 Tab 内用 <iframe> 内嵌 dsh 工作台；
-            // 其余管理能力内嵌为面板（window.__TAURI__ 只注入主 frame → 远程 iframe
-            // 拿不到 IPC，安全面收窄）。dsh 就绪后 reveal_main_window 用 dsh:url
-            // 事件告诉壳页把 iframe src 指向工作台地址，而不是整窗导航。
+            // P3：主窗口 = 壳页（ui/shell.html）：36px 顶栏 + 命令面板 + 管理抽屉
+            //（dsh/插件/关于）+ 首次引导浮层。工作台是 workbench.rs 用
+            // `window.add_child()` 创建的原生 child webview（顶层文档、非 iframe），
+            // 覆盖在壳页工作区之上；dsh 就绪后由它自己顶层导航到就绪 URL。
             //
             // 启动顺序（消除"首帧默认位置跳变 / 再次居中上跳"）：
             //   visible(false)+center 隐藏创建 → dsh 就绪或开机 1.2s 宽限后，
@@ -2161,11 +2215,12 @@ fn main() {
                 logln!("[webview] page loaded: {url}");
                 // 事件驱动显示：壳页一渲染完成就显示窗口（比固定 0.8s 宽限更快且
                 // 不会「窗口先于内容」出现空窗）；0.8s 宽限线程保留作兜底。
-                if payload.event() == tauri::webview::PageLoadEvent::Finished {
-                    if !REVEALED.load(Ordering::SeqCst) && !USER_HIDDEN.load(Ordering::SeqCst) {
-                        if let Some(w) = MAIN_WIN.get() {
-                            reveal_main_window(&w.app_handle().clone(), None);
-                        }
+                if payload.event() == tauri::webview::PageLoadEvent::Finished
+                    && !REVEALED.load(Ordering::SeqCst)
+                    && !USER_HIDDEN.load(Ordering::SeqCst)
+                {
+                    if let Some(w) = MAIN_WIN.get() {
+                        reveal_main_window(&w.app_handle().clone(), None);
                     }
                 }
             })
