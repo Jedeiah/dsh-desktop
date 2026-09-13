@@ -108,8 +108,16 @@ fn ensure_ready_on_main(app: &AppHandle, url: &str) -> bool {
     let builder = WebviewBuilder::new(LABEL, WebviewUrl::External(parsed))
         .on_navigation(crate::webview_navigation_policy)
         .on_new_window(crate::webview_new_window_policy)
-        .on_page_load(|_wv, payload| {
+        .on_page_load(|wv, payload| {
             if payload.event() == tauri::webview::PageLoadEvent::Finished {
+                crate::logln(&format!("[workbench] page loaded: {}", payload.url()));
+                // 诊断探针：记录 contentType/title——区分「工作台 HTML」与
+                // 「认证失败纯文本页」（历史教训：工作台空白时日志无据可查）。
+                // 只取元信息（不读正文），避免把工作台内容写进日志。
+                let _ = wv.eval_with_callback(
+                    "JSON.stringify({ct:document.contentType,t:document.title})",
+                    |r| crate::logln(&format!("[workbench] probe: {r}")),
+                );
                 READY.store(true, Ordering::SeqCst);
                 if let Some(app) = APP.get() {
                     let _ = app.emit("workbench:ready", ());

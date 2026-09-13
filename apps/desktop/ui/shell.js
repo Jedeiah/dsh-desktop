@@ -1,6 +1,7 @@
-// 壳页 shell.js：工作台(iframe) + 4 个 Tab（工作台 / dsh / 插件 / 关于）
+// 壳页 shell.js：工作台(原生 child webview，Rust workbench 模块管理) + 4 个 Tab
+//（工作台 / dsh / 插件 / 关于）
 // 全部管理能力经 window.__TAURI__.core.invoke 走真实 IPC（Tauri 只往主 frame
-// 注入 __TAURI__，远程 dsh iframe 拿不到，安全面收窄）。
+// 注入 __TAURI__，dsh 工作台 webview 拿不到，安全面收窄）。
 // ⌘K/Ctrl+K 循环切换 Tab；Esc 在管理页返回工作台。
 (() => {
   'use strict';
@@ -25,6 +26,8 @@
     btnTabsToggle.classList.toggle('collapsed', c);  // 控制 CSS 三角朝向
     btnTabsToggle.title = c ? '展开导航栏' : '收起导航栏';
     btnTabsToggle.setAttribute('aria-expanded', String(!c));
+    // 原生 child webview 的几何同步（顶栏 46px→0px）
+    invoke('workbench_set_collapsed_cmd', { collapsed: c }).catch(() => {});
   }
   btnTabsToggle.addEventListener('click', () => {
     const next = !titlebar.classList.contains('collapsed');
@@ -39,9 +42,14 @@
     if (name === 'workbench') {
       document.querySelectorAll('.panel').forEach((p) => p.classList.remove('active'));
       $('activity-workbench').style.display = 'block';
+      // 显示原生工作台 webview（未就绪时占位层盖住）
+      invoke('show_workbench_cmd').catch(() => {});
+      if (!workbenchReady) showPlaceholder();
       return;
     }
     $('activity-workbench').style.display = 'none';
+    // 工作台是原生 webview，会盖在所有 HTML 之上：切走必须显式隐藏
+    invoke('hide_workbench_cmd').catch(() => {});
     TAB_NAMES.slice(1).forEach((n) => {
       $('panel-' + n).classList.toggle('active', n === name);
     });
@@ -70,7 +78,7 @@
   // ⌘K / Ctrl+K：循环切换；Esc：管理页返回工作台
   window.addEventListener('keydown', (e) => {
     // V4：Cmd/Ctrl+C 复制选中文字（仅壳页：输入框内走浏览器默认；
-    // iframe 内焦点时 keydown 不会冒泡到父文档，天然不拦截 iframe 内复制）
+    // 工作台 webview 内的 keydown 不会冒泡到壳页，天然不拦截工作台内复制）
     if ((e.metaKey || e.ctrlKey) && (e.key === 'c' || e.key === 'C')) {
       const t = e.target;
       if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return;
@@ -96,12 +104,15 @@
     }
   });
 
-  // ---------------- 工作台 iframe ----------------
-  const wb = $('workbenchFrame');
+  // ---------------- 工作台（child webview 由 Rust workbench 模块管理） ----------------
+  // 工作台不再是 iframe：Rust 侧把 dsh 就绪 URL 作为原生 child webview 的**顶层
+  // 文档**导航（first-party 上下文，token→cookie 认证全由 WebView 原生完成，
+  // 壳不解析/不注入任何认证细节）。壳页只负责：占位层显隐、tab 切换 show/hide、
+  // 刷新触发。
   const wbPlaceholder = $('wbPlaceholder');
   const setupView = $('setupView');
-  let lastUrl = '';
   let setupActive = false; // 引导视图是否正覆盖工作台
+  let workbenchReady = false; // 工作台是否已完成首次加载（撤占位依据）
 
   function showPlaceholder() {
     // 先清内联 display 再取消 hidden（hidden=false 但残留 inline display:none
@@ -118,63 +129,37 @@
   }
   let placeholderTimer = null;
 
-  // 占位层是绝对定位覆盖在 iframe 之上：在 iframe 真正绘制完成（onload）前
-  // 一直盖住，把"白屏/空白 iframe"阶段用 spinner 遮住。onload 后**延迟淡出**
-  // ——dsh web 是 SPA，load 远早于工作台就绪，立刻撤会露出其白屏/与它自带
-  // loading 交叠（用户反馈的"卡一下/loading 重叠"）。延迟 900ms 让首帧渲染完成。
-  wb.addEventListener('load', () => {
+  // 工作台首帧已绘制（Rust 每次 page-load Finished 都会 emit；重装/换端口后
+  // 重新触发）：撤占位 + 收引导视图。幂等——事件与轮询可能各触发一次。
+  function onWorkbenchReady() {
+    workbenchReady = true;
     clearTimeout(placeholderTimer);
-    placeholderTimer = setTimeout(() => hidePlaceholder(), 900);
-  });
-  wb.addEventListener('error', () => showPlaceholder());
-
-  function loadWorkbench(url, force) {
-    // force：安装成功后主动恢复（等价「点重试」）——即使 URL 与 lastUrl 相同
-    // 也要重载 iframe（更新/重装场景 lastUrl 可能已等于新 URL，防重入会拦住）。
-    if (!url || (!force && url === lastUrl)) return;
-    lastUrl = url;
-    // dsh:url 事件 = 工作台就绪（引导安装成功后 boot 会发）→ 收起引导视图
+    // 短暂延迟后撤占位，避免与 WebView 首帧竞争出现闪白
+    placeholderTimer = setTimeout(() => hidePlaceholder(), 300);
     if (setupActive) hideSetupView();
-    // 自动切回工作台 tab：**仅安装/更新主动恢复（force）时**——用户在 dsh tab
-    // 点安装,装完要看到工作台加载;纯换端口/后台重启(dsh:url 事件)不带 force,
-    // 不打扰用户当前所在的 tab（避免把正在 dsh/plugins 操作的用户强拉回工作台）。
-    if (force) selectTab('workbench');
-    showPlaceholder(); // 换端口/重载路径：先盖住，onload 后撤
-    wb.src = url;
-    wb.focus();
   }
 
-  // V6：点击品牌（图标+App名）刷新工作台（等同右键 reload）；未就绪时无操作
-  const brandEl = $('brand');
-  brandEl.addEventListener('click', () => { if (lastUrl) loadWorkbench(lastUrl, true); });
-  brandEl.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); if (lastUrl) loadWorkbench(lastUrl, true); } });
-
-  // 加载 dsh 工作台：以「轮询 get_dsh_url」为主通道（普通 invoke，必通），
-  // 事件监听仅作增量/次选（且必须带超时，避免 T.event.listen 在此路径挂起而
-  // 把后续逻辑全部堵死——此前实测该调用在本页面会挂起）。
+  // 就绪信号：事件常驻（含重装/换端口后的二次就绪）+ 轮询兜底（命令查询）。
+  // 本项目 T.event.listen 曾实测丢失/挂起，事件不可靠时靠轮询。
+  T.event.listen('workbench:ready', onWorkbenchReady).catch(() => {});
   (async () => {
-    // 1) 先轮询：每 800ms 拉一次，最多 15 次（约 12s），dsh 就绪即有值。
-    for (let i = 0; i < 15; i++) {
-      try {
-        const url = await invoke('get_dsh_url');
-        if (url) { loadWorkbench(url); break; }
-      } catch (e) { break; }
-      await new Promise(r => setTimeout(r, 800));
-    }
-    // 2) 事件监听（增量/换端口用）：3s 超时，不再阻塞主流程。
-    //    监听器之后常驻,用于捕获工作台换端口/重启后的 dsh:url(有意保留,非泄漏)。
     try {
-      await Promise.race([
-        T.event.listen('dsh:url', (ev) => {
-          // 兼容两种 payload：字符串=普通就绪；对象{url,force}=注入兜底重载
-          const p = ev.payload;
-          if (typeof p === 'string') loadWorkbench(p);
-          else loadWorkbench(p.url, !!p.force);
-        }),
-        new Promise((_, rej) => setTimeout(() => rej(new Error('listen-timeout')), 3000)),
-      ]);
-    } catch (e) { /* 能力缺失/超时：轮询已兜底 */ }
+      if (await invoke('workbench_ready_cmd')) { onWorkbenchReady(); return; }
+    } catch (e) { /* 命令不可用：仅靠事件 */ }
+    for (let i = 0; i < 90; i++) {
+      await new Promise((r) => setTimeout(r, 1000));
+      try {
+        if (await invoke('workbench_ready_cmd')) { onWorkbenchReady(); return; }
+      } catch (e) { /* 单次失败忽略 */ }
+    }
   })();
+
+  // V6：点击品牌（图标+App名）刷新工作台（等同右键 reload）；未就绪时后端忽略
+  const brandEl = $('brand');
+  brandEl.addEventListener('click', () => { invoke('workbench_reload_cmd').catch(() => {}); });
+  brandEl.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); invoke('workbench_reload_cmd').catch(() => {}); }
+  });
 
   // ---------------- 首次引导（dsh 闭包未安装） ----------------
   const setupStage = $('setupStage');
@@ -211,7 +196,7 @@
     setupActive = false;
     setupView.hidden = true;
     clearInterval(setupProgressTimer); // 进度轮询停止
-    if (!lastUrl) showPlaceholder(); // 引导收起但工作台未就绪：恢复占位 spinner
+    if (!workbenchReady) showPlaceholder(); // 引导收起但工作台未就绪：恢复占位 spinner
   }
   function setSetupPhase(phase) {
     // phase: 'stage'（进行中）/ 'error'（失败或取消，可重试）
@@ -337,9 +322,9 @@
     startSetupProgressPolling();
     try {
       await invoke('setup_dsh_cmd', { ver, registry });
-      // 成功：后端 boot 已在后台拉起 dsh（冷启动约 5-30s）。**不依赖 dsh:url
-      // 事件**（本环境实测会丢失）——装完后让 startSetupProgressPolling 继续跑，
-      // 它轮询 dsh_url 就绪 → loadWorkbench（现在会自动切回工作台 tab）。
+      // 成功：后端 boot 已在后台拉起 dsh（冷启动约 5-30s）。**不依赖就绪事件**
+      //（本环境实测事件会丢失）——装完后让 startSetupProgressPolling 继续跑，
+      // 它轮询 dsh_url 就绪 → 切回工作台（占位保持到 workbench:ready）。
       // 不设 30s 定时报错兜底：dsh 刚装完正在冷启动,主动 showSetupError 会打断
       // 一个本可能成功的启动（用户判定该兜底不合理）——只需耐心等到 dsh_url 就绪。
       if (!setupCancelled) {
@@ -381,9 +366,11 @@
         if (st.dsh_url) {
           waitBusyReset = false;
           clearInterval(setupProgressTimer);
-          // force=true：绕过 same-URL 守卫（重装/更新可能复用上次端口,URL 与
-          // lastUrl 相同）,并自动切回工作台 tab（装完可来自 dsh tab 触发）。
-          loadWorkbench(st.dsh_url, true);
+          // 工作台由 Rust 侧创建/导航（dsh_url 出现即已 ensure_ready）；
+          // 壳页只切回工作台 tab，占位保持到 workbench:ready。
+          selectTab('workbench');
+          invoke('show_workbench_cmd').catch(() => {});
+          if (!workbenchReady) showPlaceholder();
           return;
         }
         // 撞 BUSY 后（waitBusyReset）：后端收尾结束（installing=false 且无 URL，
@@ -421,7 +408,7 @@
   // 装完成后进入"等待工作台就绪"态：引导页显示"工作台正在启动"，取消按钮
   // 变为「放弃等待」（点它回初始页重装/重试，不调 setup_cancel_cmd——无进程可取消）。
   // runSetup（引导页安装）与 updateDsh（dsh tab 安装,首次同步引导）装完共用,
-  // 避免两处重复；就绪后 startSetupProgressPolling 检测 dsh_url → loadWorkbench。
+  // 避免两处重复；就绪后 startSetupProgressPolling 检测 dsh_url → 切回工作台。
   function markSetupInstalled() {
     setupInstalled = true;
     setupStage.textContent = '工作台正在启动，请稍候…';
@@ -443,11 +430,15 @@
   btnSetupInstall.addEventListener('click', () => runSetup());
   btnSetupRetry.addEventListener('click', async () => {
     // 先尝试恢复工作台（适用于「安装完成但启动失败」：dsh 可能已就绪，
-    // 仅 dsh:url 事件丢失）；拿不到 URL 再走重新安装。
-    for (let i = 0; i < 5; i++) {
+    // 仅就绪信号丢失）；就绪即切回工作台，否则走重新安装。
+    for (let i = 0; i < 3; i++) {
       try {
-        const url = await invoke('get_dsh_url');
-        if (url) { loadWorkbench(url, true); return; } // force:重试直接拉起并切回工作台
+        if (await invoke('workbench_ready_cmd')) {
+          hideSetupView();
+          selectTab('workbench');
+          invoke('show_workbench_cmd').catch(() => {});
+          return;
+        }
       } catch (e) { break; }
       await new Promise((r) => setTimeout(r, 800));
     }
@@ -511,7 +502,7 @@
   // 辅助触发（防竞态兜底）：boot 里未装闭包会发 dsh:need-setup；webview 挂
   // 监听前发出也不怕——初始化 setup_state_cmd 探测是主通道。
   T.event.listen('dsh:need-setup', () => {
-    if (!lastUrl && !setupActive) showSetupView();
+    if (!workbenchReady && !setupActive) showSetupView();
   }).catch(() => {});
 
   // ---------------- dsh 页（版本管理） ----------------
@@ -633,9 +624,9 @@
     // 首次安装（未装闭包、workbench 引导页在显示）时,同步 workbench 引导页
     // 进入"安装中"进度态——否则用户在 dsh tab 点安装,切回工作台仍是初始
     // "准备 dsh 运行时"界面（应用状态不同步 bug）。安装完成由引导进度轮询
-    // 检测 dsh_url 就绪 → loadWorkbench → hideSetupView 自动收起引导。
+    // 检测 dsh_url 就绪 → 切回工作台 → hideSetupView 自动收起引导。
     // syncSetup 记录是否同步过引导,供失败/异常路径正确清理（防轮询泄漏/卡死）。
-    const syncSetup = (!lastUrl && setupView.hidden === false);
+    const syncSetup = (!workbenchReady && setupView.hidden === false);
     if (syncSetup) {
       setupActive = true;
       setSetupPhase('stage');
@@ -669,27 +660,31 @@
     try {
       await invoke('update_dsh_cmd', { ver });
       clearInterval(progressTimer);
-      // 后端安装成功 → 自动重启工作台（dsh:url 事件驱动 iframe 重载）。
+      // 后端安装成功 → dsh 已重启，工作台自动重导航（Rust workbench.ensure_ready）。
       // 首次安装同步过引导时,由 syncSetup 已启动的 startSetupProgressPolling
-      // 检测 dsh_url 就绪 → loadWorkbench（自动切回工作台）；不设 30s 定时报错
-      // 兜底（同 runSetup,不打断正在冷启动的工作台）。
+      // 检测 dsh_url 就绪 → 切回工作台；不设 30s 定时报错兜底（同 runSetup,
+      // 不打断正在冷启动的工作台）。
       setDshStatus('工作台正在启动，请稍候…', 'ok');
       // 首次安装同步过引导:若用户已切回 workbench 点了「取消安装」(setupCancelled),
       // 轮询会因 setupCancelled 自停——回初始页而非停在"工作台正在启动"无检测通道；
-      // 否则 markSetupInstalled 进入等待态(轮询继续等 dsh_url → loadWorkbench 切回)。
+      // 否则 markSetupInstalled 进入等待态(轮询继续等 dsh_url → 切回工作台)。
       if (syncSetup) {
         if (setupCancelled) { resetSetupInitial(); }
         else { markSetupInstalled(); }
       } else {
-        // 非 syncSetup(工作台已在使用):装完不依赖会丢失的 dsh:url 事件——主动轮询
-        // get_dsh_url(restart_dsh 已清 DSH_URL,新 dsh 写入后命中)再 loadWorkbench(force)
-        // 重载 iframe,否则事件丢失时工作台会停在旧版本。
+        // 非 syncSetup(工作台已在使用):装完主动轮询 get_dsh_url(restart_dsh 已清
+        // DSH_URL,新 dsh 写入后命中)确认新进程就绪——新 URL 出现即说明工作台正在
+        // 重新加载,重置就绪态让占位层盖住旧内容,等 workbench:ready 再撤。
         // 窗口会被 restart_dsh 隐藏但不销毁,此轮询在隐藏窗口内继续运行。
         (async () => {
           for (let i = 0; i < 38; i++) {
             try {
               const url = await invoke('get_dsh_url');
-              if (url) { loadWorkbench(url, true); return; }
+              if (url) {
+                workbenchReady = false;
+                showPlaceholder();
+                return;
+              }
             } catch (e) { /* 单次失败忽略 */ }
             await new Promise((r) => setTimeout(r, 800));
           }

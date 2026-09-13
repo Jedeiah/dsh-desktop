@@ -930,6 +930,17 @@ fn is_internal_webview_url(url: &tauri::Url) -> bool {
     if url.scheme() == "tauri" {
         return true; // 内置页（tauri://localhost/...）
     }
+    // dev 模式：tauri 内置静态服务在 loopback 随机端口提供 ui/ 目录，壳页 URL 为
+    // http://127.0.0.1:<devport>/shell.html——debug 构建额外放行 loopback 任意端口；
+    // release 不受影响（下方原逻辑仍严格匹配 dsh 端口，保持安全边界）。
+    #[cfg(debug_assertions)]
+    {
+        if (url.scheme() == "http" || url.scheme() == "https")
+            && matches!(url.host_str(), Some("127.0.0.1") | Some("localhost"))
+        {
+            return true;
+        }
+    }
     if url.scheme() == "http" || url.scheme() == "https" {
         match url.host_str() {
             Some("tauri.localhost") => return true,
@@ -1905,7 +1916,12 @@ mod tests {
         let same = tauri::Url::parse("http://127.0.0.1:51940/?token=abc").unwrap();
         assert!(is_internal_webview_url(&same), "同源端口带 token 应放行");
         let other_port = tauri::Url::parse("http://127.0.0.1:9999/").unwrap();
-        assert!(!is_internal_webview_url(&other_port), "异端口应拦截");
+        // debug 构建额外放行 loopback 任意端口（tauri dev 内置静态服务的壳页
+        // URL http://127.0.0.1:<devport>/shell.html）；release 严格要求 dsh 端口。
+        #[cfg(not(debug_assertions))]
+        assert!(!is_internal_webview_url(&other_port), "异端口应拦截（release）");
+        #[cfg(debug_assertions)]
+        assert!(is_internal_webview_url(&other_port), "debug 放行 loopback（dev server）");
         let external = tauri::Url::parse("https://example.com/").unwrap();
         assert!(!is_internal_webview_url(&external), "外部地址应拦截");
         let builtin = tauri::Url::parse("tauri://localhost/shell.html").unwrap();

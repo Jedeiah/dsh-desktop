@@ -6,7 +6,7 @@
     <title>DeepSeek Harness Desktop</title>
     <link rel="stylesheet" href="theme.css?v=0.3.9" />
     <style>
-      /* ===== 壳页：顶栏(4 Tab) + 工作区(iframe 工作台 / dsh / 插件 / 关于) ===== */
+      /* ===== 壳页：顶栏(4 Tab) + 工作区(工作台 child webview / dsh / 插件 / 关于) ===== */
       html, body { height: 100%; overflow: hidden; }
       body { display: block; }
 
@@ -149,13 +149,6 @@
       }
       /* 工作台容器铺满工作区 */
       .activity { position: absolute; inset: 0; }
-      /* 工作台：dsh 内嵌 */
-      #workbenchFrame {
-        width: 100%;
-        height: 100%;
-        border: none;
-        background: var(--dsh-bg-deep);
-      }
       /* .placeholder/.panel 的显式 display 会覆盖 hidden 属性（hidden 默认
          display:none），导致设了 hidden=true 仍显示并挡住下层——补一条强制隐藏。 */
       [hidden] { display: none !important; }
@@ -169,7 +162,7 @@
         gap: 14px;
         color: var(--dsh-fg-muted);
         font-size: 13px;
-        /* 白底根因修复：占位层透明会露出下方未加载的 about:blank iframe 白底，
+        /* 白底根因修复：占位层透明会露出下方未加载的工作台 webview 白底，
            浅色文字（--dsh-fg）在白底上不可见 */
         background: var(--dsh-bg-deep, #0c0e14);
       }
@@ -302,11 +295,12 @@
 
 
     <div class="workarea">
-      <!-- ============ 工作台（dsh iframe） ============ -->
-      <!-- 占位层默认可见（"正在启动…"），首个 iframe load 后由 shell.js 隐藏；
-           之后换端口重载时会再次盖住，避免白屏闪烁。 -->
+      <!-- ============ 工作台（dsh 原生 child webview） ============ -->
+      <!-- 占位层默认可见（"正在启动…"），工作台首帧就绪（workbench:ready）后由
+           shell.js 隐藏；重装/换端口重新加载时会再次盖住，避免白屏闪烁。 -->
       <div class="activity" id="activity-workbench">
-        <iframe id="workbenchFrame" allow="clipboard-write" title="DeepSeek Harness 工作台"></iframe>
+        <!-- 工作台由原生 child webview 承载（Rust workbench 模块，顶层文档即 dsh URL）；
+             此容器仅承载占位与引导视图，视觉上垫在工作台之下。 -->
         <div class="placeholder" id="wbPlaceholder">
           <img class="startup-logo" src="icon.png" alt="" />
           <div class="startup-title">DeepSeek Harness Desktop</div>
