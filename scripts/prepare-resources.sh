@@ -48,6 +48,8 @@ echo "    npm: $(wc -c < "$RES/npm/bin/npm-cli.js" | tr -d ' ')B npm-cli.js"
 # 的 SEA 二进制（约 153MB）省约 130MB。钉 ^11（pnpm 11 门禁语义：allowBuilds /
 # minimumReleaseAge，pnpm 12 为 Rust 重写，行为未验证）。
 PNPM_STAGE="$(mktemp -d)"
+# 下面有多条 exit 1 错误路径，靠 trap 兜底清理；否则失败时临时目录会漏在 /var/folders。
+trap 'rm -rf "$PNPM_STAGE"' EXIT
 if ! npm install --prefix "$PNPM_STAGE" "pnpm@^11" --ignore-scripts --no-audit --no-fund; then
   echo "ERROR: pnpm 安装失败（见上方 npm 输出）" >&2
   exit 1

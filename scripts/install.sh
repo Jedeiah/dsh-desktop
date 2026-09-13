@@ -60,7 +60,9 @@ fi
 TMP_DIR="$(mktemp -d)"
 MOUNT_PT=""
 # 任何退出路径（成功或失败）都清理：卸载挂载 + 删除临时目录（含下载的 DMG）
-trap 'hdiutil detach "$MOUNT_PT" >/dev/null 2>&1; rm -rf "$TMP_DIR"' EXIT
+# 注：detach 后必须 `|| true`。安装成功路径已把 MOUNT_PT 置空，此处 detach 必失败；
+# 配合 set -e，trap 第一条命令失败会中断整个 trap，导致 rm -rf 永远执行不到、临时目录漏出。
+trap 'hdiutil detach "$MOUNT_PT" >/dev/null 2>&1 || true; rm -rf "$TMP_DIR"' EXIT
 TMP_DMG="${TMP_DIR}/DSh-${TAG}.dmg"
 
 echo "==> 下载 DMG..."
