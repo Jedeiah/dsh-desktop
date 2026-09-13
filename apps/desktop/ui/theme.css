@@ -483,10 +483,13 @@ body.chrome-collapsed .drawer { top: 0; }
 }
 .btn:hover:not(:disabled) { background: var(--accent-hover); }
 .btn:disabled { opacity: 0.4; cursor: default; }
-.btn.ghost { background: transparent; color: var(--fg-muted); border-color: var(--border); }
-.btn.ghost:hover:not(:disabled) { background: var(--surface-2); color: var(--fg); }
-.btn.danger-ghost { background: transparent; color: var(--danger); border-color: rgba(248, 81, 73, 0.4); }
-.btn.danger-ghost:hover:not(:disabled) { background: var(--danger-soft); border-color: rgba(248, 81, 73, 0.6); }
+/* ghost / danger-ghost：盒模型与实心 .btn 完全一致（同 1px 边框、同 0 14px 内距、
+   同高 32px），但先前是「透明底 + 细描边」，空心感让它们看起来比实心按钮小一圈
+   （用户反馈「安装 / 卸载 两个按钮大小不一样」）。补一层淡底，让三者体量等重。 */
+.btn.ghost { background: var(--surface-2); color: var(--fg-muted); border-color: var(--border); }
+.btn.ghost:hover:not(:disabled) { background: var(--surface-3); color: var(--fg); }
+.btn.danger-ghost { background: var(--danger-soft); color: var(--danger); border-color: rgba(248, 81, 73, 0.55); }
+.btn.danger-ghost:hover:not(:disabled) { background: rgba(248, 81, 73, 0.2); border-color: rgba(248, 81, 73, 0.8); }
 .btn.danger { background: var(--danger-solid); }
 .btn.danger:hover:not(:disabled) { background: #BC322C; }
 .btn.sm { height: var(--h-ctl-sm); padding: 0 10px; font-size: var(--fs-aux); font-weight: 500; }
