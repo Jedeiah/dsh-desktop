@@ -163,22 +163,25 @@ fn ensure_ready_on_main(app: &AppHandle, url: &str) -> bool {
                     "JSON.stringify({ct:document.contentType,t:document.title,vw:innerWidth,vh:innerHeight,sw:document.documentElement.scrollWidth,sh:document.documentElement.scrollHeight,dpr:devicePixelRatio})",
                     |r| crate::logln(&format!("[workbench] probe: {r}")),
                 );
-                READY.store(true, Ordering::SeqCst);
-                // 借鉴 main 的启动衔接：dsh 是 SPA，page-load Finished 远早于首帧
-                // 渲染完成，立即移入会露出它的空白/半成品（用户反馈「启动后看到
-                // 背景而不是无缝进入 dsh」）。延迟 900ms 让首帧渲染完成，再移入
-                // 工作台并显示主窗口——窗口出现第一眼即是 dsh 页面。
+                // 借鉴 main 的启动衔接：dsh 是 SPA，page-load Finished 早于首帧渲染
+                // 完成，立即移入会露出空白/半成品。延迟 900ms 让首帧渲染完成，再移入
+                // 工作台（原生视图盖住壳页的加载页），**移入之后才宣告就绪**：
+                // 壳页收到 workbench:ready 后再延迟撤掉加载页——这样「撤加载页」永远
+                // 发生在工作台已经盖住它之后，用户看不到「加载页已撤、工作台没到」
+                // 的空档（此前 ready 在 Finished 时立即发，撤页比移入早 900ms，中间
+                // 露出背景——即用户反馈的「启动时看到背景」）。
                 if let Some(app) = APP.get() {
                     let a = app.clone();
                     std::thread::spawn(move || {
-                        // 等待时长（用户实验：0 = 立即移入；此前 1500ms 是等 SPA 渲染）
-                        std::thread::sleep(std::time::Duration::from_millis(0));
+                        std::thread::sleep(std::time::Duration::from_millis(900));
                         let a2 = a.clone();
                         let _ = a.run_on_main_thread(move || {
                             if !SUPPRESSED.load(Ordering::SeqCst) {
                                 apply_bounds_on_main(&a2);
                                 crate::reveal_main_window(&a2, None);
                             }
+                            READY.store(true, Ordering::SeqCst);
+                            let _ = a2.emit("workbench:ready", ());
                         });
                     });
                 }
