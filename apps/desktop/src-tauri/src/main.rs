@@ -2444,7 +2444,7 @@ mod tests {
         // 回归：dsh 0.1.2-alpha.5 起就绪 URL 带 ?token= 本地鉴权参数，
         // 旧实现 rsplit(':') 会把 "51940/?token=…" 整段当端口解析而失败。
         assert_eq!(
-            dsh_url_port("http://127.0.0.1:51940/?token=ZMlI9JBlPYkNLI7cNAsXQkkKIZ-CztMYppkXZWDT_NQ"),
+            dsh_url_port("http://127.0.0.1:51940/?token=DUMMY_TOKEN_FOR_TEST_ONLY"),
             Some(51940)
         );
         // 旧格式（无 token）与带尾斜杠仍正常

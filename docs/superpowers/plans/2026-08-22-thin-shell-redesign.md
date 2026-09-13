@@ -210,7 +210,7 @@ Expected: PASS（4 个测试全绿）
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /Users/chj/agentProjects/dsh-desktop
+cd <repo>
 git add apps/desktop/src-tauri/src/registry.rs apps/desktop/src-tauri/src/main.rs
 git commit -m "feat: registry 查询模块（latest + 全版本列表，semver 倒序）"
 ```
@@ -585,7 +585,7 @@ Expected: PASS（原有 main.rs 测试 + 新增 3 个 dsh 测试；`cargo build`
 - [ ] **Step 6: Commit**
 
 ```bash
-cd /Users/chj/agentProjects/dsh-desktop
+cd <repo>
 git add -A apps/desktop/src-tauri
 git commit -m "refactor: update.rs 迁移为 dsh.rs 闭包管理（install_version 通用化 + installed_versions + current_closure）"
 ```
@@ -709,7 +709,7 @@ Expected: 编译通过（`cargo test` 依旧全绿）
 - [ ] **Step 6: Commit**
 
 ```bash
-cd /Users/chj/agentProjects/dsh-desktop
+cd <repo>
 git add apps/desktop/src-tauri/src
 git commit -m "feat: 首次引导安装流程（无闭包→need-setup→setup_dsh_cmd 安装→boot）"
 ```
@@ -808,7 +808,7 @@ Expected: PASS
 - [ ] **Step 4: Commit**
 
 ```bash
-cd /Users/chj/agentProjects/dsh-desktop
+cd <repo>
 git add apps/desktop/src-tauri/src
 git commit -m "feat: dsh 版本管理 command（get_dsh_state/update_dsh_cmd + 启动静默检查）"
 ```
@@ -1012,7 +1012,7 @@ Expected: PASS（plugin 2 个新测试 + 原有测试；build 无错）
 - [ ] **Step 6: Commit**
 
 ```bash
-cd /Users/chj/agentProjects/dsh-desktop
+cd <repo>
 git add apps/desktop/src-tauri/src
 git commit -m "feat: plugin.rs 插件列表 + 装/卸后自动重启工作台"
 ```
@@ -1269,7 +1269,7 @@ Expected: PASS
 - [ ] **Step 6: Commit**
 
 ```bash
-cd /Users/chj/agentProjects/dsh-desktop
+cd <repo>
 git add apps/desktop/src-tauri/src
 git commit -m "feat: App 自身更新（Releases 检查 + DMG/EXE 下载安装，失败安全）"
 ```
@@ -1324,7 +1324,7 @@ Expected: test PASS；warning 计数为 0（未使用 import/函数需删净，`
 - [ ] **Step 7: Commit**
 
 ```bash
-cd /Users/chj/agentProjects/dsh-desktop
+cd <repo>
 git add -A
 git commit -m "refactor: 移除 LAN 远程连接/常规管理/内置 dsh 闭包/upstream 自动发版（瘦壳）"
 ```
@@ -1363,7 +1363,7 @@ git commit -m "refactor: 移除 LAN 远程连接/常规管理/内置 dsh 闭包/
 - [ ] **Step 3: 提交设计稿并展示**
 
 ```bash
-cd /Users/chj/agentProjects/dsh-desktop
+cd <repo>
 git add docs/design
 git commit -m "design: 壳页 UI 设计稿（open-design）— 工作台/dsh/插件/关于/引导页"
 ```
@@ -1414,7 +1414,7 @@ Expected: 编译通过；`cargo tauri dev` 启动后壳页渲染正常（无闭�
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /Users/chj/agentProjects/dsh-desktop
+cd <repo>
 git add apps/desktop/ui
 git commit -m "feat: 壳页重构（工作台/dsh/插件/关于 + 首次引导页）"
 ```
@@ -1452,7 +1452,7 @@ Expected: 引导页出现 → 安装 dsh → 工作台加载；dsh 页版本列�
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /Users/chj/agentProjects/dsh-desktop
+cd <repo>
 git add README.md docs/regression-checklist.md
 git commit -m "docs: 瘦壳 README 重写 + 回归清单"
 ```

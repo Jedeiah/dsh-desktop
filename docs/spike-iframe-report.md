@@ -18,8 +18,8 @@
 
 | 项 | 值 |
 |---|---|
-| Node 二进制 | `/Users/chj/agentProjects/dsh-desktop/apps/desktop/src-tauri/resources/node/bin/node`（v24.14.0） |
-| dsh closure（本次 boot） | `/Users/chj/agentProjects/dsh-desktop/apps/desktop/src-tauri/resources/dsh/current/node_modules/@deepseek-ai/dsh/lib/bin.js` |
+| Node 二进制 | `<repo>/apps/desktop/src-tauri/resources/node/bin/node`（v24.14.0） |
+| dsh closure（本次 boot） | `<repo>/apps/desktop/src-tauri/resources/dsh/current/node_modules/@deepseek-ai/dsh/lib/bin.js` |
 | `current` symlink → | `0.1.0-rc.6`（`VERSION` 文件 = `0.1.0-rc.6`） |
 | 已安装 App 内 closure（旁证，未 boot） | `/Applications/DeepSeek Harness.app/Contents/Resources/resources/dsh/0.1.0-rc.7/...`（`VERSION` = `0.1.0-rc.7`；其 `node` md5 与仓库 node 不同，为独立构建） |
 | Spike HOME | `/tmp/dsh-spike-home`（隔离，未触碰真实 `~/.dsh`） |

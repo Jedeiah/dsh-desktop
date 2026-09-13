@@ -4,7 +4,7 @@
  *           扁平表面 + 细分隔线、克制的 hover 层级。
  *           无玻璃拟态 / 无彩色光斑 / 无渐变描边。
  * 目标运行环境：WKWebView / WebView2（Chromium + WebKit 双内核）。
- * 真源：open-design/.od/projects/dsh-desktop-thin-shell-ui/tokens.css + index.html
+ * 真源：ui v4 设计稿导出的 tokens.css + index.html
  * 文件末尾「modal 兼容段」供 ui/modal.html 独立确认窗口使用（旧 token 同值保留）。
  * ========================================================================= */
 
