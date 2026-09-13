@@ -101,6 +101,62 @@ mod macwin {
         let _ = app.run_on_main_thread(move || order_front(&w2));
     }
 
+    /// 把窗口内所有 WKWebView 的 `underPageBackgroundColor` 设为壳页底色
+    /// （#151517）：页面导航/刷新（reload）期间 WKWebView 会露出默认白底——用户
+    /// 反馈「点品牌刷新工作台时闪白」。Tauri 的 `WebviewBuilder::background_color`
+    /// 在 macOS 未实现（源码注释确认），故直接设原生属性（递归遍历 contentView）。
+    /// **仅主线程调用**；幂等，可重复调用。
+    pub fn set_page_bg_dark(w: &WebviewWindow) {
+        use objc::runtime::Object;
+        use objc::{class, msg_send, sel, sel_impl};
+        #[link(name = "WebKit", kind = "framework")]
+        #[link(name = "CoreGraphics", kind = "framework")]
+        extern "C" {
+            fn CGColorCreateSRGB(r: f64, g: f64, b: f64, a: f64) -> *mut std::ffi::c_void;
+        }
+        let Some(ns) = ns_ptr(w) else {
+            return;
+        };
+        unsafe {
+            // #151517
+            let cg = CGColorCreateSRGB(
+                0x15 as f64 / 255.0,
+                0x15 as f64 / 255.0,
+                0x17 as f64 / 255.0,
+                1.0,
+            );
+            if cg.is_null() {
+                return;
+            }
+            let color: *mut Object = msg_send![class!(NSColor), colorWithCGColor: cg];
+            let cv: *mut Object = msg_send![ns, contentView];
+            if !color.is_null() && !cv.is_null() {
+                apply_page_bg(cv, color);
+            }
+        }
+    }
+
+    /// 递归给所有 WKWebView 设置 underPageBackgroundColor。
+    unsafe fn apply_page_bg(view: *mut Object, color: *mut Object) {
+        use objc::runtime::Object;
+        use objc::{class, msg_send, sel, sel_impl};
+        let wk = class!(WKWebView);
+        let is_wk: bool = msg_send![view, isKindOfClass: wk];
+        if is_wk {
+            let _: () = msg_send![view, setUnderPageBackgroundColor: color];
+        }
+        let subs: *mut Object = msg_send![view, subviews];
+        if subs.is_null() {
+            return;
+        }
+        let n: usize = msg_send![subs, count];
+        for i in 0..n {
+            let sub: *mut Object = msg_send![subs, objectAtIndex: i];
+            if !sub.is_null() {
+                apply_page_bg(sub, color);
+            }
+        }
+    }
 }
 
 /// The running dsh child, kept so it is reaped and so we can kill it on exit.
@@ -116,6 +172,11 @@ static CRASHES: AtomicU32 = AtomicU32::new(0);
 /// 置位期间崩溃自愈 / 后台重启不得重新弹窗（托盘「显示主窗口」与 Dock 图标召回
 /// 时清除）。这与「托盘退出=真正退出」的分层语义一致（文件头 Behaviour 注释）。
 static USER_HIDDEN: AtomicBool = AtomicBool::new(false);
+
+/// 主窗是否已首次显示。启动流程改为「等 dsh 首帧渲染完成后再显示窗口」（无缝
+/// 衔接：用户看到窗口的第一眼就是 dsh 页面，而不是壳页占位/背景）；此标志用于
+/// 20s 超时兜底（dsh 加载失败或极慢时仍要显示窗口，壳页有占位与引导兜底）。
+static REVEALED: AtomicBool = AtomicBool::new(false);
 
 /// 主窗 handle（创建成功后保存）。关键路径不按 label 查找主窗：这台
 /// macOS 26 + Tauri 2.11.5 上 `AppHandle::get_webview_window(WINDOW_LABEL)` /
@@ -876,10 +937,17 @@ pub(crate) fn boot(app: AppHandle) {
                         crate::workbench::ensure_ready(&app, &url);
                         *mlock(&DSH_URL) = Some(url.clone());
                         CRASHES.store(0, Ordering::SeqCst); // healthy
+                        // 无缝衔接：**不在这里显示窗口**。工作台在屏幕外预渲染，
+                        // 等 dsh 首帧渲染完成（workbench page-load Finished + 延迟）
+                        // 后由 workbench 模块统一 reveal——用户看到窗口第一眼即是
+                        // dsh 页面，而不是壳页占位/背景。dsh:url 仍推给壳页（换端口/
+                        // 重启时壳页需要更新地址）。
                         let app2 = app.clone();
                         let u = url.clone();
                         let _ = app2.clone().run_on_main_thread(move || {
-                            reveal_main_window(&app2, Some(&u));
+                            if let Some(w) = main_window(&app2) {
+                                let _ = w.emit("dsh:url", u);
+                            }
                         });
                     }
                 }
@@ -968,12 +1036,19 @@ pub(crate) fn reveal_main_window(app: &AppHandle, url: Option<&str>) {
         let _ = w.center();
         let _ = w.show();
     }
-    // 原生唤醒：orderOut 隐藏过的窗口，Tauri 的 show() 不一定让它出现。
-    // reveal 可能来自后台线程（boot / 启动宽限）→ AppKit 调用必须回主线程
-    // （否则 SIGTRAP："Must only be used from the main thread"）。
+    // 首次显示记一行：配合 [workbench] page loaded 的时间戳可验证「无缝衔接」
+    // （窗口出现在 dsh 首帧渲染之后，约 page-load + 900ms）
+    if !REVEALED.load(Ordering::SeqCst) {
+        logln("[main] 首次显示主窗口（dsh 首帧已就绪 → 无缝衔接）");
+    }
+    // 页面底色设深色：消除 WKWebView 在导航/刷新期间露出的默认白底（闪白）
+    #[cfg(target_os = "macos")]
+    macwin::set_page_bg_dark(&w);
+    // 原生唤醒：orderOut 隐藏过的窗口，Tauri 的 show() 不一定让它出现
     #[cfg(target_os = "macos")]
     macwin::order_front_async(app, &w);
     let _ = w.set_focus();
+    REVEALED.store(true, Ordering::SeqCst);
     // macOS child webview 是独立 NSWindow，不随主窗恢复——同步恢复，否则工作台
     // 从后台召回后是空白页。
     crate::workbench::show_child(app);
@@ -1888,13 +1963,34 @@ fn main() {
                     .paste()
                     .select_all()
                     .build()?;
-                let main_menu = Menu::with_items(app, &[&app_menu, &edit_menu])?;
+                // 「视图」菜单：⌘K 打开管理面板。壳页的 window keydown 只在壳页有
+                // 焦点时收到——焦点在工作台（独立 webview）时按键不会冒泡过来
+                // （shell.js 里对 ⌘C 的注释已记录同一限制），所以 ⌘K 必须挂到
+                // 系统菜单快捷键（系统级触发，不受 webview 焦点影响），由 Rust 转发
+                // 给壳页的全局函数（不新增 IPC 命令/事件）。
+                let manage_item = MenuItem::with_id(
+                    app,
+                    "menu-manage",
+                    "管理面板",
+                    true,
+                    Some("CmdOrCtrl+K"),
+                )?;
+                let view_menu = SubmenuBuilder::new(app, "视图").item(&manage_item).build()?;
+                let main_menu = Menu::with_items(app, &[&app_menu, &edit_menu, &view_menu])?;
                 app.set_menu(main_menu)?;
-                app.on_menu_event(move |app, event| {
-                    if event.id.as_ref() == "menu-quit" {
+                app.on_menu_event(move |app, event| match event.id.as_ref() {
+                    "menu-quit" => {
                         kill_dsh();
                         app.exit(0);
                     }
+                    "menu-manage" => {
+                        if let Some(w) = main_window(app) {
+                            let _ = w.eval(
+                                "window.__openManagePalette && window.__openManagePalette()",
+                            );
+                        }
+                    }
+                    _ => {}
                 });
             }
             // P3：主窗口 = 壳页（ui/shell.html）。壳页顶部是 Tab 栏（工作台/常规/
@@ -1934,12 +2030,16 @@ fn main() {
                 }
                 Err(e) => logln(&format!("[main] 主窗创建失败: {e}")),
             }
-            // 开机宽限：dsh 就绪前先把带占位提示的窗口显示出来（约 1.2s），
-            // dsh 就绪后再由 boot 用同一通道更新 iframe —— 两次只显示一次。
-            let reveal_app = app.handle().clone();
+            // 无缝衔接：窗口不在启动宽限内显示，改为等 dsh 首帧渲染完成后再显示
+            // （workbench page-load 后触发 reveal）。留 20s 超时兜底（下方），
+            // 覆盖 dsh 加载失败/极慢的情况——届时窗口显示，壳页有占位与引导兜底。
+            let reveal_app2 = app.handle().clone();
             std::thread::spawn(move || {
-                std::thread::sleep(Duration::from_millis(1200));
-                reveal_main_window(&reveal_app, mlock(&DSH_URL).as_deref());
+                std::thread::sleep(Duration::from_secs(20));
+                if !REVEALED.load(Ordering::SeqCst) && !USER_HIDDEN.load(Ordering::SeqCst) {
+                    logln("[main] dsh 首帧超时（20s）→ 显示主窗口（占位/引导可见）");
+                    reveal_main_window(&reveal_app2, mlock(&DSH_URL).as_deref());
+                }
             });
             std::thread::spawn(move || boot(handle));
             // 诊断模式（DSH_SELF_DOM=1）：启动 12s 后把壳页 DOM 状态（顶栏/管理

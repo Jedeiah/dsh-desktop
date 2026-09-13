@@ -154,6 +154,23 @@ fn ensure_ready_on_main(app: &AppHandle, url: &str) -> bool {
                     |r| crate::logln(&format!("[workbench] probe: {r}")),
                 );
                 READY.store(true, Ordering::SeqCst);
+                // 借鉴 main 的启动衔接：dsh 是 SPA，page-load Finished 远早于首帧
+                // 渲染完成，立即移入会露出它的空白/半成品（用户反馈「启动后看到
+                // 背景而不是无缝进入 dsh」）。延迟 900ms 让首帧渲染完成，再移入
+                // 工作台并显示主窗口——窗口出现第一眼即是 dsh 页面。
+                if let Some(app) = APP.get() {
+                    let a = app.clone();
+                    std::thread::spawn(move || {
+                        std::thread::sleep(std::time::Duration::from_millis(900));
+                        let a2 = a.clone();
+                        let _ = a.run_on_main_thread(move || {
+                            if !SUPPRESSED.load(Ordering::SeqCst) {
+                                apply_bounds_on_main(&a2);
+                                crate::reveal_main_window(&a2, None);
+                            }
+                        });
+                    });
+                }
                 // 视口诊断：dsh 是单页应用，Finished 时布局可能未稳定；3s 后复探，
                 // 对比「webview 视口尺寸 vs 页面 scroll 尺寸」定位「内容显示不全」。
                 if let Some(app) = APP.get() {

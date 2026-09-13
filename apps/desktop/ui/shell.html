@@ -27,10 +27,7 @@
   <!-- 启动占位：child webview 首次加载期间盖住空白；workbench:ready /
        workbench_ready_cmd 轮询就绪后由 shell.js 隐藏 -->
   <div class="startup" id="startupView">
-    <svg class="startup-mark" viewBox="0 0 24 24" aria-hidden="true">
-      <rect x="1" y="1" width="22" height="22" rx="6" fill="none" stroke="rgba(255,255,255,0.16)" stroke-width="1.5"/>
-      <path d="M8 9.5l3 2.5-3 2.5M13 14.5h4" fill="none" stroke="var(--fg-muted)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-    </svg>
+    <img class="startup-mark" src="icon.png" alt="" />
     <div class="startup-title">DeepSeek Harness Desktop</div>
     <div class="spinner"></div>
     <div class="startup-stage">正在启动 dsh 工作台…</div>
@@ -41,10 +38,7 @@
 <!-- ===================== 顶栏 ===================== -->
 <header class="chrome" id="chrome">
   <button class="brand" id="brand" title="单击刷新工作台 · 双击在浏览器打开">
-    <svg class="brand-mark" viewBox="0 0 24 24" aria-hidden="true">
-      <rect width="24" height="24" rx="6" fill="var(--surface-3)" stroke="rgba(255,255,255,0.16)" stroke-width="1"/>
-      <path d="M8 9.5l3 2.5-3 2.5M13 14.5h4" fill="none" stroke="var(--fg)" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
-    </svg>
+    <img class="brand-mark" src="icon.png" alt="" />
     DeepSeek Harness
   </button>
 
@@ -157,10 +151,7 @@
     <section class="drawer-section" data-section="about">
       <div class="panel">
         <div class="about-head">
-          <svg class="about-mark" viewBox="0 0 24 24" aria-hidden="true">
-            <rect width="24" height="24" rx="7" fill="var(--surface-3)" stroke="rgba(255,255,255,0.16)" stroke-width="1"/>
-            <path d="M8 9.5l3 2.5-3 2.5M13 14.5h4" fill="none" stroke="var(--fg)" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
-          </svg>
+          <img class="about-mark" src="icon.png" alt="" />
           <div>
             <div class="about-name">DeepSeek Harness Desktop</div>
             <div class="about-meta">版本 <span class="mono" id="appVersion">—</span> · stable · 桌面壳（Tauri）</div>
@@ -218,10 +209,7 @@
 <div class="setup-overlay" id="setupOverlay" hidden>
   <div class="setup-card">
     <div class="setup-head">
-      <svg class="setup-mark" viewBox="0 0 24 24" aria-hidden="true">
-        <rect width="24" height="24" rx="7" fill="var(--surface-3)" stroke="rgba(255,255,255,0.16)" stroke-width="1"/>
-        <path d="M8 9.5l3 2.5-3 2.5M13 14.5h4" fill="none" stroke="var(--fg)" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
-      </svg>
+      <img class="setup-mark" src="icon.png" alt="" />
       <div>
         <h1>准备 dsh 运行时</h1>
         <p>DeepSeek Harness Desktop 桌面壳 · 首次启动</p>

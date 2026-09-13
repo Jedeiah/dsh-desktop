@@ -214,6 +214,8 @@
       b.setAttribute('aria-selected', String(on));
     });
     drawer.classList.add('open');
+    // 抽屉占用右侧 560px：水印居中于剩余区域（theme.css 的 body.drawer-open）
+    document.body.classList.add('drawer-open');
     // 抽屉打开期间禁用「收起导航栏」：折叠按钮紧邻抽屉关闭按钮、都是右上角，
     // 极易误触导致整个顶栏消失（用户多次踩坑）。折叠仍可在收起抽屉后/⌘K
     // 命令面板里进行。
@@ -227,6 +229,7 @@
   }
   function closeDrawer() {
     $('drawer').classList.remove('open');
+    document.body.classList.remove('drawer-open');
     region = 'workbench';
     syncCollapseGuard();
     // 等抽屉收回动画（0.2s transition）播完再恢复工作台：立即恢复会让工作台
@@ -323,6 +326,12 @@
   });
   $('paletteOverlay').addEventListener('click', (e) => { if (e.target === $('paletteOverlay')) closePalette(); });
   $('btnManage').addEventListener('click', openPalette);
+  // 系统菜单 ⌘K（Rust 侧「视图 → 管理面板」菜单项 / 全局快捷键）的入口：
+  // 焦点在工作台 webview 时壳页收不到 keydown，由菜单快捷键转发到这里。
+  window.__openManagePalette = () => {
+    if (paletteOpen) cycleRegionSelection();
+    else openPalette();
+  };
 
   // ---------------- 确认弹窗（modal，供插件卸载/版本操作/更新确认复用） ----------------
   const modalEl = $('modal');
