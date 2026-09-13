@@ -219,8 +219,21 @@
   ];
   let region = 'workbench';
 
+  // 氛围信息块（抽屉/面板打开时露出）：工作台地址 + dsh 版本
+  async function refreshAmbientInfo() {
+    try {
+      const st = await invoke('get_shell_state');
+      const url = await invoke('get_dsh_url');
+      const u = $('aiUrl');
+      if (u) u.textContent = url ? String(url).replace(/\?token=[^&]*/, '') : '未就绪';
+      const d = $('aiDsh');
+      if (d && st && st.dsh_version) d.textContent = st.dsh_version;
+    } catch (e) { /* 忽略 */ }
+  }
+
   function openDrawer(section) {
     region = section;
+    refreshAmbientInfo();
     const drawer = $('drawer');
     drawer.querySelectorAll('.drawer-section').forEach((s) => s.classList.toggle('active', s.dataset.section === section));
     drawer.querySelectorAll('.segmented button').forEach((b) => {

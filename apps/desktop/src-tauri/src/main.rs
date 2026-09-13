@@ -2180,7 +2180,7 @@ fn main() {
             // （page-load 后延迟 900ms，避免露出 SPA 半成品），届时加载页被覆盖。
             let reveal_app2 = app.handle().clone();
             std::thread::spawn(move || {
-                std::thread::sleep(Duration::from_millis(1200));
+                std::thread::sleep(Duration::from_millis(800));
                 reveal_main_window(&reveal_app2, mlock(&DSH_URL).as_deref());
             });
             std::thread::spawn(move || boot(handle));

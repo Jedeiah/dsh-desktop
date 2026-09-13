@@ -69,6 +69,15 @@ pub fn url_changed(current: Option<&str>, next: &str) -> bool {
     }
 }
 
+/// 注入 dsh 页面 document-start 的深色底：消除「刷新/导航时新页面在 CSS 生效前
+/// 自行绘制浏览器默认白底」造成的闪白（这是页面画的白，设 webview 背景无效）。
+const DARK_BG_JS: &str = r#"(function(){try{
+var e=document.documentElement;if(!e)return;
+var s=document.createElement('style');
+s.textContent='html,body{background:#151517 !important}';
+(e.head||e).appendChild(s);
+}catch(_){}})();"#;
+
 /// child webview 标签（同时作为降级窗口的 label）。
 pub const LABEL: &str = "workbench";
 /// 降级窗口标题。
@@ -141,6 +150,7 @@ fn ensure_ready_on_main(app: &AppHandle, url: &str) -> bool {
         return true;
     }
     let builder = WebviewBuilder::new(LABEL, WebviewUrl::External(parsed))
+        .initialization_script(DARK_BG_JS)
         .on_navigation(crate::webview_navigation_policy)
         .on_new_window(crate::webview_new_window_policy)
         .on_page_load(|wv, payload| {
@@ -161,7 +171,7 @@ fn ensure_ready_on_main(app: &AppHandle, url: &str) -> bool {
                 if let Some(app) = APP.get() {
                     let a = app.clone();
                     std::thread::spawn(move || {
-                        std::thread::sleep(std::time::Duration::from_millis(900));
+                        std::thread::sleep(std::time::Duration::from_millis(1000));
                         let a2 = a.clone();
                         let _ = a.run_on_main_thread(move || {
                             if !SUPPRESSED.load(Ordering::SeqCst) {

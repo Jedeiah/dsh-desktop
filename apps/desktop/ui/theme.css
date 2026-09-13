@@ -200,13 +200,35 @@ body.chrome-collapsed .stage { top: var(--h-handle); }
   mask-image: radial-gradient(ellipse 85% 75% at 50% 36%, #000 0%, transparent 78%);
 }
 .ambient-mark {
-  position: absolute; left: 50%; top: 44%; transform: translate(-50%, -50%);
-  width: min(38vh, 320px); height: min(38vh, 320px);
+  position: absolute; left: 50%; top: 32%; transform: translate(-50%, -50%);
+  width: min(34vh, 290px); height: min(34vh, 290px);
   color: #fff; opacity: 0.04;
 }
 /* 抽屉打开时右侧 560px 被抽屉占用：水印居中于「剩余区域」而不是整个窗口，
    视觉更平衡（用户建议）。 */
 body.drawer-open .ambient-mark { left: calc((100% - var(--drawer-w)) / 2); }
+
+/* 氛围信息块：抽屉/命令面板打开、工作台让位时露出——显示当前环境与快捷键，
+   让空白背景有内容可读（用户反馈「太单调」）。低调配色，不与抽屉抢注意力。 */
+.ambient-info {
+  position: absolute; left: 50%; top: 68%; transform: translate(-50%, -50%);
+  display: flex; flex-direction: column; align-items: center; gap: 7px;
+  padding: 18px 24px; border-radius: var(--r-lg);
+  background: rgba(255, 255, 255, 0.022);
+  border: 1px solid var(--dsh-border-subtle);
+  color: var(--fg-subtle); font-size: var(--fs-aux); text-align: center;
+  pointer-events: none;
+}
+body.drawer-open .ambient-info { left: calc((100% - var(--drawer-w)) / 2); }
+.ambient-info .ai-brand { font-size: var(--fs-body); font-weight: 600; color: var(--fg-muted); }
+.ambient-info .ai-row { display: flex; gap: 8px; align-items: baseline; }
+.ambient-info .ai-row span { color: var(--fg-subtle); }
+.ambient-info .ai-row b {
+  color: var(--fg-muted); font-weight: 500; font-variant-numeric: tabular-nums;
+  max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.ambient-info .ai-keys { margin-top: 3px; color: var(--fg-subtle); }
+.ambient-info .ai-keys kbd { margin: 0 2px; }
 
 /* 品牌图标（icon.png，main 分支同款）：img 需要显式 block + 圆角裁切 */
 img.startup-mark, img.brand-mark, img.setup-mark, img.about-mark {
