@@ -128,6 +128,9 @@ fn ensure_ready_on_main(app: &AppHandle, url: &str) -> bool {
     match window.add_child(builder, PhysicalPosition::new(0, 0), PhysicalSize::new(1u32, 1u32)) {
         Ok(_) => {
             *CUR_URL.lock().unwrap() = Some(url.to_string());
+            // 崩溃自愈会「关闭主窗 → 重建」（boot 既有行为）：新窗口需要重新挂
+            // Resized 监听。此处是唯一创建点，webview 不存在 ⇒ 窗口必为新建/首次。
+            RESIZE_HOOKED.store(false, Ordering::SeqCst);
             attach_resize_hook(app);
             crate::logln("[workbench] child webview 已创建");
             true
