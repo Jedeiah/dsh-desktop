@@ -201,6 +201,8 @@
   function syncCollapseGuard() {
     const overlayOpen = paletteOpen || $('drawer').classList.contains('open');
     $('btnCollapseChrome').disabled = overlayOpen;
+    // 浮层打开 = 工作台让位、背景露出：显示氛围信息卡并让图标作为背景主视觉
+    document.body.classList.toggle('overlay-open', overlayOpen);
   }
 
   // ---------------- 区域 / 抽屉 ----------------

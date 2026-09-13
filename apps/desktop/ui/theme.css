@@ -206,6 +206,8 @@ body.chrome-collapsed .stage { top: var(--h-handle); }
      （原来的 0.04 是给纯白线条 svg 的），保持低调不抢前景内容 */
   opacity: 0.09; object-fit: contain;
 }
+/* 浮层打开时图标是背景主视觉：只略透（用户：太透明了） */
+body.overlay-open .ambient-mark { opacity: 0.72; }
 /* 抽屉打开时右侧 560px 被抽屉占用：水印居中于「剩余区域」而不是整个窗口，
    视觉更平衡（用户建议）。 */
 body.drawer-open .ambient-mark { left: calc((100% - var(--drawer-w)) / 2); }
@@ -214,13 +216,17 @@ body.drawer-open .ambient-mark { left: calc((100% - var(--drawer-w)) / 2); }
    让空白背景有内容可读（用户反馈「太单调」）。低调配色，不与抽屉抢注意力。 */
 .ambient-info {
   position: absolute; left: 50%; top: 68%; transform: translate(-50%, -50%);
-  display: flex; flex-direction: column; align-items: center; gap: 7px;
+  /* 默认隐藏：启动页/工作台可见时背景里不应出现任何文字（启动页衬底半透明，
+     否则信息卡文字会透出来）。仅浮层（抽屉/命令面板）打开、工作台让位时显示。 */
+  display: none;
+  flex-direction: column; align-items: center; gap: 7px;
   padding: 18px 24px; border-radius: var(--r-lg);
   background: rgba(255, 255, 255, 0.022);
   border: 1px solid var(--dsh-border-subtle);
   color: var(--fg-subtle); font-size: var(--fs-aux); text-align: center;
   pointer-events: none;
 }
+body.overlay-open .ambient-info { display: flex; }
 body.drawer-open .ambient-info { left: calc((100% - var(--drawer-w)) / 2); }
 .ambient-info .ai-brand { font-size: var(--fs-body); font-weight: 600; color: var(--fg-muted); }
 .ambient-info .ai-row { display: flex; gap: 8px; align-items: baseline; }
