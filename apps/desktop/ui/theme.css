@@ -265,6 +265,7 @@ img.startup-mark, img.brand-mark, img.setup-mark, img.about-mark {
 .startup-title { font-size: var(--fs-title); font-weight: 600; color: var(--fg); }
 .startup-stage { font-size: var(--fs-body); color: var(--fg-muted); }
 .startup-hint { font-size: var(--fs-aux); color: var(--fg-subtle); margin-top: -6px; }
+.startup-keys { font-size: var(--fs-aux); color: var(--faint, var(--fg-subtle)); opacity: 0.7; margin-top: -4px; }
 .spinner {
   width: 20px; height: 20px; border-radius: 50%;
   border: 2px solid rgba(255, 255, 255, 0.14);

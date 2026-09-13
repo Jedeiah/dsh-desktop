@@ -139,8 +139,10 @@
   function onWorkbenchReady() {
     workbenchReady = true;
     clearTimeout(placeholderTimer);
-    // 短暂延迟后撤占位，避免与 WebView 首帧竞争出现闪白
-    placeholderTimer = setTimeout(() => hidePlaceholder(), 300);
+    // 撤占位延迟 1.2s：workbench:ready 是「工作台已移入窗口」后发出的，但原生视图
+    // 把预渲染内容真正画出来还需要若干帧——撤太早（原 300ms）会出现「占位已撤、
+    // 工作台还没画出来」的空档（用户反馈：加载页隐藏后先看到背景才看到 dsh）。
+    placeholderTimer = setTimeout(() => hidePlaceholder(), 1200);
     if (setupActive) hideSetupView();
   }
 

@@ -2156,9 +2156,18 @@ fn main() {
             .center() // 主窗启动即居中于当前屏幕
             .theme(Some(tauri::Theme::Dark)) // B1：暗色原生标题栏一致化
             .on_page_load(|_webview, payload| {
-                // 顶部帧页面加载记一行日志（壳页自身；dsh 在 child webview 不在壳页触发）
+                // 顶部帧页面加载记一行日志（壳页自身；dsh 在 child webview 另有回调）
                 let url = payload.url().to_string();
                 logln!("[webview] page loaded: {url}");
+                // 事件驱动显示：壳页一渲染完成就显示窗口（比固定 0.8s 宽限更快且
+                // 不会「窗口先于内容」出现空窗）；0.8s 宽限线程保留作兜底。
+                if payload.event() == tauri::webview::PageLoadEvent::Finished {
+                    if !REVEALED.load(Ordering::SeqCst) && !USER_HIDDEN.load(Ordering::SeqCst) {
+                        if let Some(w) = MAIN_WIN.get() {
+                            reveal_main_window(&w.app_handle().clone(), None);
+                        }
+                    }
+                }
             })
             .on_navigation(webview_navigation_policy)
             .on_new_window(webview_new_window_policy)
