@@ -494,7 +494,8 @@
     if (Array.isArray(list) && list.length) {
       // 自绘下拉（沿用既有实现——Windows 弹出列表无法 CSS 定制，自绘统一 mac/win）
       setupVerMenu.innerHTML = '';
-      list.forEach((v) => {
+      // 只列最近 5 个可安装版本（用户要求；更旧的可在管理抽屉输入版本号安装）
+      list.slice(0, 5).forEach((v) => {
         const li = document.createElement('li');
         li.className = 'cselect-option';
         li.setAttribute('role', 'option');
@@ -867,8 +868,8 @@
       tb.appendChild(tr);
       return;
     }
-    // 兜底截取最近 10 个（后端已收敛，这里防御性再截一次）
-    const slice = versions.slice(0, 10);
+    // 只显示最近 5 个版本（用户要求；更旧的可用下方输入框指定版本号安装）
+    const slice = versions.slice(0, 5);
     const rb = rollbackTarget(installed, current);
     slice.forEach((v) => {
       const tr = document.createElement('tr');

@@ -171,7 +171,7 @@ fn ensure_ready_on_main(app: &AppHandle, url: &str) -> bool {
                 if let Some(app) = APP.get() {
                     let a = app.clone();
                     std::thread::spawn(move || {
-                        std::thread::sleep(std::time::Duration::from_millis(1000));
+                        std::thread::sleep(std::time::Duration::from_millis(1500));
                         let a2 = a.clone();
                         let _ = a.run_on_main_thread(move || {
                             if !SUPPRESSED.load(Ordering::SeqCst) {
