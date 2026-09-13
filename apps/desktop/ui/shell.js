@@ -206,7 +206,9 @@
   function closeDrawer() {
     $('drawer').classList.remove('open');
     region = 'workbench';
-    invoke('show_workbench_cmd').catch(() => {});
+    // 等抽屉收回动画（0.2s transition）播完再恢复工作台：立即恢复会让工作台
+    // 突然盖住还在滑动中的抽屉，观感变成「收回没有动效、一下消失」
+    setTimeout(() => invoke('show_workbench_cmd').catch(() => {}), 260);
   }
   function goRegion(id) {
     if (id === 'workbench') closeDrawer();

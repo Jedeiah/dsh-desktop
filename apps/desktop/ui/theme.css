@@ -256,19 +256,29 @@ kbd {
   transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
 }
 .icon-btn:hover { background: var(--surface-2); color: var(--fg); }
+/* 折叠按钮与「管理 ⌘K」之间加竖线分隔 + 间距：两者右上角相邻、形态相近，
+   用户常把「收起导航栏」误当抽屉关闭按钮点击（症状：顶栏整体消失还找不到
+   展开入口）——视觉上明确它是「顶栏自身」的操作，不是抽屉操作 */
+#btnCollapseChrome {
+  margin-left: 6px;
+  padding-left: 7px;
+  border-left: 1px solid var(--border-subtle);
+  border-radius: 0 var(--r-sm) var(--r-sm) 0;
+}
 
 /* 折叠后的唤出把手 */
 .chrome-restore {
   position: absolute; top: 0; left: 50%; transform: translateX(-50%); z-index: 45;
-  width: 48px; height: 14px; padding: 0;
+  width: 64px; height: 18px; padding: 0;
   display: grid; place-items: center;
   border: 1px solid var(--border); border-top: 0;
   border-radius: 0 0 8px 8px;
   background: var(--surface-2); color: var(--fg-subtle); cursor: pointer;
-  opacity: 0.55;
-  transition: opacity var(--dur) var(--ease), color var(--dur) var(--ease);
+  opacity: 0.85;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
+  transition: opacity var(--dur) var(--ease), color var(--dur) var(--ease), background var(--dur) var(--ease);
 }
-.chrome-restore:hover { opacity: 1; color: var(--fg); }
+.chrome-restore:hover { opacity: 1; color: var(--fg); background: var(--surface-3); }
 .chrome-restore .ic { width: 12px; height: 12px; }
 
 /* =============================================================================
