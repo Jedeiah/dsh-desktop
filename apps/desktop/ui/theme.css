@@ -217,10 +217,20 @@ img.startup-mark, img.brand-mark, img.setup-mark, img.about-mark {
 .startup {
   position: absolute; inset: 0; z-index: 2;
   display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px;
-  /* 实色底：启动期是「正在启动 dsh 工作台…」的干净画面，不放任何装饰背景
-     （用户反馈装饰纹理干扰启动文案） */
-  background: var(--bg);
+  /* 氛围透出的「深色衬底」：中心区域近乎实色保证文案清晰，四周渐透露出品牌
+     光晕/网格——既不再是一整块死灰，也不干扰文字（用户：太单调了） */
+  background: radial-gradient(
+    ellipse 62% 52% at 50% 46%,
+    rgba(21, 21, 23, 0.96) 0%,
+    rgba(21, 21, 23, 0.88) 58%,
+    rgba(21, 21, 23, 0.62) 100%
+  );
 }
+.startup-meta {
+  font-size: var(--fs-aux); color: var(--fg-subtle);
+  font-variant-numeric: tabular-nums; letter-spacing: 0.01em; min-height: 16px;
+}
+.startup-hint kbd { margin: 0 2px; }
 .startup-mark { width: 56px; height: 56px; border-radius: 14px; }
 .startup-title { font-size: var(--fs-title); font-weight: 600; color: var(--fg); }
 .startup-stage { font-size: var(--fs-body); color: var(--fg-muted); }

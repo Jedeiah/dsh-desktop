@@ -61,6 +61,25 @@ use tauri::Emitter;
 /// 且完全不触碰 Tauri 的窗口注册表。
 #[cfg(target_os = "macos")]
 mod macwin {
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    pub struct CGPoint {
+        pub x: f64,
+        pub y: f64,
+    }
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    pub struct CGSize {
+        pub width: f64,
+        pub height: f64,
+    }
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    pub struct CGRect {
+        pub origin: CGPoint,
+        pub size: CGSize,
+    }
+
     use objc::runtime::Object;
     use objc::{msg_send, sel, sel_impl};
     use tauri::WebviewWindow;
@@ -101,18 +120,23 @@ mod macwin {
         let _ = app.run_on_main_thread(move || order_front(&w2));
     }
 
-    /// 把窗口内所有 WKWebView 的 `underPageBackgroundColor` 设为壳页底色
-    /// （#151517）：页面导航/刷新（reload）期间 WKWebView 会露出默认白底——用户
-    /// 反馈「点品牌刷新工作台时闪白」。Tauri 的 `WebviewBuilder::background_color`
-    /// 在 macOS 未实现（源码注释确认），故直接设原生属性（递归遍历 contentView）。
-    /// **仅主线程调用**；幂等，可重复调用。
+    /// 消除 WKWebView 导航/刷新期间的白底（点品牌刷新工作台闪白）。
+    ///
+    /// 上一版误用 `underPageBackgroundColor`——它只影响「页面自身无背景色」时的
+    /// 底色，而 dsh 页面自带深色背景，所以对刷新白闪无效（用户实测仍闪）。
+    /// 真正生效的做法是两层：
+    ///   1. 关掉 WKWebView 自身的背景绘制（`drawsBackground=false`，WKWebView 的
+    ///      事实标准 key）→ 页面空白时不再画白底；
+    ///   2. 窗口背景色（NSWindow.backgroundColor）设为 #151517 → 空白时露出深色。
+    /// **仅主线程调用**；幂等。
     pub fn set_page_bg_dark(w: &WebviewWindow) {
-        use objc::runtime::Object;
+        use objc::runtime::{Object, Sel};
         use objc::{class, msg_send, sel, sel_impl};
         #[link(name = "WebKit", kind = "framework")]
         #[link(name = "CoreGraphics", kind = "framework")]
         extern "C" {
             fn CGColorCreateSRGB(r: f64, g: f64, b: f64, a: f64) -> *mut std::ffi::c_void;
+            fn objc_msgSend();
         }
         let Some(ns) = ns_ptr(w) else {
             return;
@@ -129,33 +153,151 @@ mod macwin {
                 return;
             }
             let color: *mut Object = msg_send![class!(NSColor), colorWithCGColor: cg];
-            let cv: *mut Object = msg_send![ns, contentView];
-            if !color.is_null() && !cv.is_null() {
-                apply_page_bg(cv, color);
+            if color.is_null() {
+                return;
             }
+            // 1) 窗口底色
+            let _: () = msg_send![ns, setBackgroundColor: color];
+            // 2) 所有 WKWebView 关掉自身背景绘制（setValue:forKey: 双参数 → 手写 msgSend）
+            let cv: *mut Object = msg_send![ns, contentView];
+            if cv.is_null() {
+                return;
+            }
+            let key: *mut Object = msg_send![class!(NSString), alloc];
+            let kc = std::ffi::CString::new("drawsBackground").unwrap_or_default();
+            let key: *mut Object = msg_send![key, initWithUTF8String: kc.as_ptr()];
+            let no: *mut Object = msg_send![class!(NSNumber), numberWithBool: false];
+            if key.is_null() || no.is_null() {
+                return;
+            }
+            let sel_key = Sel::register("setValue:forKey:");
+            let f: unsafe extern "C" fn(*mut Object, Sel, *mut Object, *mut Object) =
+                std::mem::transmute(objc_msgSend as *const ());
+            let n = clear_webview_bg(cv, f, sel_key, no, key);
+            crate::logln(&format!("[main] 已关闭 {n} 个 WKWebView 的背景绘制（消除刷新白闪）"));
         }
     }
 
-    /// 递归给所有 WKWebView 设置 underPageBackgroundColor。
-    unsafe fn apply_page_bg(view: *mut Object, color: *mut Object) {
-        use objc::runtime::Object;
+    /// 把「壳页 webview」的高度限制为 logical_h（points；0 = 全窗）。
+    ///
+    /// 目的：消除「壳页与工作台两个 webview 在整个工作区重叠」造成的光标闪烁
+    /// （AppKit 的光标从最上层设置了 cursor 的视图解析；两层交替 → 小手/箭头
+    /// 闪动）。工作台可见时让壳页只覆盖顶栏，工作区就只剩工作台一个 webview。
+    /// 壳页 webview 按 URL 区分（含 "shell.html"；工作台是 127.0.0.1:port）。
+    /// 返回是否设置成功。**仅主线程调用**。
+    pub fn set_shell_height(w: &WebviewWindow, logical_h: f64) -> bool {
+        use objc::runtime::{Object, Sel};
         use objc::{class, msg_send, sel, sel_impl};
-        let wk = class!(WKWebView);
+        #[link(name = "WebKit", kind = "framework")]
+        extern "C" {
+            fn objc_msgSend();
+        }
+        let Some(ns) = ns_ptr(w) else {
+            return false;
+        };
+        unsafe {
+            let cv: *mut Object = msg_send![ns, contentView];
+            if cv.is_null() {
+                return false;
+            }
+            // contentView 尺寸（AppKit 坐标：左下原点）
+            let get_frame: unsafe extern "C" fn(*mut Object, Sel) -> CGRect =
+                std::mem::transmute(objc_msgSend as *const ());
+            let cb = get_frame(cv, Sel::register("frame"));
+            let h = if logical_h <= 0.0 {
+                cb.size.height
+            } else {
+                logical_h.min(cb.size.height)
+            };
+            let rect = CGRect {
+                origin: CGPoint {
+                    x: 0.0,
+                    y: cb.size.height - h,
+                },
+                size: CGSize {
+                    width: cb.size.width,
+                    height: h,
+                },
+            };
+            let set_frame: unsafe extern "C" fn(*mut Object, Sel, CGRect) =
+                std::mem::transmute(objc_msgSend as *const ());
+            let sel_frame = Sel::register("setFrame:");
+            // 递归找壳页 WKWebView（URL 含 shell.html）
+            let wk = class!(WKWebView);
+            let mut ok = false;
+            find_and_resize(cv, wk, sel_frame, set_frame, rect, &mut ok);
+            ok
+        }
+    }
+
+    /// 递归查找 URL 含 "shell.html" 的 WKWebView 并设置其 frame。
+    unsafe fn find_and_resize(
+        view: *mut Object,
+        wk: &objc::runtime::Class,
+        sel_frame: objc::runtime::Sel,
+        set_frame: unsafe extern "C" fn(*mut Object, objc::runtime::Sel, CGRect),
+        rect: CGRect,
+        ok: &mut bool,
+    ) {
+        use objc::runtime::Object;
+        use objc::{msg_send, sel, sel_impl};
         let is_wk: bool = msg_send![view, isKindOfClass: wk];
         if is_wk {
-            let _: () = msg_send![view, setUnderPageBackgroundColor: color];
+            let url: *mut Object = msg_send![view, URL];
+            if !url.is_null() {
+                let abs: *mut Object = msg_send![url, absoluteString];
+                if !abs.is_null() {
+                    let s: *const std::ffi::c_char = msg_send![abs, UTF8String];
+                    if !s.is_null() {
+                        let s = std::ffi::CStr::from_ptr(s).to_string_lossy().to_string();
+                        if s.contains("shell.html") {
+                            let _ = set_frame(view, sel_frame, rect);
+                            *ok = true;
+                        }
+                    }
+                }
+            }
         }
         let subs: *mut Object = msg_send![view, subviews];
         if subs.is_null() {
             return;
         }
-        let n: usize = msg_send![subs, count];
-        for i in 0..n {
+        let cnt: usize = msg_send![subs, count];
+        for i in 0..cnt {
             let sub: *mut Object = msg_send![subs, objectAtIndex: i];
             if !sub.is_null() {
-                apply_page_bg(sub, color);
+                find_and_resize(sub, wk, sel_frame, set_frame, rect, ok);
             }
         }
+    }
+    unsafe fn clear_webview_bg(
+        view: *mut Object,
+        f: unsafe extern "C" fn(*mut Object, objc::runtime::Sel, *mut Object, *mut Object),
+        sel: objc::runtime::Sel,
+        no: *mut Object,
+        key: *mut Object,
+    ) -> usize {
+        use objc::runtime::Object;
+        use objc::{class, msg_send, sel, sel_impl};
+        let mut n = 0;
+        let wk = class!(WKWebView);
+        let is_wk: bool = msg_send![view, isKindOfClass: wk];
+        if is_wk {
+            let _ = f(view, sel, no, key);
+            n += 1;
+        }
+        let subs: *mut Object = msg_send![view, subviews];
+        if subs.is_null() {
+            return n;
+        }
+        let cnt: usize = msg_send![subs, count];
+        for i in 0..cnt {
+            let sub: *mut Object = msg_send![subs, objectAtIndex: i];
+            if !sub.is_null() {
+                n += clear_webview_bg(sub, f, sel, no, key);
+            }
+        }
+        n
     }
 }
 
@@ -2033,13 +2175,13 @@ fn main() {
             // 无缝衔接：窗口不在启动宽限内显示，改为等 dsh 首帧渲染完成后再显示
             // （workbench page-load 后触发 reveal）。留 20s 超时兜底（下方），
             // 覆盖 dsh 加载失败/极慢的情况——届时窗口显示，壳页有占位与引导兜底。
+            // 启动即显示窗口：加载页（品牌 + 「正在启动 dsh 工作台…」）必须可见
+            // ——用户明确要求保留加载页。dsh 首帧就绪后由 workbench 模块移入工作台
+            // （page-load 后延迟 900ms，避免露出 SPA 半成品），届时加载页被覆盖。
             let reveal_app2 = app.handle().clone();
             std::thread::spawn(move || {
-                std::thread::sleep(Duration::from_secs(20));
-                if !REVEALED.load(Ordering::SeqCst) && !USER_HIDDEN.load(Ordering::SeqCst) {
-                    logln("[main] dsh 首帧超时（20s）→ 显示主窗口（占位/引导可见）");
-                    reveal_main_window(&reveal_app2, mlock(&DSH_URL).as_deref());
-                }
+                std::thread::sleep(Duration::from_millis(1200));
+                reveal_main_window(&reveal_app2, mlock(&DSH_URL).as_deref());
             });
             std::thread::spawn(move || boot(handle));
             // 诊断模式（DSH_SELF_DOM=1）：启动 12s 后把壳页 DOM 状态（顶栏/管理

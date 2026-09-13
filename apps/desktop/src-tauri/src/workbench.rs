@@ -296,6 +296,38 @@ fn rect_size(r: &Rect) -> PhysicalSize<u32> {
 /// child webview 是否处于「移出屏幕」隐藏态（用于移回时打一行日志）。
 static CHILD_OFFSCREEN: AtomicBool = AtomicBool::new(false);
 
+/// 工作台是否已移入窗口内（可见）。用于决定壳页 webview 的可视高度：
+/// 工作台可见且无浮层时，壳页只覆盖顶栏——消除两个 webview 在工作区重叠导致的
+/// 光标「小手⇄箭头」闪烁（AppKit 从最上层视图解析光标，两层交替）。
+static WORKBENCH_VISIBLE: AtomicBool = AtomicBool::new(false);
+
+/// 壳页 webview 的可视高度（逻辑 pt；0 = 全窗），并应用到原生视图：
+/// - 工作台可见且无浮层 → 顶栏高（折叠态 = 把手条高）
+/// - 启动加载页 / 抽屉 / 命令面板 / 关到后台 → 全窗
+fn apply_shell_clip_on_main(app: &AppHandle) {
+    #[cfg(target_os = "macos")]
+    {
+        let Some(w) = crate::main_window(app) else {
+            return;
+        };
+        let clipped = WORKBENCH_VISIBLE.load(Ordering::SeqCst)
+            && !SUPPRESSED.load(Ordering::SeqCst);
+        // 壳页 webview 从窗口 frame 顶开始（含标题栏区），可见内容从标题栏下方起：
+        // 只设顶栏高会被标题栏吃掉（实测视口仅剩 4pt），必须加上标题栏高。
+        let h = if clipped {
+            let base = if COLLAPSED.load(Ordering::SeqCst) {
+                HANDLE_H_LOGICAL
+            } else {
+                TOPBAR_H_LOGICAL
+            };
+            base + TITLEBAR_H_PT
+        } else {
+            0.0
+        };
+        crate::macwin::set_shell_height(&w, h);
+    }
+}
+
 /// 主线程内把 child webview 移到窗口内正确位置（无 run_on_main_thread 包装，
 /// 供已在主线程的调用点用）。true = 已应用（非降级路径）。
 fn apply_bounds_on_main(app: &AppHandle) -> bool {
@@ -315,6 +347,8 @@ fn apply_bounds_on_main(app: &AppHandle) -> bool {
     if CHILD_OFFSCREEN.swap(false, Ordering::SeqCst) {
         crate::logln("[workbench] child 移回窗口内（可见）");
     }
+    WORKBENCH_VISIBLE.store(true, Ordering::SeqCst);
+    apply_shell_clip_on_main(app);
     true
 }
 
@@ -341,6 +375,8 @@ fn hide_child_on_main(app: &AppHandle) -> bool {
         size: Size::Physical(size),
     });
     CHILD_OFFSCREEN.store(true, Ordering::SeqCst);
+    WORKBENCH_VISIBLE.store(false, Ordering::SeqCst);
+    apply_shell_clip_on_main(app);
     crate::logln(&format!(
         "[workbench] child 移出屏幕（保持 {}x{}，不触发页面重排）",
         size.width, size.height

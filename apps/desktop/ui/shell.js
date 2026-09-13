@@ -112,6 +112,21 @@
     startupView.style.display = '';
     startupView.hidden = false;
   }
+  // 加载页信息行：App 版本 · dsh 版本 · 工作台端口（拿不到就留空，不报错）
+  (async () => {
+    try {
+      const st = await invoke('get_shell_state');
+      const url = await invoke('get_dsh_url');
+      const port = url ? (String(url).match(/:([0-9]+)/) || [])[1] : '';
+      const parts = [];
+      if (st && st.app_version) parts.push('App v' + st.app_version);
+      if (st && st.dsh_version && st.dsh_version !== '未知') parts.push('dsh ' + st.dsh_version);
+      if (port) parts.push('工作台 :' + port);
+      const el = $('startupMeta');
+      if (el) el.textContent = parts.join('  ·  ');
+    } catch (e) { /* 忽略 */ }
+  })();
+
   function hidePlaceholder() {
     // hidden 属性 + 显式 display 双保险（.startup 的 display:flex 覆盖了
     // hidden 的默认 display:none；shell.html 已补 [hidden]{display:none!important}）
