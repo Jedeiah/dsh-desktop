@@ -159,20 +159,17 @@
   });
 
   // ---------------- 顶栏折叠（状态记忆；Rust 几何联动 workbench_set_collapsed_cmd） ----------------
-  // 参考 main 分支的切换把手：同一个常驻按钮点击切换收起/展开，图标旋转 180°，
-  // 折叠后仍可见可点——工作台从把手条（18px）下方开始渲染，把手不会被原生
-  // webview 盖住（这是此前「折叠后看不到展开按钮」的根因）。
+  // 原交互：顶栏右上角「收起」按钮折叠；折叠后顶栏滑出、窗口顶部中央出现展开
+  // 把手（chromeRestore）。bug 修复：折叠态工作台预留 18px 把手条，把手不再被
+  // 层级更高的原生工作台盖住（此前折叠后点不到展开按钮）。
   function setChromeCollapsed(v) {
     document.body.classList.toggle('chrome-collapsed', v);
-    const tg = $('chromeToggle');
-    tg.title = v ? '展开导航栏' : '收起导航栏';
-    tg.setAttribute('aria-expanded', String(!v));
+    $('chromeRestore').hidden = !v;
     try { localStorage.setItem('chromeCollapsed', v ? '1' : '0'); } catch (e) { /* 忽略 */ }
     invoke('workbench_set_collapsed_cmd', { collapsed: v }).catch(() => {});
   }
-  $('chromeToggle').addEventListener('click', () => {
-    setChromeCollapsed(!document.body.classList.contains('chrome-collapsed'));
-  });
+  $('btnCollapseChrome').addEventListener('click', () => setChromeCollapsed(true));
+  $('chromeRestore').addEventListener('click', () => setChromeCollapsed(false));
   try {
     setChromeCollapsed(localStorage.getItem('chromeCollapsed') === '1' ? true
       : localStorage.getItem('tabsCollapsed') === '1');
@@ -183,7 +180,7 @@
 // （症状：管理那一行不见了、还找不到展开把手）。
   function syncCollapseGuard() {
     const overlayOpen = paletteOpen || $('drawer').classList.contains('open');
-    $('chromeToggle').disabled = overlayOpen;
+    $('btnCollapseChrome').disabled = overlayOpen;
   }
 
   // ---------------- 区域 / 抽屉 ----------------
@@ -198,7 +195,7 @@
     { id: 'openBrowser', label: '在浏览器打开工作台', hint: '用系统默认浏览器打开当前 dsh 地址', icon: ICON.external, run: () => { invoke('open_workbench_url_cmd').catch(() => {}); toast('已在浏览器打开工作台地址'); } },
     { id: 'checkDsh', label: '检查 dsh 更新', hint: '立即检查 dsh 运行时新版本', icon: ICON.terminal, run: () => { openDrawer('dsh'); checkDsh(); } },
     { id: 'checkApp', label: '检查应用更新', hint: '检查 DeepSeek Harness Desktop 更新', icon: ICON.info, run: () => { openDrawer('about'); checkApp(); } },
-    { id: 'toggleChrome', label: '收起/展开导航栏', hint: '折叠顶栏以扩展工作区（顶部把手同效）', icon: ICON.chevron, run: () => setChromeCollapsed(!document.body.classList.contains('chrome-collapsed')) },
+    { id: 'toggleChrome', label: '收起导航栏', hint: '折叠顶栏以扩展工作区', icon: ICON.chevron, run: () => setChromeCollapsed(true) },
   ];
   let region = 'workbench';
 

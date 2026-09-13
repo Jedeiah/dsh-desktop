@@ -29,16 +29,6 @@ fn topbar_offset(collapsed: bool) -> f64 {
     }
 }
 
-/// macOS 标准标题栏高（带装饰窗口 frame 顶到内容顶的差值，逻辑点）。
-/// 实测（2026-09-13 联调）：child webview 的 set_bounds 坐标按窗口 frame
-/// 原点（含标题栏）计算，而壳页内容从标题栏下方开始——窗口化时若不复位
-/// 会让 child 上移盖住壳层顶栏（症状：管理按钮只在全屏可见）。
-/// 全屏（无标题栏）时差值为 0；macOS 10.15+ 标准带标题窗口统一为 28pt。
-#[cfg(target_os = "macos")]
-pub const TITLEBAR_H_PT: f64 = 28.0;
-#[cfg(not(target_os = "macos"))]
-pub const TITLEBAR_H_PT: f64 = 0.0;
-
 /// child webview 在主窗客户区内的几何（物理像素）。
 pub struct Geom {
     pub x: i32,
@@ -144,10 +134,29 @@ fn ensure_ready_on_main(app: &AppHandle, url: &str) -> bool {
                 // 「认证失败纯文本页」（历史教训：工作台空白时日志无据可查）。
                 // 只取元信息（不读正文），避免把工作台内容写进日志。
                 let _ = wv.eval_with_callback(
-                    "JSON.stringify({ct:document.contentType,t:document.title})",
+                    "JSON.stringify({ct:document.contentType,t:document.title,vw:innerWidth,vh:innerHeight,sw:document.documentElement.scrollWidth,sh:document.documentElement.scrollHeight,dpr:devicePixelRatio})",
                     |r| crate::logln(&format!("[workbench] probe: {r}")),
                 );
                 READY.store(true, Ordering::SeqCst);
+                // 视口诊断：dsh 是单页应用，Finished 时布局可能未稳定；3s 后复探，
+                // 对比「webview 视口尺寸 vs 页面 scroll 尺寸」定位「内容显示不全」。
+                if let Some(app) = APP.get() {
+                    let a = app.clone();
+                    std::thread::spawn(move || {
+                        std::thread::sleep(std::time::Duration::from_millis(3000));
+                        let a2 = a.clone();
+                        let _ = a.run_on_main_thread(move || {
+                            if let Some(w) = a2.get_window(crate::WINDOW_LABEL) {
+                                if let Some(wv2) = w.get_webview(LABEL) {
+                                    let _ = wv2.eval_with_callback(
+                                        "JSON.stringify({vw:innerWidth,vh:innerHeight,sw:document.documentElement.scrollWidth,sh:document.documentElement.scrollHeight,bodyW:document.body.getBoundingClientRect().width})",
+                                        |r| crate::logln(&format!("[workbench] probe+3s: {r}")),
+                                    );
+                                }
+                            }
+                        });
+                    });
+                }
                 // 首帧已绘制 → 移回窗口内可见位置（创建时在屏幕外预渲染）；
                 // 业务侧隐藏期间（抽屉/命令面板/关到后台）不移动。
                 if !SUPPRESSED.load(Ordering::SeqCst) {
@@ -217,17 +226,19 @@ fn bounds_on_main(app: &AppHandle) -> Option<Rect> {
     let collapsed = COLLAPSED.load(Ordering::SeqCst);
     let scale = window.scale_factor().unwrap_or(1.0);
     let size = window.inner_size().unwrap_or(PhysicalSize::new(1280u32, 820u32));
-    // macOS 窗口化时原生标题栏算在窗口 frame 里、不算在 content（inner）里：
-    // child webview 坐标按 frame 定位，需补偿标题栏高（全屏为 0）。
+    // child webview 的 set_bounds 坐标是**窗口 content 相对**（实测 2026-09-13：
+    // 窗口采样显示它不是独立窗口、而是内容视图内子视图；视口探针 vw/vh 与设定
+    // 尺寸一致）。**不要加标题栏补偿**——曾误加 28pt（把「顶栏被折叠」误判为
+    // 「标题栏遮挡」），导致工作台整体下移 28pt：顶部露出壳页底色一条、底部
+    // 超出 content 被窗口裁掉（用户报告的「dsh 内容显示不全」）。
+    // inset（outer-inner 尺寸差）在 macOS 上为 0，保留以兼容其他平台。
     let outer_h = window.outer_size().unwrap_or(size).height as i64;
     let inset = (outer_h - size.height as i64).max(0) as u32;
-    let is_fs = window.is_fullscreen().unwrap_or(false);
-    let tb_pt = if is_fs { 0.0 } else { TITLEBAR_H_PT };
     let g = geom(size.width, size.height, scale, collapsed);
-    let y = g.y as u32 + inset + (tb_pt * scale).round() as u32;
+    let y = g.y as u32 + inset;
     let desc = format!(
-        "y={} h={} scale={} collapsed={} fullscreen={} win={}x{} inset={} titlebar_pt={}",
-        y, g.h, scale, collapsed, is_fs, size.width, size.height, inset, tb_pt
+        "y={} h={} scale={} collapsed={} win={}x{} inset={}",
+        y, g.h, scale, collapsed, size.width, size.height, inset
     );
     if LAST_BOUNDS.lock().unwrap().as_deref() != Some(desc.as_str()) {
         crate::logln(&format!("[workbench] bounds: {desc}"));

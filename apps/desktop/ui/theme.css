@@ -163,13 +163,43 @@ body {
  * ========================================================================= */
 .stage {
   position: absolute; left: 0; right: 0; bottom: 0; top: var(--h-chrome);
-  background: var(--bg);
+  /* 透明：工作台隐藏时露出体层氛围背景（点击「管理」打开抽屉/命令面板的场景）。
+     工作台 child webview 覆盖时无影响；启动加载阶段被 .startup 实色层遮住。 */
+  background: transparent;
   transition: top var(--dur) var(--ease);
 }
 /* 折叠：顶栏收起，但保留 18px 把手条（原生工作台从这条下方开始渲染，否则
    层级更高的 child webview 会盖住把手，用户点不到展开入口）。
    与 workbench.rs HANDLE_H_LOGICAL（18pt）保持一致。 */
 body.chrome-collapsed .stage { top: var(--h-handle); }
+
+/* =============================================================================
+ * 体层氛围背景（工作台隐藏时可见：管理抽屉 / 命令面板）
+ * ============================================================================= */
+.ambient { position: absolute; inset: 0; z-index: 0; overflow: hidden; pointer-events: none; }
+.ambient-glow { position: absolute; border-radius: 50%; filter: blur(90px); }
+.ambient-glow--a {
+  width: 48vw; height: 48vw; left: -14vw; top: -18vh;
+  background: radial-gradient(circle, rgba(77, 107, 254, 0.24) 0%, rgba(77, 107, 254, 0) 68%);
+}
+.ambient-glow--b {
+  width: 54vw; height: 54vw; right: -18vw; bottom: -22vh;
+  background: radial-gradient(circle, rgba(123, 147, 255, 0.17) 0%, rgba(123, 147, 255, 0) 70%);
+}
+.ambient-grid {
+  position: absolute; inset: 0;
+  background-image:
+    linear-gradient(rgba(255, 255, 255, 0.04) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.04) 1px, transparent 1px);
+  background-size: 30px 30px;
+  -webkit-mask-image: radial-gradient(ellipse 85% 75% at 50% 36%, #000 0%, transparent 78%);
+  mask-image: radial-gradient(ellipse 85% 75% at 50% 36%, #000 0%, transparent 78%);
+}
+.ambient-mark {
+  position: absolute; left: 50%; top: 44%; transform: translate(-50%, -50%);
+  width: min(38vh, 320px); height: min(38vh, 320px);
+  color: #fff; opacity: 0.04;
+}
 
 /* 启动占位 */
 .startup {
@@ -200,14 +230,9 @@ body.chrome-collapsed .stage { top: var(--h-handle); }
   display: flex; align-items: center; gap: 8px; padding: 0 10px;
   background: var(--bg);
   border-bottom: 1px solid var(--border-subtle);
-  overflow: hidden;
-  /* 折叠 = 高度收缩 + 内容淡出（参考 main 分支 titlebar 的做法）：比整体
-     translateY(-100%) 更像原生标题栏收起，且与 .stage 的 top 过渡同步伸缩 */
-  transition: height var(--dur) var(--ease), border-color var(--dur) var(--ease);
+  transition: transform var(--dur) var(--ease), opacity var(--dur) var(--ease);
 }
-.chrome > * { transition: opacity var(--dur) var(--ease); }
-body.chrome-collapsed .chrome { height: 0; border-bottom-color: transparent; }
-body.chrome-collapsed .chrome > * { opacity: 0; pointer-events: none; }
+body.chrome-collapsed .chrome { transform: translateY(-100%); opacity: 0; pointer-events: none; }
 
 .brand {
   display: flex; align-items: center; gap: 8px; flex: none;
@@ -268,36 +293,30 @@ kbd {
   transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
 }
 .icon-btn:hover { background: var(--surface-2); color: var(--fg); }
+/* 折叠按钮与「管理 ⌘K」之间加竖线分隔 + 间距：两者右上角相邻、形态相近，
+   用户常把「收起导航栏」误当抽屉关闭按钮点击（症状：顶栏整体消失） */
+#btnCollapseChrome {
+  margin-left: 6px;
+  padding-left: 7px;
+  border-left: 1px solid var(--border-subtle);
+  border-radius: 0 var(--r-sm) var(--r-sm) 0;
+}
+/* 抽屉/命令面板打开期间禁用（shell.js 控制）：防「把收起顶栏误当浮层关闭」点击 */
+#btnCollapseChrome:disabled { opacity: 0.35; cursor: default; pointer-events: none; }
 
-/* 顶栏折叠把手（常驻，不随顶栏收起而消失）：点击切换收起/展开。
-   展开时贴在顶栏下沿，折叠时位于窗口最顶端的把手条内——工作台从把手条下方
-   开始渲染（见 .stage 与 workbench.rs HANDLE_H_LOGICAL），因此把手永远不会
-   被原生工作台盖住，用户任何时候都能点它展开（此前把手被 webview 盖住，
-   表现为「看不到展开的按钮」）。 */
-.chrome-toggle {
-  position: absolute; left: 50%; transform: translateX(-50%);
-  top: calc(var(--h-chrome) - var(--h-handle));
-  z-index: 46;
-  width: 46px; height: var(--h-handle); padding: 0;
+/* 折叠后的唤出把手（原交互）：折叠时出现在窗口顶部中央，点击展开。
+   折叠态工作台从 --h-handle 条下方开始，把手不会被原生工作台盖住。 */
+.chrome-restore {
+  position: absolute; top: 0; left: 50%; transform: translateX(-50%); z-index: 46;
+  width: 52px; height: var(--h-handle); padding: 0;
   display: grid; place-items: center;
-  border: 1px solid var(--border); border-top: none;
+  border: 1px solid var(--border); border-top: 0;
   border-radius: 0 0 9px 9px;
   background: var(--surface-2); color: var(--fg-subtle); cursor: pointer;
-  transition: top var(--dur) var(--ease), color var(--dur) var(--ease), background var(--dur) var(--ease);
+  transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
 }
-body.chrome-collapsed .chrome-toggle { top: 0; }
-.chrome-toggle:hover { color: var(--fg); background: var(--surface-3); }
-/* 抽屉/命令面板打开期间禁用（shell.js 控制），防误触折叠顶栏 */
-.chrome-toggle:disabled { opacity: 0.35; cursor: default; pointer-events: none; }
-/* 纯 CSS 三角（避免字体符号 side-bearing 错位），收起/展开旋转 180° */
-.chrome-caret {
-  width: 0; height: 0; display: block;
-  border-left: 5px solid transparent;
-  border-right: 5px solid transparent;
-  border-bottom: 6px solid currentColor;
-  transition: transform 0.25s var(--ease);
-}
-body.chrome-collapsed .chrome-caret { transform: rotate(180deg); }
+.chrome-restore:hover { background: var(--surface-3); color: var(--fg); }
+.chrome-restore .ic { width: 12px; height: 12px; }
 
 /* =============================================================================
  * 命令面板（⌘K）
