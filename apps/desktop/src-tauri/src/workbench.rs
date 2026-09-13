@@ -55,6 +55,10 @@ const FALLBACK_TITLE: &str = "DeepSeek Harness 工作台";
 
 /// 顶栏折叠态（shell.js 经 workbench_set_collapsed_cmd 同步）。
 static COLLAPSED: AtomicBool = AtomicBool::new(false);
+/// 业务侧显式隐藏标记：抽屉 / 命令面板打开、主窗关到后台时置 true。
+/// child webview「页面加载完成自动显示」必须绕过它——否则 dsh 崩溃自愈
+/// 换端口重导航完成后会把工作台从抽屉/面板下面顶出来。
+static SUPPRESSED: AtomicBool = AtomicBool::new(false);
 /// 工作台是否已完成首次加载（workbench:ready 已发生；供壳页轮询兜底）。
 static READY: AtomicBool = AtomicBool::new(false);
 /// 降级模式（路径 C：独立窗口）。add_child 成功 = false。
@@ -129,6 +133,11 @@ fn ensure_ready_on_main(app: &AppHandle, url: &str) -> bool {
                     |r| crate::logln(&format!("[workbench] probe: {r}")),
                 );
                 READY.store(true, Ordering::SeqCst);
+                // 首帧已绘制 → 显示（创建时已隐藏，见 ensure_ready_on_main）；
+                // 业务侧隐藏期间（抽屉/命令面板/关到后台）不得顶出。
+                if !SUPPRESSED.load(Ordering::SeqCst) {
+                    let _ = wv.show();
+                }
                 if let Some(app) = APP.get() {
                     let _ = app.emit("workbench:ready", ());
                 }
@@ -142,7 +151,13 @@ fn ensure_ready_on_main(app: &AppHandle, url: &str) -> bool {
             // Resized 监听。此处是唯一创建点，webview 不存在 ⇒ 窗口必为新建/首次。
             RESIZE_HOOKED.store(false, Ordering::SeqCst);
             attach_resize_hook(app);
-            crate::logln("[workbench] child webview 已创建");
+            // 首帧渲染完成前隐藏 child：阶段①壳页「正在启动 dsh 工作台…」占位
+            // 可见（child 是独立 NSWindow 盖在其上）；阶段② page-load Finished
+            // 后（dsh 首帧已绘制）再显示，消除「空隙的灰底/半成品」。
+            if let Some(wv) = window.get_webview(LABEL) {
+                let _ = wv.hide();
+            }
+            crate::logln("[workbench] child webview 已创建（首帧前隐藏）");
             true
         }
         Err(e) => {
@@ -260,6 +275,7 @@ pub fn hide_workbench_cmd(app: AppHandle) {
 /// NSWindow，主窗口 hide 不会带它一起隐藏——主窗关到后台必须显式调这里，
 /// 否则工作台残留在屏幕上（用户第 1 版「关闭没反应」的根因之一）。
 pub fn hide_child(app: &AppHandle) {
+    SUPPRESSED.store(true, Ordering::SeqCst);
     let app2 = app.clone();
     let _ = app2.clone().run_on_main_thread(move || {
         if FALLBACK.load(Ordering::SeqCst) {
@@ -276,6 +292,7 @@ pub fn hide_child(app: &AppHandle) {
 
 /// 显示工作台 child webview（或降级窗口）；主窗恢复显示时调用。
 pub fn show_child(app: &AppHandle) {
+    SUPPRESSED.store(false, Ordering::SeqCst);
     let app2 = app.clone();
     let _ = app2.clone().run_on_main_thread(move || {
         if FALLBACK.load(Ordering::SeqCst) {

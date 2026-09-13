@@ -169,6 +169,15 @@
     setChromeCollapsed(localStorage.getItem('chromeCollapsed') === '1' ? true
       : localStorage.getItem('tabsCollapsed') === '1');
   } catch (e) { setChromeCollapsed(false); }
+  // 启动还原时若顶栏处于折叠（上次误触 / 遗留状态），4s 后提示展开入口——
+  // 否则用户看到「管理那一行不见了」却不知道去哪里找回（顶部中央小把手）。
+  setTimeout(() => {
+    try {
+      if (localStorage.getItem('chromeCollapsed') === '1' || localStorage.getItem('tabsCollapsed') === '1') {
+        toast('顶部导航栏已收起：点窗口顶部中央的小把手即可展开');
+      }
+    } catch (e) { /* 忽略 */ }
+  }, 4000);
 
   // ---------------- 区域 / 抽屉 ----------------
   const REGIONS = [
@@ -196,6 +205,10 @@
       b.setAttribute('aria-selected', String(on));
     });
     drawer.classList.add('open');
+    // 抽屉打开期间禁用「收起导航栏」：折叠按钮紧邻抽屉关闭按钮、都是右上角，
+    // 极易误触导致整个顶栏消失（用户多次踩坑）。折叠仍可在收起抽屉后/⌘K
+    // 命令面板里进行。
+    $('btnCollapseChrome').disabled = true;
     // 工作台是原生 webview，盖在所有 HTML 之上：抽屉打开必须显式隐藏
     if (section !== 'workbench') invoke('hide_workbench_cmd').catch(() => {});
     // 切到该分段时刷新数据（安装/插件状态可能已在后台变化）
@@ -206,6 +219,7 @@
   function closeDrawer() {
     $('drawer').classList.remove('open');
     region = 'workbench';
+    $('btnCollapseChrome').disabled = false;
     // 等抽屉收回动画（0.2s transition）播完再恢复工作台：立即恢复会让工作台
     // 突然盖住还在滑动中的抽屉，观感变成「收回没有动效、一下消失」
     setTimeout(() => invoke('show_workbench_cmd').catch(() => {}), 260);

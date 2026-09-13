@@ -1884,6 +1884,29 @@ fn main() {
                 if let Some(w) = _app_handle.get_webview_window(WINDOW_LABEL) {
                     let _ = w.hide();
                 }
+                // 实证：1.2s 后复查窗口可见性与 child webview 是否存在，写入日志。
+                // 下次运行时直接据此判断「关到后台」是否被环境因素（OS 窗口管理、
+                // 误召回等）打断，不必再凭现象猜。
+                {
+                    let check_app = _app_handle.clone();
+                    std::thread::spawn(move || {
+                        std::thread::sleep(Duration::from_millis(1200));
+                        let inner = check_app.clone();
+                        let _ = check_app.run_on_main_thread(move || {
+                            let vis = inner
+                                .get_webview_window(WINDOW_LABEL)
+                                .map(|w| w.is_visible().unwrap_or(true))
+                                .unwrap_or(true);
+                            let child = inner
+                                .get_window(WINDOW_LABEL)
+                                .map(|win| win.get_webview(crate::workbench::LABEL).is_some())
+                                .unwrap_or(false);
+                            crate::logln(&format!(
+                                "[main] post-close check: window_visible={vis} child_exists={child}"
+                            ));
+                        });
+                    });
+                }
             }
             // macOS: clicking the dock icon re-opens a hidden window.
             #[cfg(target_os = "macos")]

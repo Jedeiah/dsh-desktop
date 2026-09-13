@@ -265,6 +265,8 @@ kbd {
   border-left: 1px solid var(--border-subtle);
   border-radius: 0 var(--r-sm) var(--r-sm) 0;
 }
+/* 抽屉打开期间禁用（shell.js 控制）：防「把收起顶栏误当抽屉关闭」点击 */
+#btnCollapseChrome:disabled { opacity: 0.35; cursor: default; pointer-events: none; }
 
 /* 折叠后的唤出把手 */
 .chrome-restore {
