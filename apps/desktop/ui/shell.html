@@ -72,7 +72,7 @@
 </button>
 
 <!-- ===================== 管理抽屉 ===================== -->
-<aside class="drawer" id="drawer" aria-label="管理">
+<aside class="drawer" id="drawer" role="dialog" aria-modal="true" aria-label="管理">
   <div class="drawer-head">
     <div class="segmented" role="tablist" aria-label="管理分区">
       <button role="tab" data-section="dsh" class="active" aria-selected="true">dsh</button>
@@ -92,15 +92,15 @@
           <div>
             <div class="panel-label">当前版本</div>
             <div class="ver-row">
-              <span class="ver-num mono" id="dshCurrent">0.20.3</span>
-              <span class="badge badge-current">当前</span>
+              <span class="ver-num mono" id="dshCurrent">—</span>
+              <span class="badge badge-current" id="dshCurrentBadge" hidden>当前</span>
             </div>
             <div class="status" id="dshStatus" role="status" aria-live="polite"></div>
           </div>
           <button class="btn ghost sm" id="btnCheckDsh">检查更新</button>
         </div>
         <div class="update-banner" id="dshUpdateBanner" hidden>
-          <div class="ub-text">发现新版本 <b class="mono" id="dshLatest">v0.21.0</b></div>
+          <div class="ub-text">发现新版本 <b class="mono" id="dshLatest">—</b></div>
           <button class="btn sm" id="btnUpdateDsh">更新到最新</button>
         </div>
       </div>
@@ -204,7 +204,7 @@
 </aside>
 
 <!-- ===================== 命令面板 ===================== -->
-<div class="palette-overlay" id="paletteOverlay" hidden>
+<div class="palette-overlay" id="paletteOverlay" role="dialog" aria-modal="true" aria-label="命令面板" hidden>
   <div class="palette" role="dialog" aria-modal="true" aria-label="命令面板">
     <input class="palette-input" id="paletteInput" type="text" placeholder="搜索区域或命令…" autocomplete="off" spellcheck="false" />
     <div class="palette-list" id="paletteList"></div>
@@ -212,7 +212,7 @@
 </div>
 
 <!-- ===================== 首次引导 ===================== -->
-<div class="setup-overlay" id="setupOverlay" hidden>
+<div class="setup-overlay" id="setupOverlay" role="dialog" aria-modal="true" aria-label="首次安装引导" hidden>
   <div class="setup-card">
     <div class="setup-head">
       <img class="setup-mark" src="icon.png" alt="" />
@@ -225,7 +225,7 @@
     <!-- 待开始 / 安装中 -->
     <div id="setupStageArea">
       <div class="stage-line" id="setupStage">准备安装 dsh 运行时</div>
-      <div class="panel-hint" id="setupVerDisplay" style="margin-top:0">将安装版本 <b class="mono" id="setupVerShow">v0.21.0</b> · 可在高级选项更改</div>
+      <div class="panel-hint" id="setupVerDisplay" style="margin-top:0">将安装版本 <b class="mono" id="setupVerShow">—</b> · 可在高级选项更改</div>
       <div class="progress" id="setupProgress" hidden role="progressbar" aria-label="安装进度"><div class="progress-fill"></div></div>
       <div class="panel-hint" id="setupMeta">首次安装需下载约 300MB 依赖包，视网络通常需要几分钟，请耐心等待；可展开高级选项选择版本与 Registry 源</div>
       <div class="setup-actions">
@@ -279,7 +279,7 @@
       <div class="done-view">
         <div class="done-icon"><svg class="ic" viewBox="0 0 20 20"><path d="M5 10.5l3.2 3.2L15 6.5"/></svg></div>
         <div class="done-title">dsh 已就绪</div>
-        <div class="done-msg mono" id="setupDoneVer">v0.21.0</div>
+        <div class="done-msg mono" id="setupDoneVer">—</div>
         <div class="setup-actions"><button class="btn" id="btnEnterWorkbench">进入工作台</button></div>
       </div>
     </div>

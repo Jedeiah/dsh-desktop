@@ -105,12 +105,36 @@
   let workbenchReady = false; // 工作台是否已完成首次加载（撤占位依据）
   let placeholderTimer = null;
 
+  // 兜底看门狗：本项目 T.event.listen 曾实测丢失/挂起，而 workbench:ready 只有
+  // 「事件」一条通道时，若那次事件丢了，占位层会永久盖住工作台（重装/切换 dsh 后
+  // 用户只能重启应用）。故每次显示占位时启动受限轮询（最多 120s），拿到就绪即撤。
+  let readyWatchdog = null;
+  function startReadyWatchdog() {
+    if (readyWatchdog) return;
+    let n = 0;
+    readyWatchdog = setInterval(async () => {
+      if (workbenchReady || ++n > 120) {
+        clearInterval(readyWatchdog);
+        readyWatchdog = null;
+        return;
+      }
+      try {
+        if (await invoke('workbench_ready_cmd')) {
+          clearInterval(readyWatchdog);
+          readyWatchdog = null;
+          onWorkbenchReady();
+        }
+      } catch (e) { /* 单次失败忽略 */ }
+    }, 1000);
+  }
+
   function showPlaceholder() {
     // 先清内联 display 再取消 hidden（hidden=false 但残留 inline display:none
     // 时仍会隐藏；反之先 hidden=false 再清 display 会出现一帧闪变）
     clearTimeout(placeholderTimer);
     startupView.style.display = '';
     startupView.hidden = false;
+    startReadyWatchdog();
   }
   // 加载页信息行：App 版本 · dsh 版本 · 工作台端口（拿不到就留空，不报错）
   (async () => {
@@ -179,7 +203,9 @@
   // 原交互：顶栏右上角「收起」按钮折叠；折叠后顶栏滑出、窗口顶部中央出现展开
   // 把手（chromeRestore）。bug 修复：折叠态工作台预留 18px 把手条，把手不再被
   // 层级更高的原生工作台盖住（此前折叠后点不到展开按钮）。
+  let chromeCollapsed = false; // 供命令面板把文案/行为切换成「展开导航栏」
   function setChromeCollapsed(v) {
+    chromeCollapsed = !!v;
     document.body.classList.toggle('chrome-collapsed', v);
     $('chromeRestore').hidden = !v;
     invoke('workbench_set_collapsed_cmd', { collapsed: v }).catch(() => {});
@@ -189,7 +215,7 @@
   // 启动总是展开顶栏（不恢复上次折叠状态）：
   // 用户实测反馈——折叠状态一旦持久化，重启应用就会看到「管理那一行整行消失」，
   // 而展开把手只是窗口顶部中央一个 52×18 的小条，不易发现，体验不可接受。
-  // 折叠功能本身保留（右上角按钮 / ⌘K「收起导航栏」），仅不再跨会话记忆；
+  // 折叠功能本身保留（右上角按钮 / ⌘K 命令面板的「收起 / 展开导航栏」），仅不再跨会话记忆；
   // 同时清除历史遗留标记，避免旧值继续影响。
   setChromeCollapsed(false);
   try {
@@ -219,7 +245,15 @@
     { id: 'openBrowser', label: '在浏览器打开工作台', hint: '用系统默认浏览器打开当前 dsh 地址', icon: ICON.external, run: () => { invoke('open_workbench_url_cmd').catch(() => {}); toast('已在浏览器打开工作台地址'); } },
     { id: 'checkDsh', label: '检查 dsh 更新', hint: '立即检查 dsh 运行时新版本', icon: ICON.terminal, run: () => { openDrawer('dsh'); checkDsh(); } },
     { id: 'checkApp', label: '检查应用更新', hint: '检查 DeepSeek Harness Desktop 更新', icon: ICON.info, run: () => { openDrawer('about'); checkApp(); } },
-    { id: 'toggleChrome', label: '收起导航栏', hint: '折叠顶栏以扩展工作区', icon: ICON.chevron, run: () => setChromeCollapsed(true) },
+    // label/hint 用 getter：命令面板每次渲染都会取到当前折叠态对应的文案
+    // （展开时显示「收起导航栏」，已收起时显示「展开导航栏」），点击即切换。
+    {
+      id: 'toggleChrome',
+      get label() { return chromeCollapsed ? '展开导航栏' : '收起导航栏'; },
+      get hint() { return chromeCollapsed ? '恢复顶栏与导航区' : '折叠顶栏以扩展工作区'; },
+      icon: ICON.chevron,
+      run: () => setChromeCollapsed(!chromeCollapsed),
+    },
   ];
   let region = 'workbench';
 
@@ -259,6 +293,15 @@
     if (section === 'plugins') refreshPlugins();
     if (section === 'about') refreshApp();
   }
+  // 恢复工作台：只有「没有任何浮层占用工作区」时才下发原生命令。
+  // 事故背景：closeDrawer 的 260ms 延时回调原先无条件 show——若这 260ms 内又打开
+  // 命令面板/抽屉，原生工作台会被移回窗口内并盖住 HTML 浮层（表现为「点了管理没
+  // 反应 / 面板一闪就没」）；启动占位期间还会把尚未绘制首帧的工作台提前移入。
+  function maybeShowWorkbench() {
+    if (paletteOpen) return;
+    if ($('drawer').classList.contains('open')) return;
+    invoke('show_workbench_cmd').catch(() => {});
+  }
   function closeDrawer() {
     $('drawer').classList.remove('open');
     document.body.classList.remove('drawer-open');
@@ -266,7 +309,7 @@
     syncCollapseGuard();
     // 等抽屉收回动画（0.2s transition）播完再恢复工作台：立即恢复会让工作台
     // 突然盖住还在滑动中的抽屉，观感变成「收回没有动效、一下消失」
-    setTimeout(() => invoke('show_workbench_cmd').catch(() => {}), 260);
+    setTimeout(maybeShowWorkbench, 260);
   }
   function goRegion(id) {
     if (id === 'workbench') closeDrawer();
@@ -297,9 +340,9 @@
     paletteOpen = false;
     $('paletteOverlay').hidden = true;
     syncCollapseGuard();
-    // 恢复工作台；仅当随后会开出抽屉时跳过（runPaletteItem → goRegion 由
-    // openDrawer 再隐藏，两次 invoke 按发出顺序执行，最终态正确）。
-    if (!$('drawer').classList.contains('open')) invoke('show_workbench_cmd').catch(() => {});
+    // 恢复工作台（受守卫：抽屉/面板仍占用时不恢复；runPaletteItem → goRegion
+    // 还会再开抽屉，两次 invoke 按发出顺序执行，最终态正确）。
+    maybeShowWorkbench();
   }
   function renderPalette(q) {
     q = (q || '').trim().toLowerCase();
@@ -351,8 +394,17 @@
   }
   $('paletteInput').addEventListener('input', function () { paletteSel = 0; renderPalette(this.value); });
   $('paletteInput').addEventListener('keydown', (e) => {
-    if (e.key === 'ArrowDown') { e.preventDefault(); paletteSel = (paletteSel + 1) % paletteItems.length; renderPalette($('paletteInput').value); }
-    else if (e.key === 'ArrowUp') { e.preventDefault(); paletteSel = (paletteSel - 1 + paletteItems.length) % paletteItems.length; renderPalette($('paletteInput').value); }
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      if (!paletteItems.length) return; // 空结果时取模会得到 NaN
+      paletteSel = (paletteSel + 1) % paletteItems.length;
+      renderPalette($('paletteInput').value);
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      if (!paletteItems.length) return;
+      paletteSel = (paletteSel - 1 + paletteItems.length) % paletteItems.length;
+      renderPalette($('paletteInput').value);
+    }
     else if (e.key === 'Enter') { e.preventDefault(); runPaletteItem(paletteSel); }
     else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); closePalette(); }
   });
@@ -415,14 +467,19 @@
     // ⌘1–⌘4：直达区域
     if ((e.metaKey || e.ctrlKey) && ['1', '2', '3', '4'].includes(e.key)) {
       e.preventDefault();
+      // 面板开着时先收起，否则面板与抽屉两个浮层叠加、且工作台显隐会打架
+      if (paletteOpen) closePalette();
       goRegion(REGIONS[Number(e.key) - 1].id);
       return;
     }
     // Esc：面板 → 抽屉 → 确认弹窗 逐级关闭
     if (e.key === 'Escape') {
+      // 最上层优先：确认弹窗 / Registry 弹窗（z-index 最高）→ 命令面板 → 抽屉。
+      // 旧顺序先关抽屉，导致「弹窗开着按 Esc 关掉了背后的抽屉、弹窗不动」。
+      if (!modalEl.hidden) { closeModal(); return; }
+      if (!$('registryModal').hidden) { closeRegistryModal(); return; }
       if (paletteOpen) { closePalette(); return; }
       if ($('drawer').classList.contains('open')) { closeDrawer(); return; }
-      if (!modalEl.hidden) { closeModal(); return; }
     }
   });
 
@@ -706,6 +763,12 @@
         } catch (e) { /* 单次失败忽略 */ }
       }
       if (!setupActive) {
+        // 必须把引导浮层重新显示出来：showSetupError 只切子视图、不负责容器显隐。
+        // 否则错误文案与「重试」按钮都藏在 hidden 的浮层里，用户只看到占位 spinner
+        // 一直转（死路，只能强杀应用）。
+        setupActive = true;
+        setupOverlay.hidden = false;
+        hidePlaceholder();
         showSetupError('工作台未能启动', 'dsh 已安装，但工作台长时间未就绪。可点「重试」再试，或关闭应用后重新打开。');
       }
     })();
@@ -823,6 +886,9 @@
       const current = st.current || '未安装';
       dshLatestVer = st.latest || null;
       dshCurrentEl.textContent = current;
+      // 未安装时不要显示「当前」徽标（否则出现「未安装 + 当前」自相矛盾）
+      const curBadge = $('dshCurrentBadge');
+      if (curBadge) curBadge.hidden = !st.current || st.current === '未安装';
 
       const hasUpdate = !!dshLatestVer && dshLatestVer !== current && current !== '未安装';
       dshUpdateBanner.hidden = !hasUpdate;
@@ -848,9 +914,31 @@
     }
   }
 
+  // 语义化版本比较：主版本三段 + 预发布段。旧实现用 Number() 解析「0.1.1-rc.2」
+  // 会得到 NaN（按 0 处理），使「回滚目标」在 rc 版本之间可能选错。
   function cmpVer(a, b) {
-    const A = a.split('.').map(Number), B = b.split('.').map(Number);
-    for (let i = 0; i < 3; i++) if ((A[i] || 0) !== (B[i] || 0)) return (A[i] || 0) - (B[i] || 0);
+    const [am, ap] = String(a).split('-');
+    const [bm, bp] = String(b).split('-');
+    const A = String(am).split('.').map(Number), B = String(bm).split('.').map(Number);
+    for (let i = 0; i < 3; i++) {
+      const x = A[i] || 0, y = B[i] || 0;
+      if (x !== y) return x - y;
+    }
+    // 正式版 > 预发布版；两个预发布版按标识符逐段比较（纯数字按数值，否则字典序，
+    // 数字段优先级低于字母段——与 semver 一致）
+    if (!ap && !bp) return 0;
+    if (!ap) return 1;
+    if (!bp) return -1;
+    const as = String(ap).split('.'), bs = String(bp).split('.');
+    for (let i = 0; i < Math.max(as.length, bs.length); i++) {
+      const x = as[i], y = bs[i];
+      if (x === undefined) return -1;
+      if (y === undefined) return 1;
+      const nx = /^\d+$/.test(x), ny = /^\d+$/.test(y);
+      if (nx && ny) { const d = Number(x) - Number(y); if (d) return d; }
+      else if (nx !== ny) return nx ? -1 : 1;
+      else if (x !== y) return x < y ? -1 : 1;
+    }
     return 0;
   }
   // 回滚目标 = 低于当前版本的已安装最高版本
@@ -1143,6 +1231,9 @@
     line.appendChild(t);
     line.appendChild(m);
     pluginLogEl.appendChild(line);
+    // 输出无上限：pnpm 长输出可达上万行，节点与内存会无界增长（且每行都写一次
+    // scrollTop 触发同步重排）。只保留最近 500 行。
+    while (pluginLogEl.childElementCount > 500) pluginLogEl.removeChild(pluginLogEl.firstChild);
     pluginLogEl.scrollTop = pluginLogEl.scrollHeight;
   }
   function clearPluginLog() {

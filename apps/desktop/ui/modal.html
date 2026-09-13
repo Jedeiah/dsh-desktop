@@ -9,15 +9,24 @@
       /* 透明窗口：覆盖 theme.css 的 body 实色背景（否则圆角卡片外露出方框）；
          卡片本身自带渐变背景，body 透明不影响显示 */
       html, body { background: transparent; }
+      /* 卡片在窗口内居中。注意 theme.css 的 body 规则是给壳页的（v4 起不再带
+         flex 居中），弹窗页必须自己声明，否则卡片贴左上角、圆角外露一大片窗口。 */
+      body { display: flex; align-items: center; justify-content: center; }
+      /* 卡片不超出窗口：弹窗窗口固定 460×300 且不可缩放。内容超高时由消息区滚动，
+         保证底部按钮永远可见/可点（此前长文案会把「确定」推出窗口外，只能靠 ✕ 关）。 */
+      .card { max-height: 100%; }
+      .head, .foot { flex: none; }
       /* 卡片表面与壳页抽屉/命令面板同源（surface-1），顶部微高光贴合 macOS
          面板质感；不用 theme.css 的 .glow（透明窗口上 blur 光晕渲染发灰发脏，
          观感「不统一」，已移除） */
       .card {
         background: linear-gradient(180deg, var(--dsh-surface-2) 0%, var(--dsh-surface-1) 42px);
       }
-      /* 弹窗内嵌：消息可滚动区 */
+      /* 弹窗内嵌：消息区占满卡片剩余高度并内部滚动（flex + min-height:0 才允许
+         收缩到内容高度以下，长文案才滚得动） */
       .msg {
-        max-height: 220px;
+        flex: 1 1 auto;
+        min-height: 0;
         overflow-y: auto;
         font-size: 13px;
         line-height: 1.7;
@@ -27,8 +36,11 @@
         user-select: text;
       }
       .foot { display: flex; justify-content: flex-end; gap: 10px; margin-top: 2px; }
-      /* 右上角 ✕ 关闭（无系统标题栏后的替代） */
-      .close-x {
+      /* 右上角 ✕ 关闭（无系统标题栏后的替代）。
+         必须写 `.card button.close-x`：theme.css 有 `.card button{position:relative}`
+         （特异性 0,1,1，高于单独的 `.close-x` = 0,1,0），否则 ✕ 会变成流内元素、
+         把标题/正文整体下推，底部按钮被挤出窗口。 */
+      .card button.close-x {
         position: absolute;
         top: 12px; right: 14px;
         width: 26px; height: 26px;
@@ -42,7 +54,7 @@
         padding: 0;
         box-shadow: none;
       }
-      .close-x:hover { background: rgba(255, 255, 255, 0.08); color: var(--text); box-shadow: none; }
+      .card button.close-x:hover { background: rgba(255, 255, 255, 0.08); color: var(--text); box-shadow: none; }
       .card { padding-top: 30px; }
       .icon-badge.neutral {
         background: linear-gradient(180deg, rgba(79, 124, 247, 0.20), rgba(123, 127, 232, 0.10));

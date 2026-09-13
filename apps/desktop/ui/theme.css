@@ -804,18 +804,6 @@ body.chrome-collapsed .drawer { top: 0; }
   --shadow-card: var(--dsh-shadow-lg);
   --font: var(--dsh-font-ui);
 }
-.glow { position: fixed; z-index: 0; border-radius: 50%; filter: blur(90px); pointer-events: none; }
-.glow--a {
-  width: 36vw; height: 36vw; left: -14vw; top: -10vh;
-  background: radial-gradient(circle, rgba(61, 90, 240, 0.16) 0%, rgba(61, 90, 240, 0) 70%);
-  animation: drift 30s ease-in-out infinite alternate;
-}
-.glow--b {
-  width: 40vw; height: 40vw; right: -16vw; bottom: -12vh;
-  background: radial-gradient(circle, rgba(123, 147, 255, 0.14) 0%, rgba(123, 147, 255, 0) 70%);
-  animation: drift 40s ease-in-out infinite alternate;
-  animation-delay: -12s;
-}
 @keyframes drift {
   from { transform: translate3d(0, 0, 0) scale(1); }
   to   { transform: translate3d(4vw, -3vh, 0) scale(1.08); }
