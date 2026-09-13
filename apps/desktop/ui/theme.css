@@ -202,7 +202,9 @@ body.chrome-collapsed .stage { top: var(--h-handle); }
 .ambient-mark {
   position: absolute; left: 50%; top: 32%; transform: translate(-50%, -50%);
   width: min(34vh, 290px); height: min(34vh, 290px);
-  color: #fff; opacity: 0.04;
+  /* 我们的应用图标（icon.png）作为背景水印：彩色图在深底上给到 0.09 才看得清
+     （原来的 0.04 是给纯白线条 svg 的），保持低调不抢前景内容 */
+  opacity: 0.09; object-fit: contain;
 }
 /* 抽屉打开时右侧 560px 被抽屉占用：水印居中于「剩余区域」而不是整个窗口，
    视觉更平衡（用户建议）。 */
