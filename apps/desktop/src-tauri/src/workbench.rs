@@ -14,6 +14,16 @@ use tauri::{
 /// 顶栏逻辑高度；必须与 ui/theme.css `--dsh-h-chrome`（36px）一致。
 pub const TOPBAR_H_LOGICAL: f64 = 36.0;
 
+/// macOS 标准标题栏高（带装饰窗口 frame 顶到内容顶的差值，逻辑点）。
+/// 实测（2026-09-13 联调）：child webview 的 set_bounds 坐标按窗口 frame
+/// 原点（含标题栏）计算，而壳页内容从标题栏下方开始——窗口化时若不复位
+/// 会让 child 上移盖住壳层顶栏（症状：管理按钮只在全屏可见）。
+/// 全屏（无标题栏）时差值为 0；macOS 10.15+ 标准带标题窗口统一为 28pt。
+#[cfg(target_os = "macos")]
+pub const TITLEBAR_H_PT: f64 = 28.0;
+#[cfg(not(target_os = "macos"))]
+pub const TITLEBAR_H_PT: f64 = 0.0;
+
 /// child webview 在主窗客户区内的几何（物理像素）。
 pub struct Geom {
     pub x: i32,
@@ -173,10 +183,29 @@ pub fn sync_bounds(app: &AppHandle) {
         let size = window
             .inner_size()
             .unwrap_or(PhysicalSize::new(1280u32, 820u32));
+        // macOS 窗口化时原生标题栏算在窗口 frame 里、不算在 content（inner）里：
+        // child webview 的坐标若按 frame 定位，会把标题栏高当成内容起始点，导致
+        // webview 上移盖住壳层顶栏（症状：管理按钮只在全屏可见）。这里取
+        // outer-inner 差值（标题栏高，物理像素）补偿，全屏时差值为 0。
+        let outer_h = window.outer_size().unwrap_or(size).height as i64;
+        let inset = (outer_h - size.height as i64).max(0) as u32;
+        // 标题栏在屏幕坐标系里的真实占位（外/内原点差；outer-inner 尺寸差在
+        // macOS 上可能为 0，原点差才是全屏/窗口化差异的证据）
+        let op = window.outer_position().unwrap_or(PhysicalPosition::new(0, 0));
+        let ip = window.inner_position().unwrap_or(PhysicalPosition::new(0, 0));
+        // 窗口化时 child webview 按 frame 原点定位：补上标题栏高，才与壳页
+        // 内容区对齐（全屏时标题栏为 0）。见 TITLEBAR_H_PT 注释。
+        let is_fs = window.is_fullscreen().unwrap_or(false);
+        let tb_pt = if is_fs { 0.0 } else { TITLEBAR_H_PT };
         let g = geom(size.width, size.height, scale, collapsed);
+        let y = g.y as u32 + inset + (tb_pt * scale).round() as u32;
+        crate::logln(&format!(
+            "[workbench] bounds: y={} h={} scale={} collapsed={} fullscreen={} win={}x{} inset={} titlebar_pt={} outer_pos=({},{}) inner_pos=({},{})",
+            y, g.h, scale, collapsed, is_fs, size.width, size.height, inset, tb_pt, op.x, op.y, ip.x, ip.y
+        ));
         if let Some(wv) = window.get_webview(LABEL) {
             let _ = wv.set_bounds(Rect {
-                position: Position::Physical(PhysicalPosition::new(g.x, g.y)),
+                position: Position::Physical(PhysicalPosition::new(g.x, y as i32)),
                 size: Size::Physical(PhysicalSize::new(g.w, g.h)),
             });
         }
@@ -215,9 +244,38 @@ fn open_fallback_window(app: &AppHandle, url: &str) {
     }
 }
 
-/// 显示工作台（切到工作台 tab）。降级：窗口 show+focus。
+/// 显示工作台（切到工作台 tab / 主窗从后台恢复）。降级：窗口 show+focus。
 #[tauri::command]
 pub fn show_workbench_cmd(app: AppHandle) {
+    show_child(&app);
+}
+
+/// 隐藏工作台（切到管理页 / 主窗关到后台）。降级：窗口 hide。
+#[tauri::command]
+pub fn hide_workbench_cmd(app: AppHandle) {
+    hide_child(&app);
+}
+
+/// 隐藏工作台 child webview（或降级窗口）。macOS 上 child webview 是独立
+/// NSWindow，主窗口 hide 不会带它一起隐藏——主窗关到后台必须显式调这里，
+/// 否则工作台残留在屏幕上（用户第 1 版「关闭没反应」的根因之一）。
+pub fn hide_child(app: &AppHandle) {
+    let app2 = app.clone();
+    let _ = app2.clone().run_on_main_thread(move || {
+        if FALLBACK.load(Ordering::SeqCst) {
+            if let Some(w) = app2.get_webview_window(LABEL) {
+                let _ = w.hide();
+            }
+        } else if let Some(window) = app2.get_window(crate::WINDOW_LABEL) {
+            if let Some(wv) = window.get_webview(LABEL) {
+                let _ = wv.hide();
+            }
+        }
+    });
+}
+
+/// 显示工作台 child webview（或降级窗口）；主窗恢复显示时调用。
+pub fn show_child(app: &AppHandle) {
     let app2 = app.clone();
     let _ = app2.clone().run_on_main_thread(move || {
         if FALLBACK.load(Ordering::SeqCst) {
@@ -228,23 +286,6 @@ pub fn show_workbench_cmd(app: AppHandle) {
         } else if let Some(window) = app2.get_window(crate::WINDOW_LABEL) {
             if let Some(wv) = window.get_webview(LABEL) {
                 let _ = wv.show();
-            }
-        }
-    });
-}
-
-/// 隐藏工作台（切到管理页）。
-#[tauri::command]
-pub fn hide_workbench_cmd(app: AppHandle) {
-    let app2 = app.clone();
-    let _ = app2.clone().run_on_main_thread(move || {
-        if FALLBACK.load(Ordering::SeqCst) {
-            if let Some(w) = app2.get_webview_window(LABEL) {
-                let _ = w.hide();
-            }
-        } else if let Some(window) = app2.get_window(crate::WINDOW_LABEL) {
-            if let Some(wv) = window.get_webview(LABEL) {
-                let _ = wv.hide();
             }
         }
     });
@@ -276,6 +317,7 @@ pub fn workbench_ready_cmd() -> bool {
 /// 顶栏折叠态同步（shell.js applyTabsCollapsed 调用）。
 #[tauri::command]
 pub fn workbench_set_collapsed_cmd(app: AppHandle, collapsed: bool) {
+    crate::logln(&format!("[workbench] collapsed 同步: {collapsed}"));
     COLLAPSED.store(collapsed, Ordering::SeqCst);
     sync_bounds(&app);
 }

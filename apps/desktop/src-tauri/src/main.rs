@@ -58,6 +58,10 @@ static DSH_URL: Mutex<Option<String>> = Mutex::new(None);
 static INTENTIONAL_STOP: AtomicBool = AtomicBool::new(false);
 /// Consecutive crash count, used for restart backoff.
 static CRASHES: AtomicU32 = AtomicU32::new(0);
+/// 用户主动关闭主窗口（红点/⌘W）→「关到后台」：程序与 dsh 继续运行、托盘常驻；
+/// 置位期间崩溃自愈 / 后台重启不得重新弹窗（托盘「显示主窗口」与 Dock 图标召回
+/// 时清除）。这与「托盘退出=真正退出」的分层语义一致（文件头 Behaviour 注释）。
+static USER_HIDDEN: AtomicBool = AtomicBool::new(false);
 /// Launcher log file (packaged mode). Empty in dev (stderr goes to terminal).
 static LOG_FILE: Mutex<Option<std::fs::File>> = Mutex::new(None);
 /// 自绘弹窗（modal.html）：当前待显示的弹窗内容。替代 rfd 系统对话框，
@@ -835,16 +839,11 @@ pub(crate) fn boot(app: AppHandle) {
         }
         let delay_ms = (RESTART_BASE_MS * 2_u64.pow(n.min(6))).min(RESTART_MAX_MS);
         logln!("dsh crashed (count={n}); restarting in {delay_ms}ms");
+        // 直接重启，不关闭/重建主窗：child webview 由 ensure_ready 按新 URL 重导航，
+        // 窗口保持原可见状态（用户已关到后台时不会被弹回——USER_HIDDEN 语义）。
         let app2 = app.clone();
         std::thread::spawn(move || {
             std::thread::sleep(Duration::from_millis(delay_ms));
-            let receiver = app2.clone();
-            let closer = app2.clone();
-            let _ = receiver.run_on_main_thread(move || {
-                if let Some(w) = closer.get_webview_window(WINDOW_LABEL) {
-                    let _ = w.close();
-                }
-            });
             boot(app2);
         });
     }
@@ -860,6 +859,16 @@ pub(crate) fn boot(app: AppHandle) {
 //    不再重定位。这是启动"往上闪一下"的根因修复：此前窗口创建即 show、
 //    dsh 就绪又 center+show 一次，macOS 会对已显示窗口再次定位，产生跳动。
 pub(crate) fn reveal_main_window(app: &AppHandle, url: Option<&str>) {
+    // 用户已主动关到后台（红点/⌘W）：仍推送最新 dsh URL（工作台换端口/重启后
+    // 壳页兜底需要），但不重新弹出窗口——崩溃自愈、后台重启都不得打扰。
+    if USER_HIDDEN.load(Ordering::SeqCst) {
+        if let Some(u) = url {
+            let _ = app
+                .get_webview_window(WINDOW_LABEL)
+                .map(|w| w.emit("dsh:url", u));
+        }
+        return;
+    }
     let Some(w) = app.get_webview_window(WINDOW_LABEL) else {
         // 兜底：主窗不存在（极罕见）时重建壳页。shell.js 自带 get_dsh_url
         // 轮询兜底，重建后无需再补发地址事件。
@@ -889,6 +898,9 @@ pub(crate) fn reveal_main_window(app: &AppHandle, url: Option<&str>) {
         let _ = w.show();
     }
     let _ = w.set_focus();
+    // macOS child webview 是独立 NSWindow，不随主窗恢复——同步恢复，否则工作台
+    // 从后台召回后是空白页。
+    crate::workbench::show_child(app);
 }
 
 /// Open a URL in the system default browser.
@@ -1728,8 +1740,10 @@ fn main() {
                         kill_dsh();
                         app.exit(0);
                     }
-                    // 显示主窗口（左键点击托盘图标同样走此路径；管理台已并入）
+                    // 显示主窗口（左键点击托盘图标同样走此路径；管理台已并入）。
+                    // 用户主动召回：清除「关到后台」标记，允许 reveal 弹出。
                     "show" => {
+                        USER_HIDDEN.store(false, Ordering::SeqCst);
                         reveal_main_window(app, mlock(&DSH_URL).as_deref());
                     }
                     _ => {}
@@ -1741,6 +1755,7 @@ fn main() {
                     } = event
                     {
                         let app = tray.app_handle();
+                        USER_HIDDEN.store(false, Ordering::SeqCst);
                         reveal_main_window(app, mlock(&DSH_URL).as_deref());
                     }
                 })
@@ -1856,7 +1871,16 @@ fn main() {
                 event: WindowEvent::CloseRequested { api, .. },
                 ..
             } if label == WINDOW_LABEL => {
+                // 红点关闭 = 关到后台（close-to-tray）：只隐藏主窗，程序与 dsh
+                // 继续运行、托盘常驻；托盘「显示主窗口」/Dock 图标可召回，
+                // 托盘「退出」才真正退出。此前曾改为直接退出应用（用户实测反馈
+                // 预期与此语义相悖），且崩溃自愈循环会在杀掉 dsh 后反复弹回窗口，
+                // 观感为「关闭没反应」——那已由「自愈不 close 主窗 + USER_HIDDEN
+                // 不弹回 + child webview 随主窗隐藏」三处修复解决。
                 api.prevent_close();
+                logln!("[main] close requested → 隐藏窗口（程序与 dsh 后台继续；托盘退出才退出）");
+                USER_HIDDEN.store(true, Ordering::SeqCst);
+                crate::workbench::hide_child(_app_handle);
                 if let Some(w) = _app_handle.get_webview_window(WINDOW_LABEL) {
                     let _ = w.hide();
                 }
@@ -1864,6 +1888,7 @@ fn main() {
             // macOS: clicking the dock icon re-opens a hidden window.
             #[cfg(target_os = "macos")]
             RunEvent::Reopen { .. } => {
+                USER_HIDDEN.store(false, Ordering::SeqCst);
                 reveal_main_window(_app_handle, mlock(&DSH_URL).as_deref());
             }
             RunEvent::ExitRequested { api, .. } => {

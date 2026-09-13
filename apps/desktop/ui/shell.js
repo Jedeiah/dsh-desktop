@@ -222,6 +222,10 @@
   function openPalette() {
     paletteOpen = true;
     $('paletteOverlay').hidden = false;
+    // 命令面板是居中浮层，与工作台区域重叠；原生工作台 webview 盖在所有 HTML
+    // 之上（macOS 独立 NSWindow），必须像抽屉一样显式隐藏，否则面板被盖住
+    // 看不见（用户反馈「点管理没出现操作页面」的唯一原因）。
+    invoke('hide_workbench_cmd').catch(() => {});
     $('paletteInput').value = '';
     paletteSel = 0;
     renderPalette('');
@@ -230,6 +234,9 @@
   function closePalette() {
     paletteOpen = false;
     $('paletteOverlay').hidden = true;
+    // 恢复工作台；仅当随后会开出抽屉时跳过（runPaletteItem → goRegion 由
+    // openDrawer 再隐藏，两次 invoke 按发出顺序执行，最终态正确）。
+    if (!$('drawer').classList.contains('open')) invoke('show_workbench_cmd').catch(() => {});
   }
   function renderPalette(q) {
     q = (q || '').trim().toLowerCase();

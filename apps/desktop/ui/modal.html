@@ -9,6 +9,12 @@
       /* 透明窗口：覆盖 theme.css 的 body 实色背景（否则圆角卡片外露出方框）；
          卡片本身自带渐变背景，body 透明不影响显示 */
       html, body { background: transparent; }
+      /* 卡片表面与壳页抽屉/命令面板同源（surface-1），顶部微高光贴合 macOS
+         面板质感；不用 theme.css 的 .glow（透明窗口上 blur 光晕渲染发灰发脏，
+         观感「不统一」，已移除） */
+      .card {
+        background: linear-gradient(180deg, var(--dsh-surface-2) 0%, var(--dsh-surface-1) 42px);
+      }
       /* 弹窗内嵌：消息可滚动区 */
       .msg {
         max-height: 220px;
@@ -44,9 +50,6 @@
     </style>
   </head>
   <body>
-    <div class="glow glow--a" aria-hidden="true"></div>
-    <div class="glow glow--b" aria-hidden="true"></div>
-
     <div class="card anim">
       <button class="close-x" id="closeX" aria-label="关闭" title="关闭">✕</button>
       <div class="head anim" id="head" data-tauri-drag-region>
