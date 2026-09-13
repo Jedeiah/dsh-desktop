@@ -480,13 +480,15 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
 
-    fn tmp() -> PathBuf {
-        std::env::temp_dir().join(format!("plugin-test-{}", std::process::id()))
+    /// 每个测试一个独立顶层目录（`plugin-test-<pid>-<name>`），理由同 dsh.rs
+    /// 的 test_dir：避免并发测试互删，且不在临时区留下空目录。
+    fn test_dir(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("plugin-test-{}-{name}", std::process::id()))
     }
 
     #[test]
     fn list_plugins_reads_profile_package_json() {
-        let root = tmp().join("web");
+        let root = test_dir("web");
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join("node_modules/@linxin666/dsh-web-ui-all")).unwrap();
         std::fs::write(
@@ -515,7 +517,7 @@ mod tests {
 
     #[test]
     fn list_plugins_tolerates_missing_profile() {
-        let root = tmp().join("nonexistent");
+        let root = test_dir("nonexistent");
         let _ = std::fs::remove_dir_all(&root);
         assert!(list_installed_plugins(&root).is_empty());
         std::fs::create_dir_all(&root).unwrap();

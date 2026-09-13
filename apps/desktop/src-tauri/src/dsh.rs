@@ -441,13 +441,16 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
 
-    fn tmp() -> PathBuf {
-        std::env::temp_dir().join(format!("dsh-test-{}", std::process::id()))
+    /// 每个测试一个独立顶层目录（`dsh-test-<pid>-<name>`）。不用共享的
+    /// `dsh-test-<pid>` 父目录：那会让并发跑测试时互相删掉对方的目录，而且
+    /// 末尾只删子目录会把这个空父目录留在临时区（实测每次 cargo test 漏一个）。
+    fn test_dir(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("dsh-test-{}-{name}", std::process::id()))
     }
 
     #[test]
     fn closure_version_reads_marker_then_package_json() {
-        let root = tmp().join("closure_version");
+        let root = test_dir("closure_version");
         let _ = std::fs::remove_dir_all(&root);
         let dir = root.join("v0.1.1-rc.2");
         std::fs::create_dir_all(&dir).unwrap();
@@ -468,7 +471,7 @@ mod tests {
 
     #[test]
     fn installed_versions_lists_desc() {
-        let root = tmp().join("installed");
+        let root = test_dir("installed");
         let _ = std::fs::remove_dir_all(&root);
         // 规格 4.3 布局：闭包在 <app-data>/dsh/v<ver>/。构造**可用**闭包
         //（VERSION 标记 + 入口 lib/bin.js），匹配 closure_is_usable 判定。
@@ -481,7 +484,7 @@ mod tests {
         std::fs::create_dir_all(root.join("dsh/npm-cache")).unwrap(); // 非 v* 应忽略
         std::fs::create_dir_all(root.join("dsh/v0.1.0-rc.6.old")).unwrap(); // .old 残留应忽略
         let p = crate::Paths {
-            resources: tmp(),
+            resources: root.join("resources"),
             app_data: root.clone(),
         };
         assert_eq!(
@@ -493,14 +496,14 @@ mod tests {
 
     #[test]
     fn current_closure_requires_valid_dir() {
-        let root = tmp().join("current_marker");
+        let root = test_dir("current_marker");
         let _ = std::fs::remove_dir_all(&root);
         // current 标记 + 闭包目录 + node_modules/@deepseek-ai/dsh 三者齐备才算有效
         let ver_dir = root.join("dsh/v0.1.1-rc.2");
         std::fs::create_dir_all(ver_dir.join("node_modules/@deepseek-ai/dsh")).unwrap();
         std::fs::create_dir_all(root.join("dsh/npm-cache")).unwrap();
         std::fs::write(root.join("dsh/current"), "v0.1.1-rc.2\n").unwrap();
-        let p = crate::Paths { resources: tmp(), app_data: root.clone() };
+        let p = crate::Paths { resources: root.join("resources"), app_data: root.clone() };
         assert_eq!(
             current_closure(&p).unwrap().file_name().unwrap().to_string_lossy(),
             "v0.1.1-rc.2"
