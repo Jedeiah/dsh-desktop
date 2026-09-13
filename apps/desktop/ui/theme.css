@@ -161,16 +161,48 @@ body {
  * ========================================================================= */
 .stage {
   position: absolute; left: 0; right: 0; bottom: 0; top: var(--h-chrome);
-  background: var(--bg);
+  /* 透明：露出体层氛围背景（.ambient）。工作台 child webview 覆盖时无影响；
+     抽屉/命令面板打开时是品牌光晕而非死灰底 */
+  background: transparent;
   transition: top var(--dur) var(--ease);
 }
 body.chrome-collapsed .stage { top: 0; }
+
+/* =============================================================================
+ * 体层氛围背景（工作台隐藏时可见：抽屉 / 命令面板 / 启动加载）
+ * ============================================================================= */
+.ambient { position: absolute; inset: 0; z-index: 0; overflow: hidden; pointer-events: none; }
+.ambient-glow { position: absolute; border-radius: 50%; filter: blur(90px); }
+.ambient-glow--a {
+  width: 48vw; height: 48vw; left: -14vw; top: -18vh;
+  background: radial-gradient(circle, rgba(77, 107, 254, 0.24) 0%, rgba(77, 107, 254, 0) 68%);
+}
+.ambient-glow--b {
+  width: 54vw; height: 54vw; right: -18vw; bottom: -22vh;
+  background: radial-gradient(circle, rgba(123, 147, 255, 0.17) 0%, rgba(123, 147, 255, 0) 70%);
+}
+.ambient-grid {
+  position: absolute; inset: 0;
+  background-image:
+    linear-gradient(rgba(255, 255, 255, 0.04) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.04) 1px, transparent 1px);
+  background-size: 30px 30px;
+  -webkit-mask-image: radial-gradient(ellipse 85% 75% at 50% 36%, #000 0%, transparent 78%);
+  mask-image: radial-gradient(ellipse 85% 75% at 50% 36%, #000 0%, transparent 78%);
+}
+.ambient-mark {
+  position: absolute; left: 50%; top: 44%; transform: translate(-50%, -50%);
+  width: min(38vh, 320px); height: min(38vh, 320px);
+  color: #fff; opacity: 0.04;
+}
 
 /* 启动占位 */
 .startup {
   position: absolute; inset: 0; z-index: 2;
   display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px;
-  background: var(--bg);
+  /* 透明：启动期露出氛围背景，与抽屉/面板打开时的视觉连续（原实色 --bg
+     在大屏上是一整块死灰，用户反馈难看） */
+  background: transparent;
 }
 .startup-mark { width: 56px; height: 56px; border-radius: 14px; }
 .startup-title { font-size: var(--fs-title); font-weight: 600; color: var(--fg); }

@@ -869,6 +869,10 @@ pub(crate) fn reveal_main_window(app: &AppHandle, url: Option<&str>) {
         }
         return;
     }
+    // 从「关到后台」（AppHandle::hide → NSApp hide）恢复：先 unhide 应用，
+    // 否则单独 show 窗口可能不出现（macOS 应用级隐藏需先解除）。
+    #[cfg(target_os = "macos")]
+    let _ = app.show();
     let Some(w) = app.get_webview_window(WINDOW_LABEL) else {
         // 兜底：主窗不存在（极罕见）时重建壳页。shell.js 自带 get_dsh_url
         // 轮询兜底，重建后无需再补发地址事件。
@@ -1287,7 +1291,10 @@ fn open_browser_cmd(_app: AppHandle) -> Result<(), String> {
 fn open_workbench_url_cmd(window: tauri::WebviewWindow) -> Result<(), String> {
     crate::ensure_shell_window(&window)?;
     if let Some(url) = get_dsh_url() {
+        logln(&format!("[main] 双击品牌 → 系统浏览器打开工作台: {url}"));
         open_url(&url);
+    } else {
+        logln("[main] 双击品牌 → 工作台地址未就绪，忽略");
     }
     Ok(())
 }
@@ -1848,6 +1855,52 @@ fn main() {
                 reveal_main_window(&reveal_app, mlock(&DSH_URL).as_deref());
             });
             std::thread::spawn(move || boot(handle));
+            // 自检钩子（DSH_SELF_HIDE_TEST=1）：启动 13s 后复刻 CloseRequested 的
+            // 「关到后台」动作（USER_HIDDEN + 隐藏 child + AppHandle::hide），
+            // 6s 后列出所有窗口可见性并恢复显示后退出。用于无法点击红点（自动化 /
+            // 远程会话）时验证 close-to-tray 链路；不设该环境变量完全不参与运行。
+            if std::env::var("DSH_SELF_HIDE_TEST").is_ok() {
+                let t = app.handle().clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(Duration::from_secs(13));
+                    let t2 = t.clone();
+                    let _ = t.run_on_main_thread(move || {
+                        crate::logln("[selftest] 复刻关到后台动作");
+                        USER_HIDDEN.store(true, Ordering::SeqCst);
+                        crate::workbench::hide_child(&t2);
+                        #[cfg(target_os = "macos")]
+                        let r = t2.hide();
+                        #[cfg(not(target_os = "macos"))]
+                        let r = Ok::<(), tauri::Error>(());
+                        crate::logln(&format!("[selftest] hide → {r:?}"));
+                    });
+                    std::thread::sleep(Duration::from_secs(6));
+                    let t3 = t.clone();
+                    let t3b = t3.clone();
+                    let _ = t3.run_on_main_thread(move || {
+                        // 模拟托盘「显示主窗口」/ Dock 召回：清 USER_HIDDEN 后走
+                        // 统一 reveal 通道（内部 app.show + 窗口 show + child show）
+                        USER_HIDDEN.store(false, Ordering::SeqCst);
+                        logln("[selftest] 复刻召回动作（reveal_main_window）");
+                        reveal_main_window(&t3b, mlock(&DSH_URL).as_deref());
+                    });
+                    std::thread::sleep(Duration::from_secs(5));
+                    let t4 = t.clone();
+                    let t4b = t4.clone();
+                    let _ = t4.run_on_main_thread(move || {
+                        let list: Vec<String> = t4b
+                            .webview_windows()
+                            .iter()
+                            .map(|(l, w)| format!("{l}:visible={}", w.is_visible().unwrap_or(true)))
+                            .collect();
+                        crate::logln(&format!(
+                            "[selftest] after restore windows: [{}]",
+                            list.join(", ")
+                        ));
+                        t4b.exit(0);
+                    });
+                });
+            }
             // 启动时异步查一次 latest（替代旧 24h 定时检查）；离线/断网失败静默不打扰
             {
                 let app = app.handle().clone();
@@ -1878,31 +1931,43 @@ fn main() {
                 // 观感为「关闭没反应」——那已由「自愈不 close 主窗 + USER_HIDDEN
                 // 不弹回 + child webview 随主窗隐藏」三处修复解决。
                 api.prevent_close();
-                logln!("[main] close requested → 隐藏窗口（程序与 dsh 后台继续；托盘退出才退出）");
+                logln!("[main] close requested → 关到后台（app.hide；程序与 dsh 继续运行）");
                 USER_HIDDEN.store(true, Ordering::SeqCst);
+                // child webview 是独立 NSWindow，app.hide 之外仍需单独隐藏
                 crate::workbench::hide_child(_app_handle);
-                if let Some(w) = _app_handle.get_webview_window(WINDOW_LABEL) {
-                    let _ = w.hide();
-                }
-                // 实证：1.2s 后复查窗口可见性与 child webview 是否存在，写入日志。
-                // 下次运行时直接据此判断「关到后台」是否被环境因素（OS 窗口管理、
-                // 误召回等）打断，不必再凭现象猜。
+                // 实证（2026-09-13，CGWindowList + 抽样日志）：Tauri 2.11.5 macOS 上
+                // WebviewWindow::hide() 调用后窗口仍在窗口服务器列表中（用户看到
+                // 「工作台没了、壳页灰底还在」）；改用 AppHandle::hide()（NSApp hide，
+                // 等价 ⌘H，隐藏整个应用的所有窗口）后窗口真正从屏幕消失，程序与 dsh
+                // 继续后台运行，托盘「显示主窗口」/Dock 图标可召回。
+                #[cfg(target_os = "macos")]
+                let hide_res = _app_handle.hide();
+                #[cfg(not(target_os = "macos"))]
+                let hide_res = {
+                    let _ = _app_handle
+                        .get_webview_window(WINDOW_LABEL)
+                        .map(|w| w.hide());
+                    Ok::<(), tauri::Error>(())
+                };
+                logln(&format!("[main] app.hide → {hide_res:?}"));
+                // 诊断：1.2s 后列出所有窗口标签与可见性（get_webview_window 在部分
+                // 状态下会返回 None 导致误报，列表方式更可靠），便于现场核对。
                 {
-                    let check_app = _app_handle.clone();
+                    let c = _app_handle.clone();
                     std::thread::spawn(move || {
                         std::thread::sleep(Duration::from_millis(1200));
-                        let inner = check_app.clone();
-                        let _ = check_app.run_on_main_thread(move || {
-                            let vis = inner
-                                .get_webview_window(WINDOW_LABEL)
-                                .map(|w| w.is_visible().unwrap_or(true))
-                                .unwrap_or(true);
-                            let child = inner
-                                .get_window(WINDOW_LABEL)
-                                .map(|win| win.get_webview(crate::workbench::LABEL).is_some())
-                                .unwrap_or(false);
+                        let c2 = c.clone();
+                        let _ = c.run_on_main_thread(move || {
+                            let list: Vec<String> = c2
+                                .webview_windows()
+                                .iter()
+                                .map(|(l, w)| {
+                                    format!("{l}:visible={}", w.is_visible().unwrap_or(true))
+                                })
+                                .collect();
                             crate::logln(&format!(
-                                "[main] post-close check: window_visible={vis} child_exists={child}"
+                                "[main] post-close windows: [{}]",
+                                list.join(", ")
                             ));
                         });
                     });

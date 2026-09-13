@@ -144,11 +144,13 @@
     }
   })();
 
-  // ---------------- 品牌：单击刷新，双击系统浏览器打开（200ms 延时消歧） ----------------
+  // ---------------- 品牌：单击刷新，双击系统浏览器打开（350ms 延时消歧） ----------------
+  // 判定窗口从 200ms 放宽到 350ms：人手双击间隔常见 250-400ms，原值下慢一点的
+  // 双击会退化成「两次单击刷新」，表现为「双击没反应」。
   let brandTimer = null;
   $('brand').addEventListener('click', () => {
     clearTimeout(brandTimer);
-    brandTimer = setTimeout(() => invoke('workbench_reload_cmd').catch(() => {}), 200);
+    brandTimer = setTimeout(() => invoke('workbench_reload_cmd').catch(() => {}), 350);
   });
   $('brand').addEventListener('dblclick', () => {
     clearTimeout(brandTimer);
@@ -179,6 +181,14 @@
     } catch (e) { /* 忽略 */ }
   }, 4000);
 
+  // 「收起导航栏」防误触开关：抽屉 / 命令面板打开期间禁用折叠按钮——两者都是
+// 右上角附近的浮层，用户常把折叠按钮当作浮层关闭按钮点击，导致整个顶栏消失
+// （症状：管理那一行不见了、还找不到展开把手）。
+  function syncCollapseGuard() {
+    const overlayOpen = paletteOpen || $('drawer').classList.contains('open');
+    $('btnCollapseChrome').disabled = overlayOpen;
+  }
+
   // ---------------- 区域 / 抽屉 ----------------
   const REGIONS = [
     { id: 'workbench', label: '工作台', hint: '关闭浮层，回到 dsh 工作台', icon: ICON.layers },
@@ -208,7 +218,7 @@
     // 抽屉打开期间禁用「收起导航栏」：折叠按钮紧邻抽屉关闭按钮、都是右上角，
     // 极易误触导致整个顶栏消失（用户多次踩坑）。折叠仍可在收起抽屉后/⌘K
     // 命令面板里进行。
-    $('btnCollapseChrome').disabled = true;
+    syncCollapseGuard();
     // 工作台是原生 webview，盖在所有 HTML 之上：抽屉打开必须显式隐藏
     if (section !== 'workbench') invoke('hide_workbench_cmd').catch(() => {});
     // 切到该分段时刷新数据（安装/插件状态可能已在后台变化）
@@ -219,7 +229,7 @@
   function closeDrawer() {
     $('drawer').classList.remove('open');
     region = 'workbench';
-    $('btnCollapseChrome').disabled = false;
+    syncCollapseGuard();
     // 等抽屉收回动画（0.2s transition）播完再恢复工作台：立即恢复会让工作台
     // 突然盖住还在滑动中的抽屉，观感变成「收回没有动效、一下消失」
     setTimeout(() => invoke('show_workbench_cmd').catch(() => {}), 260);
@@ -238,6 +248,8 @@
   function openPalette() {
     paletteOpen = true;
     $('paletteOverlay').hidden = false;
+    // 命令面板与抽屉同样禁用折叠按钮（同一个右上角误触坑）
+    syncCollapseGuard();
     // 命令面板是居中浮层，与工作台区域重叠；原生工作台 webview 盖在所有 HTML
     // 之上（macOS 独立 NSWindow），必须像抽屉一样显式隐藏，否则面板被盖住
     // 看不见（用户反馈「点管理没出现操作页面」的唯一原因）。
@@ -250,6 +262,7 @@
   function closePalette() {
     paletteOpen = false;
     $('paletteOverlay').hidden = true;
+    syncCollapseGuard();
     // 恢复工作台；仅当随后会开出抽屉时跳过（runPaletteItem → goRegion 由
     // openDrawer 再隐藏，两次 invoke 按发出顺序执行，最终态正确）。
     if (!$('drawer').classList.contains('open')) invoke('show_workbench_cmd').catch(() => {});
