@@ -797,6 +797,9 @@ pub(crate) fn boot(app: AppHandle) {
                 if let Some(idx) = l.find("http://127.0.0.1:") {
                     let url = l[idx..].split_whitespace().next().unwrap_or("").to_string();
                     if !url.is_empty() {
+                        // 工作台通道：child webview 顶层导航到就绪 URL（first-party
+                        // 认证由 WebView 原生完成；换端口/重启时 url_changed 判定后重导航）
+                        crate::workbench::ensure_ready(&app, &url);
                         *mlock(&DSH_URL) = Some(url.clone());
                         CRASHES.store(0, Ordering::SeqCst); // healthy
                         let app2 = app.clone();
@@ -1693,6 +1696,11 @@ fn main() {
             setup_cancel_cmd,
             list_dsh_versions_cmd,
             version_exists_cmd,
+            workbench::show_workbench_cmd,
+            workbench::hide_workbench_cmd,
+            workbench::workbench_reload_cmd,
+            workbench::workbench_ready_cmd,
+            workbench::workbench_set_collapsed_cmd,
         ])
         .setup(|app| {
             // 托盘最小集：显示主窗口 / 退出（左键点击即显示主窗口；
