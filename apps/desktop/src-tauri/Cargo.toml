@@ -20,6 +20,12 @@ tauri-plugin-single-instance = "2"
 # 仅 unix 用 PID+SIGTERM 结束 dsh 子进程（dsh.rs 与 capture_user_env）
 libc = "0.2"
 
+[target.'cfg(target_os = "macos")'.dependencies]
+# macOS 原生窗口隐藏/唤醒（orderOut: / makeKeyAndOrderFront:）。实证：Tauri 2.11.5
+# 的 WebviewWindow::hide() 调用后窗口仍在屏幕上；AppHandle::hide() 能隐藏但会清空
+# 窗口注册表（召回时误判「窗口不存在」→ 重建壳页 → 丢工作台）。故直接走 AppKit。
+objc = "0.2"
+
 [target.'cfg(windows)'.dependencies]
 # Windows 专属：回收站（卸载时移入回收站）。
 trash = "5"

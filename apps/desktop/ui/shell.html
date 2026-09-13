@@ -8,19 +8,6 @@
   </head>
   <body>
 
-<!-- ===================== 氛围背景 ===================== -->
-<!-- 纯装饰层：工作台 webview 覆盖时不可见；抽屉/命令面板打开、启动加载阶段
-     露出，避免大面积死灰底（品牌光晕 + 细网格 + 中央淡水印） -->
-<div class="ambient" aria-hidden="true">
-  <div class="ambient-glow ambient-glow--a"></div>
-  <div class="ambient-glow ambient-glow--b"></div>
-  <div class="ambient-grid"></div>
-  <svg class="ambient-mark" viewBox="0 0 24 24" aria-hidden="true">
-    <rect x="1" y="1" width="22" height="22" rx="6" fill="none" stroke="currentColor" stroke-width="1.1"/>
-    <path d="M8 9.5l3 2.5-3 2.5M13 14.5h4" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linecap="round" stroke-linejoin="round"/>
-  </svg>
-</div>
-
 <!-- ===================== 工作台基底 ===================== -->
 <!-- 工作台 = 原生 child webview（workbench.rs ensure_ready 垫底），壳页不放 iframe -->
 <div class="stage" id="stage">
@@ -52,9 +39,6 @@
 
   <button class="task-pill" id="taskPill" hidden aria-label="任务中心"></button>
   <button class="manage-btn" id="btnManage">管理 <kbd>⌘K</kbd></button>
-  <button class="icon-btn" id="btnCollapseChrome" title="收起导航栏" aria-label="收起导航栏">
-    <svg class="ic" viewBox="0 0 20 20"><path d="M5 12.5l5-5 5 5"/></svg>
-  </button>
 
   <!-- 任务详情 -->
   <div class="task-pop" id="taskPop" hidden>
@@ -63,9 +47,10 @@
   </div>
 </header>
 
-<!-- 折叠后的唤出把手 -->
-<button class="chrome-restore" id="chromeRestore" hidden title="展开导航栏" aria-label="展开导航栏">
-  <svg class="ic" viewBox="0 0 20 20"><path d="M5 7.5l5 5 5-5"/></svg>
+<!-- 顶栏折叠把手（常驻；参考 main 分支的 tb-toggle：同一按钮切换收起/展开，
+     图标旋转 180°，折叠后依然可见可点——工作台从把手条下方开始渲染） -->
+<button class="chrome-toggle" id="chromeToggle" title="收起导航栏" aria-label="收起/展开导航栏" aria-expanded="true">
+  <span class="chrome-caret" aria-hidden="true"></span>
 </button>
 
 <!-- ===================== 管理抽屉 ===================== -->

@@ -159,34 +159,31 @@
   });
 
   // ---------------- 顶栏折叠（状态记忆；Rust 几何联动 workbench_set_collapsed_cmd） ----------------
+  // 参考 main 分支的切换把手：同一个常驻按钮点击切换收起/展开，图标旋转 180°，
+  // 折叠后仍可见可点——工作台从把手条（18px）下方开始渲染，把手不会被原生
+  // webview 盖住（这是此前「折叠后看不到展开按钮」的根因）。
   function setChromeCollapsed(v) {
     document.body.classList.toggle('chrome-collapsed', v);
-    $('chromeRestore').hidden = !v;
+    const tg = $('chromeToggle');
+    tg.title = v ? '展开导航栏' : '收起导航栏';
+    tg.setAttribute('aria-expanded', String(!v));
     try { localStorage.setItem('chromeCollapsed', v ? '1' : '0'); } catch (e) { /* 忽略 */ }
     invoke('workbench_set_collapsed_cmd', { collapsed: v }).catch(() => {});
   }
-  $('btnCollapseChrome').addEventListener('click', () => setChromeCollapsed(true));
-  $('chromeRestore').addEventListener('click', () => setChromeCollapsed(false));
+  $('chromeToggle').addEventListener('click', () => {
+    setChromeCollapsed(!document.body.classList.contains('chrome-collapsed'));
+  });
   try {
     setChromeCollapsed(localStorage.getItem('chromeCollapsed') === '1' ? true
       : localStorage.getItem('tabsCollapsed') === '1');
   } catch (e) { setChromeCollapsed(false); }
-  // 启动还原时若顶栏处于折叠（上次误触 / 遗留状态），4s 后提示展开入口——
-  // 否则用户看到「管理那一行不见了」却不知道去哪里找回（顶部中央小把手）。
-  setTimeout(() => {
-    try {
-      if (localStorage.getItem('chromeCollapsed') === '1' || localStorage.getItem('tabsCollapsed') === '1') {
-        toast('顶部导航栏已收起：点窗口顶部中央的小把手即可展开');
-      }
-    } catch (e) { /* 忽略 */ }
-  }, 4000);
 
   // 「收起导航栏」防误触开关：抽屉 / 命令面板打开期间禁用折叠按钮——两者都是
 // 右上角附近的浮层，用户常把折叠按钮当作浮层关闭按钮点击，导致整个顶栏消失
 // （症状：管理那一行不见了、还找不到展开把手）。
   function syncCollapseGuard() {
     const overlayOpen = paletteOpen || $('drawer').classList.contains('open');
-    $('btnCollapseChrome').disabled = overlayOpen;
+    $('chromeToggle').disabled = overlayOpen;
   }
 
   // ---------------- 区域 / 抽屉 ----------------
@@ -201,7 +198,7 @@
     { id: 'openBrowser', label: '在浏览器打开工作台', hint: '用系统默认浏览器打开当前 dsh 地址', icon: ICON.external, run: () => { invoke('open_workbench_url_cmd').catch(() => {}); toast('已在浏览器打开工作台地址'); } },
     { id: 'checkDsh', label: '检查 dsh 更新', hint: '立即检查 dsh 运行时新版本', icon: ICON.terminal, run: () => { openDrawer('dsh'); checkDsh(); } },
     { id: 'checkApp', label: '检查应用更新', hint: '检查 DeepSeek Harness Desktop 更新', icon: ICON.info, run: () => { openDrawer('about'); checkApp(); } },
-    { id: 'toggleChrome', label: '收起导航栏', hint: '折叠顶栏以扩展工作区', icon: ICON.chevron, run: () => setChromeCollapsed(true) },
+    { id: 'toggleChrome', label: '收起/展开导航栏', hint: '折叠顶栏以扩展工作区（顶部把手同效）', icon: ICON.chevron, run: () => setChromeCollapsed(!document.body.classList.contains('chrome-collapsed')) },
   ];
   let region = 'workbench';
 

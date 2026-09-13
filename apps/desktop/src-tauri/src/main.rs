@@ -49,6 +49,59 @@ use tauri::{
 };
 use tauri::Emitter;
 
+// ---------------------------------------------------------------------------
+// macOS 原生窗口隐藏/唤醒（绕开 Tauri 2.11.5 的窗口 API 缺陷）
+// ---------------------------------------------------------------------------
+/// 实证（2026-09-13，CGWindowList 窗口服务器采样 + 日志）：
+/// - `WebviewWindow::hide()` 调用后窗口仍在窗口服务器的 on-screen 列表中（无效）；
+/// - `AppHandle::hide()`（NSApp hide）能隐藏窗口，但随后 `webview_windows()` 返回空、
+///   `get_webview_window` 返回 None——召回时 reveal 误走「重建壳页」分支，新窗口
+///   没有 child webview（用户看到「只有壳页背景、没有工作台」）。
+/// 因此直接调用 AppKit 的 orderOut: / makeKeyAndOrderFront:：两者实测可靠，
+/// 且完全不触碰 Tauri 的窗口注册表。
+#[cfg(target_os = "macos")]
+mod macwin {
+    use objc::runtime::Object;
+    use objc::{msg_send, sel, sel_impl};
+    use tauri::WebviewWindow;
+
+    fn ns_ptr(w: &WebviewWindow) -> Option<*mut Object> {
+        match w.ns_window() {
+            Ok(p) if !p.is_null() => Some(p as *mut Object),
+            _ => None,
+        }
+    }
+
+    /// 隐藏窗口（w.hide() 的原意，但真正生效）。**仅可在主线程调用**
+    /// （AppKit 要求；非主线程调用会 SIGTRAP："Must only be used from the main thread"）。
+    pub fn order_out(w: &WebviewWindow) {
+        if let Some(ns) = ns_ptr(w) {
+            unsafe {
+                let nil: *mut Object = std::ptr::null_mut();
+                let _: () = msg_send![ns, orderOut: nil];
+            }
+        }
+    }
+
+    /// 唤醒窗口并置前（orderOut 过的窗口用 show() 可能不出现）。
+    /// 同 order_out：**仅可在主线程调用**；后台线程请用 order_front_async。
+    pub fn order_front(w: &WebviewWindow) {
+        if let Some(ns) = ns_ptr(w) {
+            unsafe {
+                let nil: *mut Object = std::ptr::null_mut();
+                let _: () = msg_send![ns, makeKeyAndOrderFront: nil];
+            }
+        }
+    }
+
+    /// 线程安全的唤醒：把 AppKit 调用排到主线程执行（reveal_main_window 可能
+    /// 被 boot / 启动宽限等后台线程调用）。
+    pub fn order_front_async(app: &tauri::AppHandle, w: &WebviewWindow) {
+        let w2 = w.clone();
+        let _ = app.run_on_main_thread(move || order_front(&w2));
+    }
+}
+
 /// The running dsh child, kept so it is reaped and so we can kill it on exit.
 static CHILD: Mutex<Option<Child>> = Mutex::new(None);
 /// The parsed base URL of the running dsh web server.
@@ -62,6 +115,22 @@ static CRASHES: AtomicU32 = AtomicU32::new(0);
 /// 置位期间崩溃自愈 / 后台重启不得重新弹窗（托盘「显示主窗口」与 Dock 图标召回
 /// 时清除）。这与「托盘退出=真正退出」的分层语义一致（文件头 Behaviour 注释）。
 static USER_HIDDEN: AtomicBool = AtomicBool::new(false);
+
+/// 主窗 handle（创建成功后保存）。关键路径不按 label 查找主窗：这台
+/// macOS 26 + Tauri 2.11.5 上 `AppHandle::get_webview_window(WINDOW_LABEL)` /
+/// `webview_windows()` 返回空（窗口实际存在且在屏幕上、可交互——CGWindowList
+/// 采样与窗口日志可证），导致 reveal 误判「主窗不存在」→ 走重建分支并 return，
+/// 跳过显示窗口/恢复工作台（用户症状：托盘召回只见背景、无工作台）。
+/// `get_window()`（普通窗口查找）在该环境正常，故 workbench 几何路径不受影响。
+static MAIN_WIN: std::sync::OnceLock<tauri::WebviewWindow> = std::sync::OnceLock::new();
+
+/// 取主窗 handle：优先用创建时保存的 handle，回退按 label 查找（其他平台/版本）。
+pub(crate) fn main_window(app: &AppHandle) -> Option<tauri::WebviewWindow> {
+    if let Some(w) = MAIN_WIN.get() {
+        return Some(w.clone());
+    }
+    app.get_webview_window(WINDOW_LABEL)
+}
 /// Launcher log file (packaged mode). Empty in dev (stderr goes to terminal).
 static LOG_FILE: Mutex<Option<std::fs::File>> = Mutex::new(None);
 /// 自绘弹窗（modal.html）：当前待显示的弹窗内容。替代 rfd 系统对话框，
@@ -863,19 +932,16 @@ pub(crate) fn reveal_main_window(app: &AppHandle, url: Option<&str>) {
     // 壳页兜底需要），但不重新弹出窗口——崩溃自愈、后台重启都不得打扰。
     if USER_HIDDEN.load(Ordering::SeqCst) {
         if let Some(u) = url {
-            let _ = app
-                .get_webview_window(WINDOW_LABEL)
-                .map(|w| w.emit("dsh:url", u));
+            let _ = main_window(app).map(|w| w.emit("dsh:url", u));
         }
         return;
     }
-    // 从「关到后台」（AppHandle::hide → NSApp hide）恢复：先 unhide 应用，
-    // 否则单独 show 窗口可能不出现（macOS 应用级隐藏需先解除）。
-    #[cfg(target_os = "macos")]
-    let _ = app.show();
-    let Some(w) = app.get_webview_window(WINDOW_LABEL) else {
+    let Some(w) = main_window(app) else {
         // 兜底：主窗不存在（极罕见）时重建壳页。shell.js 自带 get_dsh_url
         // 轮询兜底，重建后无需再补发地址事件。
+        // 注意：重建出的窗口没有 child webview（工作台需 ensure_ready 重建），
+        // 若这里被频繁走到，用户会看到「只有壳页背景、没有工作台」。
+        logln("[main] reveal: 主窗不存在 → 重建壳页（工作台需重新创建）");
         if let Ok(w) = WebviewWindowBuilder::new(app, WINDOW_LABEL, WebviewUrl::App("shell.html".into()))
             .title("DeepSeek Harness Desktop")
             .inner_size(1280.0, 820.0)
@@ -901,6 +967,11 @@ pub(crate) fn reveal_main_window(app: &AppHandle, url: Option<&str>) {
         let _ = w.center();
         let _ = w.show();
     }
+    // 原生唤醒：orderOut 隐藏过的窗口，Tauri 的 show() 不一定让它出现。
+    // reveal 可能来自后台线程（boot / 启动宽限）→ AppKit 调用必须回主线程
+    // （否则 SIGTRAP："Must only be used from the main thread"）。
+    #[cfg(target_os = "macos")]
+    macwin::order_front_async(app, &w);
     let _ = w.set_focus();
     // macOS child webview 是独立 NSWindow，不随主窗恢复——同步恢复，否则工作台
     // 从后台召回后是空白页。
@@ -1031,7 +1102,7 @@ pub(crate) fn restart_dsh(app: &AppHandle) {
     // 分支启动的轮询 / 引导等待态轮询)会拿到已死端口的旧 URL 而误重载。dsh:url 事件
     // 实测会丢失,前端主通道是轮询 get_dsh_url；先清空,等新 dsh 写入新 URL 后轮询才拿对。
     *mlock(&DSH_URL) = None;
-    if let Some(w) = app.get_webview_window(WINDOW_LABEL) {
+    if let Some(w) = main_window(app) {
         let _ = w.close();
     }
     let handle = app.clone();
@@ -1062,7 +1133,7 @@ struct ModalSpec {
 /// 屏幕中心（builder 的 .center() 兜底）。clamp 到主窗口所在显示器的工作区，
 /// 避免副屏边缘或贴边时弹窗跑出可视区域。
 fn center_child_on_main(app: &AppHandle, w: &tauri::WebviewWindow, log_w: f64, log_h: f64) {
-    let Some(main) = app.get_webview_window(WINDOW_LABEL) else {
+    let Some(main) = main_window(app) else {
         let _ = w.center();
         return;
     };
@@ -1347,7 +1418,13 @@ async fn uninstall_run(app: AppHandle, window: tauri::WebviewWindow, wipe: bool)
     // 先销毁全部 WebView 窗口：释放 WebView2 用户数据目录（app_data 内）占用，
     // Windows 共享锁下不销毁则删除必然 oserror 32。
     for label in [WINDOW_LABEL, MODAL_LABEL] {
-        if let Some(w) = app.get_webview_window(label) {
+        // 主窗用保存的 handle（该环境 get_webview_window 查找不可用，见 MAIN_WIN 注释）
+        let w = if label == WINDOW_LABEL {
+            main_window(&app)
+        } else {
+            app.get_webview_window(label)
+        };
+        if let Some(w) = w {
             let _ = w.destroy();
         }
     }
@@ -1828,7 +1905,7 @@ fn main() {
             // 启动顺序（消除"首帧默认位置跳变 / 再次居中上跳"）：
             //   visible(false)+center 隐藏创建 → dsh 就绪或开机 1.2s 宽限后，
             //   统一走 reveal_main_window 显示（其内部仅在不可见时 center+show）。
-            let _ = WebviewWindowBuilder::new(
+            match WebviewWindowBuilder::new(
                 app,
                 WINDOW_LABEL,
                 WebviewUrl::App("shell.html".into()),
@@ -1840,13 +1917,22 @@ fn main() {
             .center() // 主窗启动即居中于当前屏幕
             .theme(Some(tauri::Theme::Dark)) // B1：暗色原生标题栏一致化
             .on_page_load(|_webview, payload| {
-                // 顶部帧页面加载记一行日志（壳页自身；dsh 在 iframe 内不在此触发）
+                // 顶部帧页面加载记一行日志（壳页自身；dsh 在 child webview 不在壳页触发）
                 let url = payload.url().to_string();
                 logln!("[webview] page loaded: {url}");
             })
             .on_navigation(webview_navigation_policy)
             .on_new_window(webview_new_window_policy)
-            .build();
+            .build()
+            {
+                Ok(w) => {
+                    // 保存 handle 供后续所有主窗操作使用（该环境按 label 查找不可用，
+                    // 见 MAIN_WIN 注释）
+                    let _ = MAIN_WIN.set(w);
+                    logln("[main] 主窗已创建并保存 handle");
+                }
+                Err(e) => logln(&format!("[main] 主窗创建失败: {e}")),
+            }
             // 开机宽限：dsh 就绪前先把带占位提示的窗口显示出来（约 1.2s），
             // dsh 就绪后再由 boot 用同一通道更新 iframe —— 两次只显示一次。
             let reveal_app = app.handle().clone();
@@ -1862,14 +1948,33 @@ fn main() {
             if std::env::var("DSH_SELF_HIDE_TEST").is_ok() {
                 let t = app.handle().clone();
                 std::thread::spawn(move || {
-                    std::thread::sleep(Duration::from_secs(13));
+                    // 基线：启动完成（窗口已建、dsh 就绪）后、任何隐藏动作之前，
+                    // 打印 tauri 窗口注册表——用于区分「查找 API 失效」与「隐藏导致」。
+                    std::thread::sleep(Duration::from_secs(8));
+                    let t0 = t.clone();
+                    let t0b = t0.clone();
+                    let _ = t0.run_on_main_thread(move || {
+                        let labels: Vec<String> =
+                            t0b.webview_windows().keys().cloned().collect();
+                        crate::logln(&format!(
+                            "[selftest] 启动后（hide 前）注册表: {:?} get_main={}",
+                            labels,
+                            crate::main_window(&t0b).is_some()
+                        ));
+                    });
+                    std::thread::sleep(Duration::from_secs(5));
                     let t2 = t.clone();
                     let _ = t.run_on_main_thread(move || {
                         crate::logln("[selftest] 复刻关到后台动作");
                         USER_HIDDEN.store(true, Ordering::SeqCst);
                         crate::workbench::hide_child(&t2);
                         #[cfg(target_os = "macos")]
-                        let r = t2.hide();
+                        let r = {
+                            if let Some(w) = crate::main_window(&t2) {
+                                macwin::order_out(&w);
+                            }
+                            Ok::<(), tauri::Error>(())
+                        };
                         #[cfg(not(target_os = "macos"))]
                         let r = Ok::<(), tauri::Error>(());
                         crate::logln(&format!("[selftest] hide → {r:?}"));
@@ -1878,6 +1983,15 @@ fn main() {
                     let t3 = t.clone();
                     let t3b = t3.clone();
                     let _ = t3.run_on_main_thread(move || {
+                        // 诊断：app.hide 后 tauri 的窗口注册表是否还在（若为空，
+                        // 召回时 reveal 会误判「窗口不存在」而重建壳页 → 丢工作台）
+                        let labels: Vec<String> =
+                            t3b.webview_windows().keys().cloned().collect();
+                        crate::logln(&format!(
+                            "[selftest] hidden 后注册表: {:?} get_main={}",
+                            labels,
+                            crate::main_window(&t3b).is_some()
+                        ));
                         // 模拟托盘「显示主窗口」/ Dock 召回：清 USER_HIDDEN 后走
                         // 统一 reveal 通道（内部 app.show + 窗口 show + child show）
                         USER_HIDDEN.store(false, Ordering::SeqCst);
@@ -1888,15 +2002,9 @@ fn main() {
                     let t4 = t.clone();
                     let t4b = t4.clone();
                     let _ = t4.run_on_main_thread(move || {
-                        let list: Vec<String> = t4b
-                            .webview_windows()
-                            .iter()
-                            .map(|(l, w)| format!("{l}:visible={}", w.is_visible().unwrap_or(true)))
-                            .collect();
-                        crate::logln(&format!(
-                            "[selftest] after restore windows: [{}]",
-                            list.join(", ")
-                        ));
+                        let labels: Vec<String> =
+                            t4b.webview_windows().keys().cloned().collect();
+                        crate::logln(&format!("[selftest] 召回后注册表: {:?}", labels));
                         t4b.exit(0);
                     });
                 });
@@ -1931,44 +2039,30 @@ fn main() {
                 // 观感为「关闭没反应」——那已由「自愈不 close 主窗 + USER_HIDDEN
                 // 不弹回 + child webview 随主窗隐藏」三处修复解决。
                 api.prevent_close();
-                logln!("[main] close requested → 关到后台（app.hide；程序与 dsh 继续运行）");
+                logln!("[main] close requested → 关到后台（原生 orderOut；程序与 dsh 继续运行）");
                 USER_HIDDEN.store(true, Ordering::SeqCst);
-                // child webview 是独立 NSWindow，app.hide 之外仍需单独隐藏
+                // child webview 是独立窗口，单独移出屏幕（同步 + 排队兜底）
+                crate::workbench::hide_child_now(_app_handle);
                 crate::workbench::hide_child(_app_handle);
-                // 实证（2026-09-13，CGWindowList + 抽样日志）：Tauri 2.11.5 macOS 上
-                // WebviewWindow::hide() 调用后窗口仍在窗口服务器列表中（用户看到
-                // 「工作台没了、壳页灰底还在」）；改用 AppHandle::hide()（NSApp hide，
-                // 等价 ⌘H，隐藏整个应用的所有窗口）后窗口真正从屏幕消失，程序与 dsh
-                // 继续后台运行，托盘「显示主窗口」/Dock 图标可召回。
-                #[cfg(target_os = "macos")]
-                let hide_res = _app_handle.hide();
-                #[cfg(not(target_os = "macos"))]
-                let hide_res = {
-                    let _ = _app_handle
-                        .get_webview_window(WINDOW_LABEL)
-                        .map(|w| w.hide());
-                    Ok::<(), tauri::Error>(())
-                };
-                logln(&format!("[main] app.hide → {hide_res:?}"));
-                // 诊断：1.2s 后列出所有窗口标签与可见性（get_webview_window 在部分
-                // 状态下会返回 None 导致误报，列表方式更可靠），便于现场核对。
+                // 主窗：原生 orderOut（Tauri 的 hide() 无效 / AppHandle::hide() 会
+                // 清空窗口注册表导致召回丢工作台——见 macwin 模块注释）
+                if let Some(w) = main_window(_app_handle) {
+                    #[cfg(target_os = "macos")]
+                    macwin::order_out(&w);
+                    #[cfg(not(target_os = "macos"))]
+                    let _ = w.hide();
+                }
+                // 诊断：1.2s 后记录主窗可见性（该环境 get_webview_window/webview_windows
+                // 不可用，改用保存的 handle），便于现场核对关到后台是否生效。
                 {
                     let c = _app_handle.clone();
                     std::thread::spawn(move || {
                         std::thread::sleep(Duration::from_millis(1200));
                         let c2 = c.clone();
                         let _ = c.run_on_main_thread(move || {
-                            let list: Vec<String> = c2
-                                .webview_windows()
-                                .iter()
-                                .map(|(l, w)| {
-                                    format!("{l}:visible={}", w.is_visible().unwrap_or(true))
-                                })
-                                .collect();
-                            crate::logln(&format!(
-                                "[main] post-close windows: [{}]",
-                                list.join(", ")
-                            ));
+                            let vis = crate::main_window(&c2)
+                                .map(|w| w.is_visible().unwrap_or(true));
+                            crate::logln(&format!("[main] post-close: main_visible={vis:?}"));
                         });
                     });
                 }

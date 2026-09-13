@@ -79,6 +79,7 @@
 
   /* ---------- 尺寸 ---------- */
   --dsh-h-chrome: 36px;   /* 顶栏（可折叠为 0）；与 workbench.rs TOPBAR_H_LOGICAL 同步 */
+  --dsh-h-handle: 18px;   /* 折叠态展开把手条高；与 workbench.rs HANDLE_H_LOGICAL 同步 */
   --dsh-h-ctl:    32px;   /* 输入框 / 按钮 */
   --dsh-h-ctl-sm: 26px;   /* 小按钮 / 分段控件 / 顶栏控件 */
   --dsh-drawer-w: 560px;  /* 管理抽屉宽度（≤900px 或矮窗时转整幅） */
@@ -126,6 +127,7 @@
   --shadow-md:     var(--dsh-shadow-md);
   --shadow-lg:     var(--dsh-shadow-lg);
   --h-chrome:      var(--dsh-h-chrome);
+  --h-handle:      var(--dsh-h-handle);
   --h-ctl:         var(--dsh-h-ctl);
   --h-ctl-sm:      var(--dsh-h-ctl-sm);
   --drawer-w:      var(--dsh-drawer-w);
@@ -161,48 +163,21 @@ body {
  * ========================================================================= */
 .stage {
   position: absolute; left: 0; right: 0; bottom: 0; top: var(--h-chrome);
-  /* 透明：露出体层氛围背景（.ambient）。工作台 child webview 覆盖时无影响；
-     抽屉/命令面板打开时是品牌光晕而非死灰底 */
-  background: transparent;
+  background: var(--bg);
   transition: top var(--dur) var(--ease);
 }
-body.chrome-collapsed .stage { top: 0; }
-
-/* =============================================================================
- * 体层氛围背景（工作台隐藏时可见：抽屉 / 命令面板 / 启动加载）
- * ============================================================================= */
-.ambient { position: absolute; inset: 0; z-index: 0; overflow: hidden; pointer-events: none; }
-.ambient-glow { position: absolute; border-radius: 50%; filter: blur(90px); }
-.ambient-glow--a {
-  width: 48vw; height: 48vw; left: -14vw; top: -18vh;
-  background: radial-gradient(circle, rgba(77, 107, 254, 0.24) 0%, rgba(77, 107, 254, 0) 68%);
-}
-.ambient-glow--b {
-  width: 54vw; height: 54vw; right: -18vw; bottom: -22vh;
-  background: radial-gradient(circle, rgba(123, 147, 255, 0.17) 0%, rgba(123, 147, 255, 0) 70%);
-}
-.ambient-grid {
-  position: absolute; inset: 0;
-  background-image:
-    linear-gradient(rgba(255, 255, 255, 0.04) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(255, 255, 255, 0.04) 1px, transparent 1px);
-  background-size: 30px 30px;
-  -webkit-mask-image: radial-gradient(ellipse 85% 75% at 50% 36%, #000 0%, transparent 78%);
-  mask-image: radial-gradient(ellipse 85% 75% at 50% 36%, #000 0%, transparent 78%);
-}
-.ambient-mark {
-  position: absolute; left: 50%; top: 44%; transform: translate(-50%, -50%);
-  width: min(38vh, 320px); height: min(38vh, 320px);
-  color: #fff; opacity: 0.04;
-}
+/* 折叠：顶栏收起，但保留 18px 把手条（原生工作台从这条下方开始渲染，否则
+   层级更高的 child webview 会盖住把手，用户点不到展开入口）。
+   与 workbench.rs HANDLE_H_LOGICAL（18pt）保持一致。 */
+body.chrome-collapsed .stage { top: var(--h-handle); }
 
 /* 启动占位 */
 .startup {
   position: absolute; inset: 0; z-index: 2;
   display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px;
-  /* 透明：启动期露出氛围背景，与抽屉/面板打开时的视觉连续（原实色 --bg
-     在大屏上是一整块死灰，用户反馈难看） */
-  background: transparent;
+  /* 实色底：启动期是「正在启动 dsh 工作台…」的干净画面，不放任何装饰背景
+     （用户反馈装饰纹理干扰启动文案） */
+  background: var(--bg);
 }
 .startup-mark { width: 56px; height: 56px; border-radius: 14px; }
 .startup-title { font-size: var(--fs-title); font-weight: 600; color: var(--fg); }
@@ -225,9 +200,14 @@ body.chrome-collapsed .stage { top: 0; }
   display: flex; align-items: center; gap: 8px; padding: 0 10px;
   background: var(--bg);
   border-bottom: 1px solid var(--border-subtle);
-  transition: transform var(--dur) var(--ease), opacity var(--dur) var(--ease);
+  overflow: hidden;
+  /* 折叠 = 高度收缩 + 内容淡出（参考 main 分支 titlebar 的做法）：比整体
+     translateY(-100%) 更像原生标题栏收起，且与 .stage 的 top 过渡同步伸缩 */
+  transition: height var(--dur) var(--ease), border-color var(--dur) var(--ease);
 }
-body.chrome-collapsed .chrome { transform: translateY(-100%); opacity: 0; pointer-events: none; }
+.chrome > * { transition: opacity var(--dur) var(--ease); }
+body.chrome-collapsed .chrome { height: 0; border-bottom-color: transparent; }
+body.chrome-collapsed .chrome > * { opacity: 0; pointer-events: none; }
 
 .brand {
   display: flex; align-items: center; gap: 8px; flex: none;
@@ -288,32 +268,36 @@ kbd {
   transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
 }
 .icon-btn:hover { background: var(--surface-2); color: var(--fg); }
-/* 折叠按钮与「管理 ⌘K」之间加竖线分隔 + 间距：两者右上角相邻、形态相近，
-   用户常把「收起导航栏」误当抽屉关闭按钮点击（症状：顶栏整体消失还找不到
-   展开入口）——视觉上明确它是「顶栏自身」的操作，不是抽屉操作 */
-#btnCollapseChrome {
-  margin-left: 6px;
-  padding-left: 7px;
-  border-left: 1px solid var(--border-subtle);
-  border-radius: 0 var(--r-sm) var(--r-sm) 0;
-}
-/* 抽屉打开期间禁用（shell.js 控制）：防「把收起顶栏误当抽屉关闭」点击 */
-#btnCollapseChrome:disabled { opacity: 0.35; cursor: default; pointer-events: none; }
 
-/* 折叠后的唤出把手 */
-.chrome-restore {
-  position: absolute; top: 0; left: 50%; transform: translateX(-50%); z-index: 45;
-  width: 64px; height: 18px; padding: 0;
+/* 顶栏折叠把手（常驻，不随顶栏收起而消失）：点击切换收起/展开。
+   展开时贴在顶栏下沿，折叠时位于窗口最顶端的把手条内——工作台从把手条下方
+   开始渲染（见 .stage 与 workbench.rs HANDLE_H_LOGICAL），因此把手永远不会
+   被原生工作台盖住，用户任何时候都能点它展开（此前把手被 webview 盖住，
+   表现为「看不到展开的按钮」）。 */
+.chrome-toggle {
+  position: absolute; left: 50%; transform: translateX(-50%);
+  top: calc(var(--h-chrome) - var(--h-handle));
+  z-index: 46;
+  width: 46px; height: var(--h-handle); padding: 0;
   display: grid; place-items: center;
-  border: 1px solid var(--border); border-top: 0;
-  border-radius: 0 0 8px 8px;
+  border: 1px solid var(--border); border-top: none;
+  border-radius: 0 0 9px 9px;
   background: var(--surface-2); color: var(--fg-subtle); cursor: pointer;
-  opacity: 0.85;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
-  transition: opacity var(--dur) var(--ease), color var(--dur) var(--ease), background var(--dur) var(--ease);
+  transition: top var(--dur) var(--ease), color var(--dur) var(--ease), background var(--dur) var(--ease);
 }
-.chrome-restore:hover { opacity: 1; color: var(--fg); background: var(--surface-3); }
-.chrome-restore .ic { width: 12px; height: 12px; }
+body.chrome-collapsed .chrome-toggle { top: 0; }
+.chrome-toggle:hover { color: var(--fg); background: var(--surface-3); }
+/* 抽屉/命令面板打开期间禁用（shell.js 控制），防误触折叠顶栏 */
+.chrome-toggle:disabled { opacity: 0.35; cursor: default; pointer-events: none; }
+/* 纯 CSS 三角（避免字体符号 side-bearing 错位），收起/展开旋转 180° */
+.chrome-caret {
+  width: 0; height: 0; display: block;
+  border-left: 5px solid transparent;
+  border-right: 5px solid transparent;
+  border-bottom: 6px solid currentColor;
+  transition: transform 0.25s var(--ease);
+}
+body.chrome-collapsed .chrome-caret { transform: rotate(180deg); }
 
 /* =============================================================================
  * 命令面板（⌘K）

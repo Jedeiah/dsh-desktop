@@ -14,6 +14,21 @@ use tauri::{
 /// 顶栏逻辑高度；必须与 ui/theme.css `--dsh-h-chrome`（36px）一致。
 pub const TOPBAR_H_LOGICAL: f64 = 36.0;
 
+/// 折叠态留给「展开把手」的条高（逻辑 px）。原生 child webview 盖在所有壳页
+/// 元素之上：折叠时若工作台顶到窗口最顶，展开把手会被盖住、点不到（用户实测
+/// 「看不到展开的按钮」）。故折叠态预留这条把手空间，把手常驻于此。
+/// 与 ui/theme.css `--dsh-handle-h`（18px）、shell.js 折叠布局保持一致。
+pub const HANDLE_H_LOGICAL: f64 = 18.0;
+
+/// 折叠态工作台顶部偏移：展开 = 顶栏高；折叠 = 把手条高。
+fn topbar_offset(collapsed: bool) -> f64 {
+    if collapsed {
+        HANDLE_H_LOGICAL
+    } else {
+        TOPBAR_H_LOGICAL
+    }
+}
+
 /// macOS 标准标题栏高（带装饰窗口 frame 顶到内容顶的差值，逻辑点）。
 /// 实测（2026-09-13 联调）：child webview 的 set_bounds 坐标按窗口 frame
 /// 原点（含标题栏）计算，而壳页内容从标题栏下方开始——窗口化时若不复位
@@ -35,7 +50,7 @@ pub struct Geom {
 /// 由窗口物理尺寸与顶栏折叠态计算工作台几何。
 /// `scale` = 缩放比（物理/逻辑），取自窗口 monitor 的 scale_factor。
 pub fn geom(win_w: u32, win_h: u32, scale: f64, collapsed: bool) -> Geom {
-    let topbar = if collapsed { 0.0 } else { TOPBAR_H_LOGICAL } * scale;
+    let topbar = topbar_offset(collapsed) * scale;
     let y = topbar.round() as i32;
     Geom { x: 0, y, w: win_w, h: win_h.saturating_sub(y as u32) }
 }
@@ -133,31 +148,36 @@ fn ensure_ready_on_main(app: &AppHandle, url: &str) -> bool {
                     |r| crate::logln(&format!("[workbench] probe: {r}")),
                 );
                 READY.store(true, Ordering::SeqCst);
-                // 首帧已绘制 → 显示（创建时已隐藏，见 ensure_ready_on_main）；
-                // 业务侧隐藏期间（抽屉/命令面板/关到后台）不得顶出。
+                // 首帧已绘制 → 移回窗口内可见位置（创建时在屏幕外预渲染）；
+                // 业务侧隐藏期间（抽屉/命令面板/关到后台）不移动。
                 if !SUPPRESSED.load(Ordering::SeqCst) {
-                    let _ = wv.show();
+                    if let Some(app) = APP.get() {
+                        apply_bounds_on_main(app);
+                    }
                 }
                 if let Some(app) = APP.get() {
                     let _ = app.emit("workbench:ready", ());
                 }
             }
         });
-    // 初始 (0,0,1,1) 后立即 sync_bounds 校正，避免首帧错误尺寸闪烁
-    match window.add_child(builder, PhysicalPosition::new(0, 0), PhysicalSize::new(1u32, 1u32)) {
+    // 初始即用正确几何、位置放到屏幕外：dsh 从第一个字节起就在正确的视口尺寸下
+    // 渲染（此前 1x1 起步 + 后续校正会让单页应用按错误视口布局，表现为「内容
+    // 显示不全」）；屏幕外加载同时保证壳页「正在启动 dsh 工作台…」占位不被盖住，
+    // 首帧绘制完成后（on_page_load Finished）再移回窗口内。
+    let init_size = bounds_on_main(app)
+        .map(|r| rect_size(&r))
+        .unwrap_or(PhysicalSize::new(1280u32, 820u32));
+    match window.add_child(builder, PhysicalPosition::new(OFFSCREEN, OFFSCREEN), init_size) {
         Ok(_) => {
             *CUR_URL.lock().unwrap() = Some(url.to_string());
             // 崩溃自愈会「关闭主窗 → 重建」（boot 既有行为）：新窗口需要重新挂
             // Resized 监听。此处是唯一创建点，webview 不存在 ⇒ 窗口必为新建/首次。
             RESIZE_HOOKED.store(false, Ordering::SeqCst);
             attach_resize_hook(app);
-            // 首帧渲染完成前隐藏 child：阶段①壳页「正在启动 dsh 工作台…」占位
-            // 可见（child 是独立 NSWindow 盖在其上）；阶段② page-load Finished
-            // 后（dsh 首帧已绘制）再显示，消除「空隙的灰底/半成品」。
-            if let Some(wv) = window.get_webview(LABEL) {
-                let _ = wv.hide();
-            }
-            crate::logln("[workbench] child webview 已创建（首帧前隐藏）");
+            crate::logln(&format!(
+                "[workbench] child webview 已创建（屏幕外 {}x{} 预渲染，首帧后移入）",
+                init_size.width, init_size.height
+            ));
             true
         }
         Err(e) => {
@@ -183,47 +203,113 @@ fn attach_resize_hook(app: &AppHandle) {
     });
 }
 
+/// child webview 隐藏时的屏幕外坐标。隐藏 = 保持尺寸移出可视区：不触发
+/// resize/reflow，dsh 页面布局与状态不受影响。macOS 上 Webview::hide() 与
+/// WebviewWindow::hide() 一样不可靠（见 main.rs 关闭路径的实证注释）。
+const OFFSCREEN: i32 = -32000;
+
+/// 上次 bounds 日志文本（Resized 风暴下重复行会淹没日志，仅在几何变化时打）。
+static LAST_BOUNDS: Mutex<Option<String>> = Mutex::new(None);
+
+/// 主线程内计算 child webview 应处的物理矩形（窗口不存在返回 None）。
+fn bounds_on_main(app: &AppHandle) -> Option<Rect> {
+    let window = app.get_window(crate::WINDOW_LABEL)?;
+    let collapsed = COLLAPSED.load(Ordering::SeqCst);
+    let scale = window.scale_factor().unwrap_or(1.0);
+    let size = window.inner_size().unwrap_or(PhysicalSize::new(1280u32, 820u32));
+    // macOS 窗口化时原生标题栏算在窗口 frame 里、不算在 content（inner）里：
+    // child webview 坐标按 frame 定位，需补偿标题栏高（全屏为 0）。
+    let outer_h = window.outer_size().unwrap_or(size).height as i64;
+    let inset = (outer_h - size.height as i64).max(0) as u32;
+    let is_fs = window.is_fullscreen().unwrap_or(false);
+    let tb_pt = if is_fs { 0.0 } else { TITLEBAR_H_PT };
+    let g = geom(size.width, size.height, scale, collapsed);
+    let y = g.y as u32 + inset + (tb_pt * scale).round() as u32;
+    let desc = format!(
+        "y={} h={} scale={} collapsed={} fullscreen={} win={}x{} inset={} titlebar_pt={}",
+        y, g.h, scale, collapsed, is_fs, size.width, size.height, inset, tb_pt
+    );
+    if LAST_BOUNDS.lock().unwrap().as_deref() != Some(desc.as_str()) {
+        crate::logln(&format!("[workbench] bounds: {desc}"));
+        *LAST_BOUNDS.lock().unwrap() = Some(desc);
+    }
+    Some(Rect {
+        position: Position::Physical(PhysicalPosition::new(g.x, y as i32)),
+        size: Size::Physical(PhysicalSize::new(g.w, g.h)),
+    })
+}
+
+fn rect_size(r: &Rect) -> PhysicalSize<u32> {
+    match r.size {
+        Size::Physical(s) => s,
+        _ => PhysicalSize::new(1280u32, 820u32),
+    }
+}
+
+/// child webview 是否处于「移出屏幕」隐藏态（用于移回时打一行日志）。
+static CHILD_OFFSCREEN: AtomicBool = AtomicBool::new(false);
+
+/// 主线程内把 child webview 移到窗口内正确位置（无 run_on_main_thread 包装，
+/// 供已在主线程的调用点用）。true = 已应用（非降级路径）。
+fn apply_bounds_on_main(app: &AppHandle) -> bool {
+    if FALLBACK.load(Ordering::SeqCst) {
+        return false;
+    }
+    let Some(window) = app.get_window(crate::WINDOW_LABEL) else {
+        return false;
+    };
+    let Some(wv) = window.get_webview(LABEL) else {
+        return false;
+    };
+    let Some(rect) = bounds_on_main(app) else {
+        return false;
+    };
+    let _ = wv.set_bounds(rect);
+    if CHILD_OFFSCREEN.swap(false, Ordering::SeqCst) {
+        crate::logln("[workbench] child 移回窗口内（可见）");
+    }
+    true
+}
+
+/// 主线程内把 child webview 保持尺寸移到屏幕外（隐藏用）。
+fn hide_child_on_main(app: &AppHandle) -> bool {
+    if FALLBACK.load(Ordering::SeqCst) {
+        if let Some(w) = app.get_webview_window(LABEL) {
+            let _ = w.hide();
+        }
+        return true;
+    }
+    let Some(window) = app.get_window(crate::WINDOW_LABEL) else {
+        return false;
+    };
+    let Some(wv) = window.get_webview(LABEL) else {
+        return false;
+    };
+    let Some(rect) = bounds_on_main(app) else {
+        return false;
+    };
+    let size = rect_size(&rect);
+    let _ = wv.set_bounds(Rect {
+        position: Position::Physical(PhysicalPosition::new(OFFSCREEN, OFFSCREEN)),
+        size: Size::Physical(size),
+    });
+    CHILD_OFFSCREEN.store(true, Ordering::SeqCst);
+    crate::logln(&format!(
+        "[workbench] child 移出屏幕（保持 {}x{}，不触发页面重排）",
+        size.width, size.height
+    ));
+    true
+}
+
 /// 依窗口当前尺寸与折叠态同步 child webview 几何（Resized/折叠切换共用）。
 pub fn sync_bounds(app: &AppHandle) {
-    let collapsed = COLLAPSED.load(Ordering::SeqCst);
     let app2 = app.clone();
     let _ = app2.clone().run_on_main_thread(move || {
-        if FALLBACK.load(Ordering::SeqCst) {
-            return; // 路径 C：独立窗口即工作台，不做内嵌几何
-        }
-        let Some(window) = app2.get_window(crate::WINDOW_LABEL) else {
+        // 业务侧隐藏期间不应用几何：否则 Resized 会把已隐藏的工作台移回屏幕
+        if SUPPRESSED.load(Ordering::SeqCst) {
             return;
-        };
-        let scale = window.scale_factor().unwrap_or(1.0);
-        let size = window
-            .inner_size()
-            .unwrap_or(PhysicalSize::new(1280u32, 820u32));
-        // macOS 窗口化时原生标题栏算在窗口 frame 里、不算在 content（inner）里：
-        // child webview 的坐标若按 frame 定位，会把标题栏高当成内容起始点，导致
-        // webview 上移盖住壳层顶栏（症状：管理按钮只在全屏可见）。这里取
-        // outer-inner 差值（标题栏高，物理像素）补偿，全屏时差值为 0。
-        let outer_h = window.outer_size().unwrap_or(size).height as i64;
-        let inset = (outer_h - size.height as i64).max(0) as u32;
-        // 标题栏在屏幕坐标系里的真实占位（外/内原点差；outer-inner 尺寸差在
-        // macOS 上可能为 0，原点差才是全屏/窗口化差异的证据）
-        let op = window.outer_position().unwrap_or(PhysicalPosition::new(0, 0));
-        let ip = window.inner_position().unwrap_or(PhysicalPosition::new(0, 0));
-        // 窗口化时 child webview 按 frame 原点定位：补上标题栏高，才与壳页
-        // 内容区对齐（全屏时标题栏为 0）。见 TITLEBAR_H_PT 注释。
-        let is_fs = window.is_fullscreen().unwrap_or(false);
-        let tb_pt = if is_fs { 0.0 } else { TITLEBAR_H_PT };
-        let g = geom(size.width, size.height, scale, collapsed);
-        let y = g.y as u32 + inset + (tb_pt * scale).round() as u32;
-        crate::logln(&format!(
-            "[workbench] bounds: y={} h={} scale={} collapsed={} fullscreen={} win={}x{} inset={} titlebar_pt={} outer_pos=({},{}) inner_pos=({},{})",
-            y, g.h, scale, collapsed, is_fs, size.width, size.height, inset, tb_pt, op.x, op.y, ip.x, ip.y
-        ));
-        if let Some(wv) = window.get_webview(LABEL) {
-            let _ = wv.set_bounds(Rect {
-                position: Position::Physical(PhysicalPosition::new(g.x, y as i32)),
-                size: Size::Physical(PhysicalSize::new(g.w, g.h)),
-            });
         }
+        apply_bounds_on_main(&app2);
     });
 }
 
@@ -271,38 +357,33 @@ pub fn hide_workbench_cmd(app: AppHandle) {
     hide_child(&app);
 }
 
-/// 隐藏工作台 child webview（或降级窗口）。macOS 上 child webview 是独立
-/// NSWindow，主窗口 hide 不会带它一起隐藏——主窗关到后台必须显式调这里，
-/// 否则工作台残留在屏幕上（用户第 1 版「关闭没反应」的根因之一）。
+/// 隐藏工作台（切到管理页 / 主窗关到后台）。实现为「保持尺寸移出屏幕」：
+/// macOS 上 Webview/WebviewWindow 的 hide() 不可靠（实证），而 set_bounds 可靠。
 pub fn hide_child(app: &AppHandle) {
     SUPPRESSED.store(true, Ordering::SeqCst);
     let app2 = app.clone();
     let _ = app2.clone().run_on_main_thread(move || {
-        if FALLBACK.load(Ordering::SeqCst) {
-            if let Some(w) = app2.get_webview_window(LABEL) {
-                let _ = w.hide();
-            }
-        } else if let Some(window) = app2.get_window(crate::WINDOW_LABEL) {
-            if let Some(wv) = window.get_webview(LABEL) {
-                let _ = wv.hide();
-            }
-        }
+        hide_child_on_main(&app2);
     });
 }
 
-/// 显示工作台 child webview（或降级窗口）；主窗恢复显示时调用。
+/// 同步版隐藏（调用方必须在主线程）：CloseRequested 事件回调内使用，与
+/// app.hide() 同 tick 完成，避免异步排队期间与窗口隐藏竞争。
+pub fn hide_child_now(app: &AppHandle) {
+    SUPPRESSED.store(true, Ordering::SeqCst);
+    hide_child_on_main(app);
+}
+
+/// 显示工作台（主窗恢复 / 关闭抽屉与面板）：把 child 移回窗口内正确几何。
 pub fn show_child(app: &AppHandle) {
     SUPPRESSED.store(false, Ordering::SeqCst);
     let app2 = app.clone();
     let _ = app2.clone().run_on_main_thread(move || {
-        if FALLBACK.load(Ordering::SeqCst) {
+        if !apply_bounds_on_main(&app2) && FALLBACK.load(Ordering::SeqCst) {
+            // 降级路径（独立窗口）：show 恢复
             if let Some(w) = app2.get_webview_window(LABEL) {
                 let _ = w.show();
                 let _ = w.set_focus();
-            }
-        } else if let Some(window) = app2.get_window(crate::WINDOW_LABEL) {
-            if let Some(wv) = window.get_webview(LABEL) {
-                let _ = wv.show();
             }
         }
     });
@@ -351,9 +432,11 @@ mod tests {
     }
 
     #[test]
-    fn geom_collapsed_topbar_full_height() {
+    fn geom_collapsed_keeps_handle_strip() {
+        // 折叠：顶栏收起，但保留 18pt 展开把手条（否则原生工作台会盖住把手，
+        // 用户点不到展开入口）→ y = 18*2 = 36，h = 1640 - 36 = 1604
         let g = geom(2560, 1640, 2.0, true);
-        assert_eq!((g.x, g.y, g.w, g.h), (0, 0, 2560, 1640));
+        assert_eq!((g.x, g.y, g.w, g.h), (0, 36, 2560, 1604));
     }
 
     #[test]
