@@ -211,11 +211,16 @@ fn ensure_ready_on_main(app: &AppHandle, url: &str) -> bool {
         // 降级态（路径 C）：独立窗口承载工作台。换 URL 重导航后必须重新宣告就绪，
         // 否则壳页 workbench_ready_cmd 恒为 false、占位层永不撤（旧实现此处只
         // navigate 不置 READY）。
-        if let Some(w) = app.get_webview_window(LABEL) {
-            let _ = w.navigate(parsed);
+        // 按 windows 表取窗口、再取窗口里的 webview：该环境
+        // `get_webview_window()`/`webview_windows()` 恒为空（见 main.rs MAIN_WIN 注释），
+        // 只有 `get_window()` 可靠，用错会静默跳过（既不导航也不宣告就绪）。
+        if let Some(w) = app.get_window(LABEL) {
+            if let Some(wv) = w.get_webview(LABEL) {
+                let _ = wv.navigate(parsed);
+                let _ = wv.emit("workbench:ready", ());
+            }
             let _ = w.show();
             READY.store(true, Ordering::SeqCst);
-            let _ = w.emit("workbench:ready", ());
         }
         return true; // 降级态：窗口路径自洽，不再尝试 child
     }
@@ -453,7 +458,7 @@ fn apply_bounds_on_main(app: &AppHandle) -> bool {
 /// 主线程内把 child webview 保持尺寸移到屏幕外（隐藏用）。
 fn hide_child_on_main(app: &AppHandle) -> bool {
     if FALLBACK.load(Ordering::SeqCst) {
-        if let Some(w) = app.get_webview_window(LABEL) {
+        if let Some(w) = app.get_window(LABEL) {
             let _ = w.hide();
         }
         return true;
@@ -508,8 +513,12 @@ fn open_fallback_window(app: &AppHandle, url: &str) {
     let Ok(parsed) = url.parse::<tauri::Url>() else {
         return;
     };
-    if let Some(w) = app.get_webview_window(LABEL) {
-        let _ = w.navigate(parsed);
+    // 存在性判定必须查 windows 表：`get_webview_window` 查的是 webviews 表，在该环境
+    // 恒为空 —— 漏判就会再次 build 同 label 窗口，撞 "already exists" 后降级窗口彻底建不出来。
+    if let Some(w) = app.get_window(LABEL) {
+        if let Some(wv) = w.get_webview(LABEL) {
+            let _ = wv.navigate(parsed);
+        }
         let _ = w.show();
         let _ = w.set_focus();
         return;
@@ -570,7 +579,7 @@ pub fn show_child(app: &AppHandle) {
     let _ = app2.clone().run_on_main_thread(move || {
         if !apply_bounds_on_main(&app2) && FALLBACK.load(Ordering::SeqCst) {
             // 降级路径（独立窗口）：show 恢复
-            if let Some(w) = app2.get_webview_window(LABEL) {
+            if let Some(w) = app2.get_window(LABEL) {
                 let _ = w.show();
                 let _ = w.set_focus();
             }
@@ -584,8 +593,10 @@ pub fn workbench_reload_cmd(app: AppHandle) {
     let app2 = app.clone();
     let _ = app2.clone().run_on_main_thread(move || {
         if FALLBACK.load(Ordering::SeqCst) {
-            if let Some(w) = app2.get_webview_window(LABEL) {
-                let _ = w.eval("location.reload()");
+            if let Some(w) = app2.get_window(LABEL) {
+                if let Some(wv) = w.get_webview(LABEL) {
+                    let _ = wv.eval("location.reload()");
+                }
             }
         } else if let Some(window) = app2.get_window(crate::WINDOW_LABEL) {
             if let Some(wv) = window.get_webview(LABEL) {

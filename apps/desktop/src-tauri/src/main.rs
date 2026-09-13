@@ -1437,13 +1437,12 @@ fn center_child_on_main(app: &AppHandle, w: &tauri::WebviewWindow, log_w: f64, l
 /// 打开（或聚焦）自绘弹窗窗口（无系统标题栏、固定尺寸、相对主窗口中心）。
 /// 返回 false 表示无法打开（调用方应尽快结束等待）。
 fn open_modal_window(app: &AppHandle) -> bool {
-    if let Some(w) = app.get_webview_window(MODAL_LABEL) {
-        // 复用分支：强制重新加载以获得最新 spec（理论上 MODAL_LOCK 已串行化，
-        // 一般不会走到这；防御性处理，避免残留旧内容）。
-        let _ = w.eval("location.reload()");
-        let _ = w.show();
-        let _ = w.set_focus();
-        return true;
+    // 先清残留同名窗口再建。残留窗口是「webview 已被关掉、只剩窗口壳」的形态，只存在于
+    // windows 表；`get_webview_window` 查的是 webviews 表，因此查不到它，下面的 build()
+    // 就会撞 label 冲突。这里按 windows 表查（该环境 `get_webview_window`/`webview_windows`
+    // 恒为空，而 `get_window()` 正常，见 MAIN_WIN 注释），更可靠。
+    if let Some(w) = app.get_window(MODAL_LABEL) {
+        let _ = w.destroy();
     }
     match WebviewWindowBuilder::new(app, MODAL_LABEL, WebviewUrl::App("modal.html".into()))
         .decorations(false)
@@ -1507,7 +1506,13 @@ fn modal_respond(webview: tauri::Webview, accept: bool) -> Result<(), String> {
         let _ = tx.send(accept);
     }
     mlock(&MODAL_SPEC).take();
-    let _ = webview.close();
+    // 关的是承载弹窗的【窗口】，不能只 `webview.close()`：后者（tauri/src/webview/mod.rs
+    // `Webview::close`）只销毁 webview 并从 webviews 表注销，窗口与 label `modal` 仍留在
+    // windows 表——于是 `get_webview_window("modal")` 查不到、`WebviewWindowBuilder` 再建
+    // 又撞 "a window with label `modal` already exists"，此后**所有**弹窗（卸载/更新/
+    // 崩溃提示）全部打不开，直到重启 App。跨平台问题：`on_webview_close` 只动 webviews 表，
+    // Windows 同样中招。
+    let _ = webview.window().destroy();
     Ok(())
 }
 
@@ -1541,23 +1546,25 @@ fn show_modal_with_labels(
         no_label: no_label.map(|s| s.to_string()),
     });
     let app2 = app.clone();
+    // 两个独立标志：done = 主线程已执行完开窗；opened = 开窗成功。不能只用一个 bool——
+    //「开窗失败」与「主线程还没执行」都是 false，会让下面的等待循环白等满 10s（用户症状：
+    // 取消一次后再点卸载，卡约 10 秒才提示「已取消卸载」）。
+    let done = Arc::new(AtomicBool::new(false));
     let opened = Arc::new(AtomicBool::new(false));
-    let opened2 = opened.clone();
+    let (done2, opened2) = (done.clone(), opened.clone());
     let app3 = app2.clone();
-    let _ = app2
-        .clone()
-        .run_on_main_thread(move || opened2.store(open_modal_window(&app3), Ordering::SeqCst));
-    // 等待主线程完成窗口创建（主线程忙碌时放宽到 10s；创建失败立即返回避免 24h 假阻塞）
+    let _ = app2.clone().run_on_main_thread(move || {
+        opened2.store(open_modal_window(&app3), Ordering::SeqCst);
+        done2.store(true, Ordering::SeqCst);
+    });
+    // 等主线程跑完开窗（主线程极忙时最多 10s）；执行完立即返回，开窗失败不空等
     for _ in 0..500 {
-        if opened.load(Ordering::SeqCst) {
-            break;
-        }
-        if app2.get_webview_window(MODAL_LABEL).is_some() {
+        if done.load(Ordering::SeqCst) {
             break;
         }
         std::thread::sleep(Duration::from_millis(20));
     }
-    if !opened.load(Ordering::SeqCst) && app2.get_webview_window(MODAL_LABEL).is_none() {
+    if !opened.load(Ordering::SeqCst) {
         // 无法打开弹窗：解除发送端与内容，避免残留
         mlock(&MODAL_RESULT).take();
         mlock(&MODAL_SPEC).take();
@@ -1690,16 +1697,15 @@ async fn uninstall_run(app: AppHandle, webview: tauri::Webview, wipe: bool) -> R
     UNINSTALLING.store(true, Ordering::SeqCst);
     // 先销毁全部 WebView 窗口：释放 WebView2 用户数据目录（app_data 内）占用，
     // Windows 共享锁下不销毁则删除必然 oserror 32。
-    for label in [WINDOW_LABEL, MODAL_LABEL] {
-        // 主窗用保存的 handle（该环境 get_webview_window 查找不可用，见 MAIN_WIN 注释）
-        let w = if label == WINDOW_LABEL {
-            main_window(&app)
-        } else {
-            app.get_webview_window(label)
-        };
-        if let Some(w) = w {
-            let _ = w.destroy();
-        }
+    // 主窗用保存的 handle；弹窗按 windows 表查——该环境 `get_webview_window()` 恒为空
+    //（见 MAIN_WIN 注释），且弹窗点过按钮后就是「webview 已关、只剩窗口壳」的形态，
+    // 只存在于 windows 表：用错查找就会漏销毁，Windows 上 WebView2 数据目录仍被占用，
+    // 随后的 teardown 删 app 数据必然 oserror 32。
+    if let Some(w) = main_window(&app) {
+        let _ = w.destroy();
+    }
+    if let Some(w) = app.get_window(MODAL_LABEL) {
+        let _ = w.destroy();
     }
     std::thread::sleep(Duration::from_millis(300)); // 等 WebView2 进程释放数据目录
     // teardown（可能耗时：杀进程 + 删除重试）移到阻塞线程

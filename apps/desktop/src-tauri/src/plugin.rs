@@ -13,7 +13,7 @@
 
 use serde::Serialize;
 use std::io::BufRead;
-use tauri::{Emitter, Manager};
+use tauri::Emitter;
 
 /// 插件操作串行锁：pnpm-workspace.yaml 的读-改-写与 dsh 的 reconcile 均非原子，
 /// 并发触发（多窗口/远程）会撕裂文件；插件操作低频，全局串行化最简单可靠。
@@ -363,7 +363,10 @@ fn run_dsh_plugin(
             buf.push_str(&l);
             buf.push('\n');
             // 收敛到插件管理目标：壳页主窗。窗口已销毁则仅收集全文。
-            if let Some(w) = emit_app.get_webview_window(crate::WINDOW_LABEL) {
+            // 经 crate::main_window() 取（优先主窗保存的 handle）：该环境
+            // `get_webview_window(WINDOW_LABEL)` 恒为空（见 main.rs MAIN_WIN 注释），
+            // 直接用会让插件安装/卸载的进度行全部丢失。
+            if let Some(w) = crate::main_window(&emit_app) {
                 let _ = w.emit("dsh:plugin-output", &l);
             }
         }
@@ -378,7 +381,8 @@ fn run_dsh_plugin(
             let l = l.trim_end_matches('\r').to_string();
             buf.push_str(&l);
             buf.push('\n');
-            if let Some(w) = emit_app2.get_webview_window(crate::WINDOW_LABEL) {
+            // 同 out_thread：走 crate::main_window() 才能在该环境拿到主窗
+            if let Some(w) = crate::main_window(&emit_app2) {
                 let _ = w.emit("dsh:plugin-output", &l);
             }
         }
