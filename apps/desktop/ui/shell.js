@@ -165,7 +165,12 @@
     //    监听器之后常驻,用于捕获工作台换端口/重启后的 dsh:url(有意保留,非泄漏)。
     try {
       await Promise.race([
-        T.event.listen('dsh:url', (ev) => loadWorkbench(ev.payload)),
+        T.event.listen('dsh:url', (ev) => {
+          // 兼容两种 payload：字符串=普通就绪；对象{url,force}=注入兜底重载
+          const p = ev.payload;
+          if (typeof p === 'string') loadWorkbench(p);
+          else loadWorkbench(p.url, !!p.force);
+        }),
         new Promise((_, rej) => setTimeout(() => rej(new Error('listen-timeout')), 3000)),
       ]);
     } catch (e) { /* 能力缺失/超时：轮询已兜底 */ }
