@@ -261,16 +261,14 @@ fn ensure_ready_on_main(app: &AppHandle, url: &str) -> bool {
                         });
                     });
                 }
-                // 首帧已绘制 → 移回窗口内可见位置（创建时在屏幕外预渲染）；
-                // 业务侧隐藏期间（抽屉/命令面板/关到后台）不移动。
-                if !SUPPRESSED.load(Ordering::SeqCst) {
-                    if let Some(app) = APP.get() {
-                        apply_bounds_on_main(app);
-                    }
-                }
-                if let Some(app) = APP.get() {
-                    let _ = app.emit("workbench:ready", ());
-                }
+                // 注意：这里**不能**立即移入工作台、也**不能**立即发 workbench:ready。
+                //
+                // page-load Finished 只代表文档加载完，此时 dsh 这个 SPA 尚未绘制首帧，
+                // 原生 child webview 一旦移入就会盖住壳页的加载页，用户看到的先是
+                // 注入的深色底（就是反馈里的「加载页消失后先出现背景，之后才出现 dsh
+                // 页面」）；而立即发 ready 又会让壳页 1.2s 后撤掉加载页，进一步把空档
+                // 暴露出来。移入与 ready 都交给下面 900ms 后的延迟分支（先让 SPA 在
+                // 屏幕外完成布局与首帧，再移入；移入之后才宣告就绪）。
             }
         });
     // 初始即用正确几何、位置放到屏幕外：dsh 从第一个字节起就在正确的视口尺寸下
@@ -461,6 +459,14 @@ pub fn sync_bounds(app: &AppHandle) {
     let _ = app2.clone().run_on_main_thread(move || {
         // 业务侧隐藏期间不应用几何：否则 Resized 会把已隐藏的工作台移回屏幕
         if SUPPRESSED.load(Ordering::SeqCst) {
+            return;
+        }
+        // 首次就绪前也不动：此时工作台仍在屏幕外预渲染（尺寸已按 bounds_on_main
+        // 建好，只差位置）。若在这里顺手移入，就会抢在 on_page_load 里 900ms 的
+        // 延迟分支之前把还没绘制首帧的 SPA 盖到加载页上——用户看到的就是
+        // 「加载页消失 → 一片背景 → 才出现 dsh 页面」。移入只由延迟分支与
+        // show_child（抽屉/面板关闭后恢复）触发。
+        if !WORKBENCH_VISIBLE.load(Ordering::SeqCst) {
             return;
         }
         apply_bounds_on_main(&app2);
