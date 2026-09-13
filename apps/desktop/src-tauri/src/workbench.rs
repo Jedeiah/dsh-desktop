@@ -106,6 +106,9 @@ static APP: OnceLock<AppHandle> = OnceLock::new();
 pub fn ensure_ready(app: &AppHandle, url: &str) {
     let _ = APP.set(app.clone());
     READY.store(false, Ordering::SeqCst); // 新导航开始：占位层需重新盖住
+    // 根因修复：导航前清历史 dsh 会话 cookie（防 Cookie 头累计超 dsh 16KB 上限 →
+    // 431 → 空白工作台）。**必须在主线程之外调用**，见 purge_stale_auth_cookies。
+    let _ = purge_stale_auth_cookies(app);
     let created = {
         let app2 = app.clone();
         let u = url.to_string();
@@ -123,6 +126,58 @@ pub fn ensure_ready(app: &AppHandle, url: &str) {
         let _ = app2.clone().run_on_main_thread(move || open_fallback_window(&app2, &u));
     }
     sync_bounds(app);
+}
+
+/// 清理历史遗留的 dsh 会话 cookie（工作台空白根因修复）。
+///
+/// dsh 每次启动用**随机端口**，会话 cookie 名为 `dsh-auth-<sha256(host:port)>`，
+/// 且 `Max-Age=2592000`(30 天) / `Path=/` / host 固定 `127.0.0.1`（ip 不是 cookie
+/// Domain，按 host-only 存）。于是**每跑一次 app 就永久多一条**：端口不同 → 名字
+/// 不同 → 都匹配 `127.0.0.1` → WKWebView 会把它们**全部**塞进 Cookie 头。
+///
+/// 累计约 65 条 / ≥16KB 时，dsh 的 Node http 服务（默认 `maxHeaderSize` 16KB）
+/// 直接回 `431 Request Header Fields Too Large`：**空 body、无 content-type**。
+/// WebKit 于是渲染出一个空 `text/plain` 文档、URL 停在 token URL、303 从不发生
+/// → 工作台空白（实测阈值：Cookie 头 15,870B → 303 正常；16,366B → 431）。
+/// 症状与「最近哪次提交改坏了」无关，是**随反复调试启动逐步累积**的：这也解释了
+/// 为什么早先能用、后来突然全白。
+///
+/// **必须在本函数调用方（非主线程）执行**：`Webview` 的 cookie 接口会把消息派发到
+/// 主线程事件循环，每次都泵 run loop（单次上限 1s）；若在主线程内联执行，几十次删除
+/// 会把主干占满（实测 >5s），child webview 创建被判超时 → 误降级为独立窗口。
+///
+/// 清理后 Cookie 头稳定在 1 条（本次导航前该端口必然还没有 cookie，dsh 的 token→303
+/// 交换会重新下发一条）。
+fn purge_stale_auth_cookies(app: &AppHandle) -> usize {
+    let started = std::time::Instant::now();
+    let Some(window) = app.get_window(crate::WINDOW_LABEL) else {
+        return 0;
+    };
+    // 所有 webview 共用 defaultDataStore（app 未设 data_store_identifier），
+    // 故用主窗口 webview 清理即对 child webview 生效。
+    let Some(wv) = window.get_webview(crate::WINDOW_LABEL) else {
+        return 0;
+    };
+    let Ok(cookies) = wv.cookies() else {
+        crate::logln("[workbench] 枚举 cookie 失败，跳过历史 dsh 会话 cookie 清理");
+        return 0;
+    };
+    let total = cookies.len();
+    let stale: Vec<_> = cookies
+        .into_iter()
+        .filter(|c| c.name().starts_with("dsh-auth-"))
+        .collect();
+    let count = stale.len();
+    for cookie in stale {
+        let _ = wv.delete_cookie(cookie);
+    }
+    if count > 0 {
+        crate::logln(&format!(
+            "[workbench] 已清理历史 dsh 会话 cookie {count}/{total} 条（防止 Cookie 头超 16KB 触发 431），耗时 {}ms",
+            started.elapsed().as_millis()
+        ));
+    }
+    count
 }
 
 /// 主线程内执行：true = 工作台 webview 就绪（创建或复用成功）。
@@ -156,11 +211,13 @@ fn ensure_ready_on_main(app: &AppHandle, url: &str) -> bool {
         .on_page_load(|wv, payload| {
             if payload.event() == tauri::webview::PageLoadEvent::Finished {
                 crate::logln(&format!("[workbench] page loaded: {}", payload.url()));
-                // 诊断探针：记录 contentType/title——区分「工作台 HTML」与
+                // 诊断探针：记录 content-type/title/href——区分「工作台 HTML」与
                 // 「认证失败纯文本页」（历史教训：工作台空白时日志无据可查）。
+                // href 还能判断 token→303 是否真的发生（停在带 token 的原 URL ⇒
+                // 请求未通过认证链）。
                 // 只取元信息（不读正文），避免把工作台内容写进日志。
                 let _ = wv.eval_with_callback(
-                    "JSON.stringify({ct:document.contentType,t:document.title,vw:innerWidth,vh:innerHeight,sw:document.documentElement.scrollWidth,sh:document.documentElement.scrollHeight,dpr:devicePixelRatio})",
+                    "JSON.stringify({href:location.href,ct:document.contentType,t:document.title,vw:innerWidth,vh:innerHeight,sw:document.documentElement.scrollWidth,sh:document.documentElement.scrollHeight,dpr:devicePixelRatio})",
                     |r| crate::logln(&format!("[workbench] probe: {r}")),
                 );
                 // 借鉴 main 的启动衔接：dsh 是 SPA，page-load Finished 早于首帧渲染
