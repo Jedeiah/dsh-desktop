@@ -11,8 +11,8 @@ use tauri::{
     WebviewBuilder, WebviewUrl,
 };
 
-/// 顶栏逻辑高度；必须与 ui/shell.css `--dsh-topbar-h`（46px）一致。
-pub const TOPBAR_H_LOGICAL: f64 = 46.0;
+/// 顶栏逻辑高度；必须与 ui/theme.css `--dsh-h-chrome`（36px）一致。
+pub const TOPBAR_H_LOGICAL: f64 = 36.0;
 
 /// child webview 在主窗客户区内的几何（物理像素）。
 pub struct Geom {
@@ -286,9 +286,9 @@ mod tests {
 
     #[test]
     fn geom_normal_topbar() {
-        // 1280x820 逻辑 @2x：y = 46*2 = 92，h = 820*2 - 92 = 1548
+        // 1280x820 逻辑 @2x：y = 36*2 = 72，h = 820*2 - 72 = 1568
         let g = geom(2560, 1640, 2.0, false);
-        assert_eq!((g.x, g.y, g.w, g.h), (0, 92, 2560, 1548));
+        assert_eq!((g.x, g.y, g.w, g.h), (0, 72, 2560, 1568));
     }
 
     #[test]
@@ -300,7 +300,7 @@ mod tests {
     #[test]
     fn geom_scale_one() {
         let g = geom(1280, 820, 1.0, false);
-        assert_eq!((g.x, g.y, g.w, g.h), (0, 46, 1280, 774));
+        assert_eq!((g.x, g.y, g.w, g.h), (0, 36, 1280, 784));
     }
 
     #[test]
