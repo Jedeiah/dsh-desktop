@@ -20,6 +20,22 @@ pub const TOPBAR_H_LOGICAL: f64 = 36.0;
 /// 与 ui/theme.css `--dsh-handle-h`（18px）、shell.js 折叠布局保持一致。
 pub const HANDLE_H_LOGICAL: f64 = 18.0;
 
+/// macOS 标题栏高（逻辑 pt，带装饰窗口 frame 顶到内容顶的差值）。
+///
+/// 实测（2026-09-13，壳页 DOM 探针 + 窗口采样）：
+/// - 该环境下 `Window::inner_size()` 返回的是**窗口 frame 高度（含标题栏）**，
+///   且 outer==inner（inset=0）；
+/// - child webview 的 set_bounds 坐标是 **frame 相对**（含标题栏）；
+/// - 壳页视口高 789 ↔ frame 高 821 → 标题栏 = 32pt（macOS 26 Tahoe；旧版 28pt）。
+///
+/// 因此几何必须同时做两件事（缺一个就出问题）：
+///   y = 顶栏 + 标题栏（不补偿 → 工作台上移盖住顶栏，「管理行消失」）
+///   h = frame 高 − 标题栏 − 顶栏（不减标题栏 → 底部超出窗口被裁，「显示不全」）
+#[cfg(target_os = "macos")]
+pub const TITLEBAR_H_PT: f64 = 32.0;
+#[cfg(not(target_os = "macos"))]
+pub const TITLEBAR_H_PT: f64 = 0.0;
+
 /// 折叠态工作台顶部偏移：展开 = 顶栏高；折叠 = 把手条高。
 fn topbar_offset(collapsed: bool) -> f64 {
     if collapsed {
@@ -235,10 +251,13 @@ fn bounds_on_main(app: &AppHandle) -> Option<Rect> {
     let outer_h = window.outer_size().unwrap_or(size).height as i64;
     let inset = (outer_h - size.height as i64).max(0) as u32;
     let g = geom(size.width, size.height, scale, collapsed);
-    let y = g.y as u32 + inset;
+    // frame 相对坐标：顶栏 + 标题栏；高度再扣掉标题栏（见 TITLEBAR_H_PT 注释）
+    let tb_px = (TITLEBAR_H_PT * scale).round() as u32;
+    let y = g.y as u32 + inset + tb_px;
+    let h = g.h.saturating_sub(tb_px);
     let desc = format!(
-        "y={} h={} scale={} collapsed={} win={}x{} inset={}",
-        y, g.h, scale, collapsed, size.width, size.height, inset
+        "y={} h={} scale={} collapsed={} win={}x{} inset={} titlebar_pt={}",
+        y, h, scale, collapsed, size.width, size.height, inset, TITLEBAR_H_PT
     );
     if LAST_BOUNDS.lock().unwrap().as_deref() != Some(desc.as_str()) {
         crate::logln(&format!("[workbench] bounds: {desc}"));
@@ -246,7 +265,7 @@ fn bounds_on_main(app: &AppHandle) -> Option<Rect> {
     }
     Some(Rect {
         position: Position::Physical(PhysicalPosition::new(g.x, y as i32)),
-        size: Size::Physical(PhysicalSize::new(g.w, g.h)),
+        size: Size::Physical(PhysicalSize::new(g.w, h)),
     })
 }
 

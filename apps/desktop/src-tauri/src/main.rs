@@ -100,6 +100,7 @@ mod macwin {
         let w2 = w.clone();
         let _ = app.run_on_main_thread(move || order_front(&w2));
     }
+
 }
 
 /// The running dsh child, kept so it is reaped and so we can kill it on exit.
@@ -1941,6 +1942,37 @@ fn main() {
                 reveal_main_window(&reveal_app, mlock(&DSH_URL).as_deref());
             });
             std::thread::spawn(move || boot(handle));
+            // 诊断模式（DSH_SELF_DOM=1）：启动 12s 后把壳页 DOM 状态（顶栏/管理
+            // 按钮/把手/背景层/启动占位的位置与可见性）写入日志，并对窗口截图
+            // 存 PNG（进程内截自己的窗口，无需屏幕录制权限）。用于无法人工截图时
+            // 定位「顶栏不可见」「背景不对」这类纯视觉问题。
+            if std::env::var("DSH_SELF_DOM").is_ok() {
+                let d = app.handle().clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(Duration::from_secs(12));
+                    let d2 = d.clone();
+                    let _ = d.run_on_main_thread(move || {
+                        let Some(w) = crate::main_window(&d2) else {
+                            crate::logln("[diag] 主窗 handle 不可用");
+                            return;
+                        };
+                        let js = r#"JSON.stringify({
+                          body: document.body.className,
+                          htmlBg: getComputedStyle(document.documentElement).backgroundColor,
+                          vw: innerWidth, vh: innerHeight, dpr: devicePixelRatio,
+                          chrome: (()=>{const c=document.getElementById('chrome');if(!c)return null;const r=c.getBoundingClientRect();const s=getComputedStyle(c);return{x:r.x,y:r.y,w:r.width,h:r.height,transform:s.transform,opacity:s.opacity,visibility:s.visibility,display:s.display};})(),
+                          manage: (()=>{const m=document.getElementById('btnManage');if(!m)return null;const r=m.getBoundingClientRect();return{x:r.x,y:r.y,w:r.width,h:r.height,txt:m.textContent.trim()};})(),
+                          restore: (()=>{const b=document.getElementById('chromeRestore');if(!b)return null;const r=b.getBoundingClientRect();return{hidden:b.hidden,x:r.x,y:r.y,w:r.width,h:r.height};})(),
+                          stage: (()=>{const s=document.getElementById('stage');if(!s)return null;const cs=getComputedStyle(s);return{top:cs.top,bg:cs.backgroundColor};})(),
+                          ambient: (()=>{const a=document.querySelector('.ambient');if(!a)return null;const cs=getComputedStyle(a);const r=a.getBoundingClientRect();return{display:cs.display,opacity:cs.opacity,z:cs.zIndex,w:r.width,h:r.height};})(),
+                          startup: (()=>{const s=document.getElementById('startupView');if(!s)return null;return{hidden:s.hidden,display:getComputedStyle(s).display};})()
+                        })"#;
+                        let _ = w.eval_with_callback(js, |r| crate::logln(&format!("[diag] dom={r}")));
+                        // 注：进程内 CGWindowListCreateImage 在无屏幕录制权限时会抛
+                        // Objective-C 异常（无法被 Rust 捕获，直接 abort），已弃用。
+                    });
+                });
+            }
             // 自检钩子（DSH_SELF_HIDE_TEST=1）：启动 13s 后复刻 CloseRequested 的
             // 「关到后台」动作（USER_HIDDEN + 隐藏 child + AppHandle::hide），
             // 6s 后列出所有窗口可见性并恢复显示后退出。用于无法点击红点（自动化 /
