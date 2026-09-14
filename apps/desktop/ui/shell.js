@@ -9,6 +9,17 @@
   const $ = (id) => document.getElementById(id);
   const T = window.__TAURI__;
   const invoke = (...a) => T.core.invoke(...a);
+  // 壳页「被原生裁到顶栏」的判定阈值：工作台可见且无浮层时，Rust 把壳页 webview 裁到
+  // 36pt（折叠 8pt），此时视口高度远小于此值。两个用途：toast 跳过（裁切态画不出来）、
+  // 打开浮层前先解裁（见 afterUnclip）。
+  const CLIP_H = 120;
+  // 被裁切时先让 Rust 解除裁切（hide_workbench_cmd），再执行「显示浮层」这步：
+  // 否则浮层会按 36pt 视口首帧布局（实测：打开命令面板 palH=36，且下一帧仍未解裁），
+  // 解裁后才跳成整幅——观感是"啪地弹出"而非滑入。未裁切时直接同步执行，不引入延迟。
+  function afterUnclip(fn) {
+    if (window.innerHeight >= CLIP_H) { fn(); return; }
+    invoke('hide_workbench_cmd').catch(() => {}).then(fn);
+  }
 
   // ---------------- 图标表（v4 设计稿同款，线性 1.5px） ----------------
   const ICON = {
@@ -76,7 +87,7 @@
     // 壳页在「工作台可见且无浮层」时被原生裁到只剩顶栏（视口 36px/8px，见
     // apply_shell_clip_on_main）：此时任何 HTML 提示都只能挤在那一条里，必然盖住
     // 「工作台 / 管理」且被裁断（用户反馈），而这类动作通常已有可见结果。故直接跳过。
-    if (window.innerHeight < 120) return;
+    if (window.innerHeight < CLIP_H) return;
     const el = document.createElement('div');
     el.className = 'toast';
     const iconCls = kind === 'ok' ? 't-ok' : kind === 'err' ? 't-err' : 't-acc';
@@ -328,6 +339,10 @@
     } catch (e) { /* 忽略 */ }
   }
 
+  // 浮层显示代的令牌：afterUnclip 会把「显示」推后一个 IPC 往返，期间若用户又关了
+  // 抽屉/面板，迟到的回调不得把浮层重新打开（close 也自增来作废在途回调）。
+  let overlayGen = 0;
+
   function openDrawer(section) {
     region = section;
     refreshAmbientInfo();
@@ -338,16 +353,21 @@
       b.classList.toggle('active', on);
       b.setAttribute('aria-selected', String(on));
     });
-    drawer.classList.add('open');
-    // 抽屉占用右侧 560px：水印居中于剩余区域（theme.css 的 body.drawer-open）
-    document.body.classList.add('drawer-open');
-    // 抽屉打开期间禁用「收起导航栏」：折叠按钮紧邻抽屉关闭按钮、都是右上角，
-    // 极易误触导致整个顶栏消失（用户多次踩坑）。折叠仍可在收起抽屉后/⌘K
-    // 命令面板里进行。
-    syncCollapseGuard();
-    resetPageScroll();
-    // 工作台是原生 webview，盖在所有 HTML 之上：抽屉打开必须显式隐藏
-    if (section !== 'workbench') invoke('hide_workbench_cmd').catch(() => {});
+    const gen = ++overlayGen;
+    afterUnclip(() => {
+      if (gen !== overlayGen) return; // 期间已被收起/切换：放弃这次显示
+      drawer.inert = false; // 关闭态整体不可聚焦（见 drawerEl.inert 注释）
+      drawer.classList.add('open');
+      // 抽屉占用右侧 560px：水印居中于剩余区域（theme.css 的 body.drawer-open）
+      document.body.classList.add('drawer-open');
+      // 抽屉打开期间禁用「收起导航栏」：折叠按钮紧邻抽屉关闭按钮、都是右上角，
+      // 极易误触导致整个顶栏消失（用户多次踩坑）。折叠仍可在收起抽屉后/⌘K
+      // 命令面板里进行。
+      syncCollapseGuard();
+      resetPageScroll();
+      // 工作台是原生 webview，盖在所有 HTML 之上：抽屉打开必须显式隐藏
+      if (section !== 'workbench') invoke('hide_workbench_cmd').catch(() => {});
+    });
     // 切到该分段时刷新数据（安装/插件状态可能已在后台变化）
     if (section === 'dsh') refreshDsh();
     if (section === 'plugins') refreshPlugins();
@@ -365,7 +385,12 @@
   }
   function closeDrawer(restoreWorkbench = true) {
     clearToasts(); // 抽屉一收起，视口马上会被裁回顶栏（见 clearToasts 注释）
-    $('drawer').classList.remove('open');
+    overlayGen++; // 作废在途的显示回调（见 openDrawer）
+    const drawer = $('drawer');
+    drawer.classList.remove('open');
+    drawer.inert = true; // 关闭态不可聚焦：否则 Tab/输入会落进离屏抽屉
+    // 焦点若还在抽屉里（如刚填完版本号），关掉后必须移出——离屏输入框会继续吞按键。
+    if (drawer.contains(document.activeElement)) document.activeElement.blur();
     document.body.classList.remove('drawer-open');
     region = 'workbench';
     syncCollapseGuard();
@@ -405,6 +430,11 @@
   const DRAWER_MIN = 360, DRAWER_DEFAULT = 560, DRAWER_RESERVED = 420;
   const drawerEl = $('drawer');
   const drawerResizeEl = $('drawerResize');
+  // 抽屉关闭时只靠 transform 移到屏外（没有 hidden/visibility），里面的输入框仍在
+  // Tab 序里、仍能拿焦点：关掉抽屉后继续打字会落进看不见的输入框，Tab 也会跑进离屏
+  // 控件（`resetPageScroll` 还会把由此产生的滚动立刻归零，观感是"焦点不见了"）。
+  // inert 让关闭态的抽屉整体不可聚焦/不可点，且不影响滑入滑出过渡。
+  drawerEl.inert = true;
   const drawerW = () =>
     parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--drawer-w')) || DRAWER_DEFAULT;
   function clampDrawerWidth(px) {
@@ -432,14 +462,24 @@
     document.body.classList.add('drawer-resizing'); // 拖动期间全局 col-resize + 禁选中
     drawerResizeEl.setPointerCapture(e.pointerId);
     const move = (ev) => setDrawerWidth(window.innerWidth - ev.clientX, false);
-    const up = (ev) => {
+    // 收尾共用一条路径：pointerup 与 pointercancel（触控/系统手势/窗口失焦打断）
+    // 都要走——只监听 pointerup 时，cancel 会让 body.drawer-resizing 永久残留
+    // （全局 col-resize、无法选中文字），并让下一次 pointerdown 再叠一份 move/up。
+    const end = (ev, persist) => {
       drawerResizeEl.removeEventListener('pointermove', move);
       drawerResizeEl.removeEventListener('pointerup', up);
+      drawerResizeEl.removeEventListener('pointercancel', cancel);
+      if (drawerResizeEl.hasPointerCapture(e.pointerId)) {
+        try { drawerResizeEl.releasePointerCapture(e.pointerId); } catch (err) { /* 已释放 */ }
+      }
       document.body.classList.remove('drawer-resizing');
-      setDrawerWidth(window.innerWidth - ev.clientX, true); // 松手才落盘
+      if (persist) setDrawerWidth(window.innerWidth - ev.clientX, true); // 松手才落盘
     };
+    const up = (ev) => end(ev, true);
+    const cancel = (ev) => end(ev, false); // 中断不落盘：保持上次已持久化的宽度
     drawerResizeEl.addEventListener('pointermove', move);
     drawerResizeEl.addEventListener('pointerup', up);
+    drawerResizeEl.addEventListener('pointercancel', cancel);
   });
   // 双击复位；键盘 ←/→（Shift 加速）、Home 复位（把手 tabindex=0）
   drawerResizeEl.addEventListener('dblclick', () => {
@@ -463,22 +503,32 @@
   function openPalette() {
     paletteOpen = true;
     resetPageScroll();
-    $('paletteOverlay').hidden = false;
-    // 命令面板与抽屉同样禁用折叠按钮（同一个右上角误触坑）
-    syncCollapseGuard();
-    // 命令面板是居中浮层，与工作台区域重叠；原生工作台 webview 盖在所有 HTML
-    // 之上（macOS 独立 NSWindow），必须像抽屉一样显式隐藏，否则面板被盖住
-    // 看不见（用户反馈「点管理没出现操作页面」的唯一原因）。
-    invoke('hide_workbench_cmd').catch(() => {});
-    $('paletteInput').value = '';
-    paletteSel = 0;
-    renderPalette('');
-    $('paletteInput').focus({ preventScroll: true });
+    const gen = ++overlayGen;
+    // 先解裁再显示（同抽屉，见 afterUnclip）：面板是 fixed inset:0，被裁到 36pt 时
+    // 首帧只有那条细高度，解裁后才跳成整幅。
+    afterUnclip(() => {
+      if (gen !== overlayGen || !paletteOpen) return;
+      // 已显示（极端快速连按）时不再重置输入与选中项：期间用户可能已用 ↑↓ 选过项
+      if (!$('paletteOverlay').hidden) return;
+      $('paletteOverlay').hidden = false;
+      // 命令面板与抽屉同样禁用折叠按钮（同一个右上角误触坑）
+      syncCollapseGuard();
+      // 命令面板是居中浮层，与工作台区域重叠；原生工作台 webview 盖在所有 HTML
+      // 之上（macOS 独立 NSWindow），必须像抽屉一样显式隐藏，否则面板被盖住
+      // 看不见（用户反馈「点管理没出现操作页面」的唯一原因）。
+      invoke('hide_workbench_cmd').catch(() => {});
+      $('paletteInput').value = '';
+      paletteSel = 0;
+      renderPalette('');
+      $('paletteInput').focus({ preventScroll: true });
+    });
   }
   function closePalette(restoreWorkbench = true) {
     clearToasts();
+    overlayGen++; // 作废在途的显示回调
     paletteOpen = false;
     $('paletteOverlay').hidden = true;
+    if ($('paletteOverlay').contains(document.activeElement)) document.activeElement.blur();
     syncCollapseGuard();
     // 恢复工作台（受守卫：抽屉/面板仍占用时不恢复；runPaletteItem → goRegion
     // 还会再开抽屉，两次 invoke 按发出顺序执行，最终态正确）。
@@ -744,10 +794,14 @@
     setupVerValue = v;
     setupVerLabel.textContent = 'v' + v;
     syncSetupVerDisplay(v);
-    // 从列表选了版本就清空手输框：runSetup 里手输值优先于列表值，留着旧手输值会
-    // 让人以为装的是刚选的那个版本（用户反馈）
-    verManual.value = '';
-    if (!silent) closeSetupVerMenu();
+    // 用户从列表里选（silent=false）才清空手输框：runSetup 里手输值优先于列表值，
+    // 留着旧手输值会让人以为装的是刚选的那个版本（用户反馈）。静默刷新（silent=true，
+    // 如「刷新版本」重新拉取列表 / 列表预填）**不能**动用户手输值——那会把用户刚敲的
+    // 版本号吃掉、装成列表首项。
+    if (!silent) {
+      verManual.value = '';
+      closeSetupVerMenu();
+    }
   }
   function closeSetupVerMenu() {
     setupVerMenu.hidden = true;
@@ -1202,6 +1256,9 @@
   async function applyVersion(ver, btn, op) {
     const opCn = op === 'rollback' ? '回滚' : op === 'switch' ? '切换' : op === 'update' ? '更新' : '安装';
     const doing = op === 'rollback' ? '回滚中…' : op === 'switch' ? '切换中…' : op === 'update' ? '更新中…' : '安装中…';
+    // 记下原按钮文案：结束后回写它而不是 opCn —— 抽屉「更新到最新」按钮的文案是
+    // 「更新到最新」，用 opCn（"更新"）回写会让它在任何一次更新结束后静默变短。
+    const btnLabel = btn ? btn.textContent : null;
     if (btn) { btn.disabled = true; btn.textContent = doing; }
     const tid = 'dsh-' + ver;
     taskStart(tid, opCn + ' dsh v' + ver);
@@ -1300,7 +1357,7 @@
     } finally {
       refreshDsh(); // 复位 installing 状态并重渲染列表
     }
-    if (btn) { btn.disabled = false; btn.textContent = opCn; }
+    if (btn) { btn.disabled = false; btn.textContent = btnLabel || opCn; }
   }
 
   function checkDsh() { refreshDsh(); }

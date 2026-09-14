@@ -12,9 +12,12 @@ $ErrorActionPreference = "Stop"
 
 $Repo = "Jedeiah/dsh-desktop"
 $ExeName = "dsh-desktop.exe"
-# App 自己 dsh 子进程的命令行特征（app-data 闭包的 bin.js --profile web；
-# 终端手动跑的 dsh 不含该特征，避免误杀）
-$DshChildPattern = "*bin.js*--profile web*"
+# App 自己 dsh 子进程的命令行特征：必须是本 App 的闭包路径
+# (%LOCALAPPDATA%\com.dsh-desktop.app\dsh) 下的 bin.js --profile web。
+# 只匹配 bin.js --profile web 会把**用户自己在终端里跑的 dsh**（同 profile、装在别处）
+# 一起杀掉——与 Rust 侧 kill_stale_children 的判定保持一致。
+$DshClosureDir = Join-Path $env:LOCALAPPDATA "com.dsh-desktop.app\dsh"
+$DshChildPattern = "*bin.js*--profile*"
 
 # --- 解析最新版本（走 github.com 跳转，绕开 api.github.com） ----------------
 Write-Host "==> 查询最新版本（$Repo）..."
@@ -52,7 +55,7 @@ try {
     }
     # 精确清掉 App 自己的 dsh 子进程（不匹配用户手动跑的 dsh）
     Get-CimInstance Win32_Process -Filter "Name = 'node.exe'" -ErrorAction SilentlyContinue |
-        Where-Object { $_.CommandLine -like $DshChildPattern } |
+        Where-Object { $_.CommandLine -like $DshChildPattern -and $_.CommandLine -like "*$DshClosureDir*" } |
         ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
 
     # --- 下载安装器 ------------------------------------------------------
@@ -63,15 +66,33 @@ try {
         throw "下载安装器失败"
     }
 
+    # 校验和：release 为每个产物同时发布 <asset>.sha256（App 内自动更新也校验它）。
+    # 只取哈希、不比文件名（文件里记的是 CI 侧路径）。
+    Write-Host "==> 校验下载完整性..."
+    $Expect = $null
+    try {
+        $SumText = (Invoke-WebRequest -Uri "$SetupUrl.sha256" -UseBasicParsing -TimeoutSec 30).Content
+        $Expect = ($SumText -split "\s+")[0].Trim().ToLower()
+    } catch {
+        throw "无法获取校验和（$SetupUrl.sha256）：$_"
+    }
+    $Actual = (Get-FileHash -LiteralPath $SetupPath -Algorithm SHA256).Hash.ToLower()
+    if ($Expect -ne $Actual) {
+        throw "校验失败：下载内容与发布校验和不一致（期望 $Expect，实际 $Actual）"
+    }
+    Write-Host "    OK sha256 一致"
+
     # --- 静默安装（NSIS /S）并等待完成 -----------------------------------
     Write-Host "==> 安装中..."
     $p = Start-Process -FilePath $SetupPath -ArgumentList "/S" -PassThru -Wait
 
     # --- 启动 --------------------------------------------------------------
-    # NSIS installMode=currentUser 装在固定路径；直接 Test-Path（不递归，
-    # 避免无权限/缓慢扫描 %ProgramFiles%）。
+    # NSIS installMode=currentUser 的安装目录是 $LOCALAPPDATA\<productName>
+    # （tauri-bundler 模板 installer.nsi:514 `StrCpy $INSTDIR "$LOCALAPPDATA\${PRODUCTNAME}"`），
+    # **不是** ...\Programs\...：旧探测的两个路径都猜错，装完永远走不进"自动启动"分支。
     $Installed = $null
     foreach ($c in @(
+        (Join-Path $env:LOCALAPPDATA "DeepSeek Harness Desktop\$ExeName"),
         (Join-Path $env:LOCALAPPDATA "Programs\DeepSeek Harness Desktop\$ExeName"),
         (Join-Path $env:ProgramFiles "DeepSeek Harness Desktop\$ExeName")
     )) {

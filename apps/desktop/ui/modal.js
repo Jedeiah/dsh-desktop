@@ -40,12 +40,18 @@
     }
   }
 
+  // ✕ / Esc 的返回值：yesno（危险操作，如「卸载并清除数据」）一律 false = 取消；普通提示窗
+  // true = 等同于「确定」。**spec 未就绪（modal_spec 还没 resolve 或失败）也必须 false**：
+  // 旧写法 `spec && spec.kind === 'yesno' ? false : true` 在 spec 为 null 时给 true ——
+  // 弹窗刚打开还没渲染完就按 Esc/✕，对卸载确认等于直接确认卸载并删数据。Rust 侧契约
+  // 相反（show_modal_with_labels 阻塞等待用户点击，超时兜底 false）。
+  const dismissAccept = () => (spec ? spec.kind !== 'yesno' : false);
   btnOk.addEventListener('click', () => respond(true));
   btnNo.addEventListener('click', () => respond(false));
-  closeX.addEventListener('click', () => respond(spec && spec.kind === 'yesno' ? false : true));
+  closeX.addEventListener('click', () => respond(dismissAccept()));
   // ESC：非危险操作页可关闭；yesno 视为取消
   window.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') respond(spec && spec.kind === 'yesno' ? false : true);
+    if (e.key === 'Escape') respond(dismissAccept());
   });
 
   render();

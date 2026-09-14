@@ -20,7 +20,13 @@ DSH_CHILD_PATTERN="node_modules/@deepseek-ai/dsh/lib/bin.js --profile web"
 
 case "$(uname -m)" in
   arm64)  ARCH_SUFFIX="aarch64" ;;
-  x86_64) ARCH_SUFFIX="x86_64" ;;
+  x86_64)
+    # CI 只构建 Apple Silicon 产物（macOS runner = macos-14/arm64），没有 x86_64 DMG：
+    # 继续走下去只会 curl 到 404 报错，不如在这里说清原因。
+    echo "!! 暂不支持 Intel（x86_64）Mac：目前只发布 Apple Silicon（arm64）版本。" >&2
+    echo "   可用 Apple Silicon 机器安装，或在 Intel 机上自行从源码构建：" >&2
+    echo "   https://github.com/${REPO}#开发" >&2
+    exit 1 ;;
   *) echo "!! 不支持的架构: $(uname -m)" >&2; exit 1 ;;
 esac
 
@@ -67,6 +73,25 @@ TMP_DMG="${TMP_DIR}/DSh-${TAG}.dmg"
 
 echo "==> 下载 DMG..."
 curl -fL --max-time 600 --progress-bar -o "$TMP_DMG" "$DMG_URL"
+
+# 校验和：release 为每个产物同时发布 <asset>.sha256（App 内自动更新也校验它）。
+# 一键脚本不校验就等于把"整条安装链的最后一环"交给网络——静默装到损坏/被替换的包。
+# 只用校验和文件里的哈希（不比文件名：文件里记的是 CI 侧的路径）。
+echo "==> 校验下载完整性..."
+EXPECT="$(curl -fsL --connect-timeout 10 --max-time 30 "${DMG_URL}.sha256" 2>/dev/null \
+  | awk '{print $1}' | tr -d '[:space:]' | head -c 64 || true)"
+if [ -z "$EXPECT" ]; then
+  echo "!! 无法获取校验和（${DMG_URL}.sha256）" >&2
+  exit 1
+fi
+ACTUAL="$(shasum -a 256 "$TMP_DMG" | awk '{print $1}')"
+if [ "$EXPECT" != "$ACTUAL" ]; then
+  echo "!! 校验失败：下载内容与发布校验和不一致" >&2
+  echo "   期望 $EXPECT" >&2
+  echo "   实际 $ACTUAL" >&2
+  exit 1
+fi
+echo "    ✓ sha256 一致"
 
 echo "==> 挂载..."
 MOUNT_PT="$(hdiutil attach "$TMP_DMG" -nobrowse -readonly \

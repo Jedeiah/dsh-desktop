@@ -95,9 +95,14 @@ fn clean_local_spec(spec: &str) -> String {
     } else {
         spec
     };
-    // file:///D:/x 形态会剩一个多余前导 `/`；\\?\D:\x 是 Windows verbatim 标记
-    if t.starts_with('/') && t.as_bytes().get(2) == Some(&b':') {
-        t = &t[1..];
+    // file:///D:/x 形态会剩一个多余前导 `/`；\\?\D:\x 是 Windows verbatim 标记。
+    // 只在「/<盘符>:/」时才去前导斜杠：`/ab:/x` 这种 POSIX 路径第 3 个字节也是 ':'，
+    // 旧条件会把首字符吃掉、把合法路径改坏。
+    if t.starts_with('/') {
+        let b = t.as_bytes();
+        if b.len() > 2 && b[1].is_ascii_alphabetic() && b[2] == b':' {
+            t = &t[1..];
+        }
     }
     if let Some(r) = t.strip_prefix(r"\\?\") {
         t = r;
@@ -489,7 +494,11 @@ fn run_dsh_plugin(
     if op == "remove" {
         clean_empty_dirs_under(&profile.join("node_modules"));
     }
-    crate::logln(&format!("[plugin] dsh plugin {op} {pkg} -> exit {status}"));
+    // pkg 可为带凭据的 git URL（https://user:token@host/...），落盘前脱敏
+    crate::logln(&format!(
+        "[plugin] dsh plugin {op} {} -> exit {status}",
+        crate::redact_url(pkg)
+    ));
     Ok((format!("退出码 {status}\n\n{}", tail_text(&text, 60000)), success))
 }
 

@@ -246,8 +246,9 @@ fn install_and_verify(
         cmd = crate::no_console(cmd);
     }
     install_log(&format!(
-        "cmd: {} install @deepseek-ai/dsh@{ver} --ignore-scripts --reporter=append-only --registry {registry} --store-dir {} (cwd={})",
+        "cmd: {} install @deepseek-ai/dsh@{ver} --ignore-scripts --reporter=append-only --registry {} --store-dir {} (cwd={})",
         pnpm.display(),
+        crate::redact_url(registry),
         store.display(),
         target.display()
     ));
@@ -378,7 +379,10 @@ fn activate_closure(dsh_dir: &Path, ver: &str) -> Result<(), String> {
         .ok()
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty());
-    let tmp_marker = dsh_dir.join("current.tmp");
+    // 临时标记名带 pid：两个进程同时切换（GUI 安装 + `--self-apply-update` CLI）
+    // 共用 `current.tmp` 时，后写者会盖掉先写者的内容、先写者的 rename 拿到的是
+    // 别人的版本（甚至 rename 失败报"切换失败"）。pid 后缀让各自的写-改-名自成一体。
+    let tmp_marker = dsh_dir.join(format!("current.{}.tmp", std::process::id()));
     std::fs::write(&tmp_marker, format!("v{ver}\n"))
         .map_err(|e| format!("写 current 标记失败: {e}"))?;
     std::fs::rename(&tmp_marker, &cur_marker)
@@ -388,7 +392,13 @@ fn activate_closure(dsh_dir: &Path, ver: &str) -> Result<(), String> {
     if let Ok(entries) = std::fs::read_dir(dsh_dir) {
         for e in entries.flatten() {
             let name = e.file_name().to_string_lossy().to_string();
-            if !name.starts_with('v') || name.ends_with("-tmp") || name.ends_with(".old") {
+            // 跳过非版本目录与**在途临时目录**：`-tmp` / `.tmp`（并发安装时另一个
+            // 进程正在写入，名字带 pid，删它会砸掉别人的安装）/ `.old`（回滚备份）。
+            if !name.starts_with('v')
+                || name.ends_with("-tmp")
+                || name.ends_with(".tmp")
+                || name.ends_with(".old")
+            {
                 continue;
             }
             let keep = name == format!("v{ver}") || Some(&name) == prev_ver.as_ref();
@@ -410,6 +420,13 @@ pub fn install_version(
     registry: &str,
     progress: &dyn Fn(&str),
 ) -> Result<(), String> {
+    // 版本号在函数入口统一校验（不只靠调用方）：ver 会拼进目录名（`v{ver}` /
+    // `v{ver}-tmp`）并用于 `remove_dir_all(tmp)`。GUI 两个入口本来都校验，但
+    // `--self-apply-update <ver>`（main.rs 的 CLI 钩子）把命令行参数直接透传进来，
+    // 未校验的 `../../x` 会把写入/删除解析到 app data 之外。
+    if !crate::registry::valid_version(ver) {
+        return Err(format!("版本号不合法：{ver}"));
+    }
     let dsh_dir = p.app_data.join("dsh");
     std::fs::create_dir_all(&dsh_dir).map_err(|e| format!("创建目录失败: {e}"))?;
 
@@ -428,7 +445,10 @@ pub fn install_version(
     if let Ok(mut s) = INSTALL_LOG_START.lock() {
         *s = Some(Instant::now());
     }
-    install_log(&format!("===== 安装 dsh@{ver} registry={registry} ====="));
+    install_log(&format!(
+        "===== 安装 dsh@{ver} registry={} =====",
+        crate::redact_url(registry)
+    ));
     // progress 包装：每行转发到日志（npm 输出经 progress 逐行回调，落盘可见卡点）
     let orig = progress;
     let progress = &|msg: &str| {
@@ -447,7 +467,10 @@ pub fn install_version(
         return Ok(());
     }
 
-    let tmp = dsh_dir.join(format!("v{ver}-tmp"));
+    // 临时目录名带 pid：同一版本被两个进程（GUI 安装 + CLI `--self-apply-update`）
+    // 同时安装时，共用 `v{ver}-tmp` 会让后到者的 remove_dir_all/create_dir_all 删掉
+    // 先到者正在写入的内容，双双失败或装出半成品。
+    let tmp = dsh_dir.join(format!("v{ver}-{}.tmp", std::process::id()));
     if tmp.exists() {
         std::fs::remove_dir_all(&tmp).map_err(|e| format!("清理临时目录失败: {e}"))?;
     }
@@ -462,7 +485,10 @@ pub fn install_version(
         return Err(e);
     }
 
-    std::fs::write(tmp.join("VERSION"), ver).map_err(|e| format!("写版本标记失败: {e}"))?;
+    if let Err(e) = std::fs::write(tmp.join("VERSION"), ver) {
+        let _ = std::fs::remove_dir_all(&tmp); // 写标记失败即放弃本次安装：不留 tmp 残骸
+        return Err(format!("写版本标记失败: {e}"));
+    }
 
     // promote tmp -> v<ver> with overwrite safety: the existing dir is moved
     // aside first, so any failure below never leaves the running install
@@ -477,6 +503,8 @@ pub fn install_version(
         if old.exists() {
             let _ = std::fs::rename(&old, &final_dir);
         }
+        // 本次装好的 tmp 也不再有用（下一次安装会重下）：删掉，避免数百 MB 残骸
+        let _ = std::fs::remove_dir_all(&tmp);
         return Err(format!("发布新版本目录失败: {e}"));
     }
 

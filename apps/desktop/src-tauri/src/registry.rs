@@ -131,8 +131,15 @@ pub fn latest_version(registry: &str) -> Result<String, String> {
 
 /// 200 响应体是否表示「版本存在」。部分 registry 镜像对不存在的版本返回
 /// 200 + `{"error": ...}`，仅按状态码会误判为存在，需按 body 判断。
+/// 判断依据是 JSON **顶层**有没有 `error` 字段，不做子串匹配：版本元数据里出现
+/// 字面量 `"error"`（scripts 里有个叫 error 的项、依赖名或描述命中）时，子串匹配
+/// 会把确实存在的版本判成不存在，用户看到「版本不存在」而装不上。
 fn version_exists_response(body: &str) -> bool {
-    !body.contains("\"error\"")
+    match serde_json::from_str::<serde_json::Value>(body) {
+        Ok(v) => v.get("error").is_none(),
+        // 解析不了（HTML 错误页/空 body）：保守判为存在，让后续真实下载给出准确报错
+        Err(_) => true,
+    }
 }
 
 /// 查询指定版本是否存在于 registry（`GET {registry}/{pkg}/{ver}`：200=存在，
@@ -184,6 +191,14 @@ mod tests {
         // 部分 registry 镜像对不存在的版本返回 200 + {"error": ...} → 不存在
         assert!(!version_exists_response(r#"{"error":"Not found"}"#));
         assert!(!version_exists_response(r#"{"error":"version not found: 9.9.9"}"#));
+        // 顶层 error 之外出现字面量 "error" 不能误判：版本元数据里带 error 字样的
+        // 字段/脚本很常见（旧实现用 body.contains("\"error\"")，会把存在的版本判成不存在）
+        assert!(version_exists_response(
+            r#"{"name":"@deepseek-ai/dsh","version":"0.1.0","scripts":{"error":"echo x"},"description":"handles \"error\" cases"}"#
+        ));
+        // 解析不了的 body：保守放行（后续真实下载会给出准确报错）
+        assert!(version_exists_response("<html>404</html>"));
+        assert!(version_exists_response(""));
     }
 
     #[test]

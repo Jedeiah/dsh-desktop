@@ -1,0 +1,10 @@
+{
+  "identifier": "shell-events",
+  "description": "授予壳页（主窗，webview label = main）监听事件的权限。Tauri 2 把 `plugin:event|listen` 当插件命令走 ACL——**没有 capability 就一律拒绝**（实测报错：event.listen not allowed. Permissions associated with this command: core:event:allow-listen, core:event:default），与来源 local/remote 无关；此前壳页所有 T.event.listen 都被静默拒绝（.catch 吞掉），只剩轮询兜底：workbench:ready / dsh:setup-progress / dsh:need-setup 有轮询所以看不出来，而 shell:shortcut（工作台内按 Ctrl/⌘+K、Ctrl/⌘+1–4 转发）没有兜底，等于功能失效。只授 listen：emit 由 workbench-shortcut 那条单独授给工作台；壳页不发事件。remote 项是开发态需要——`tauri dev` 下壳页由 http://127.0.0.1:<port> 提供，属于 remote 来源；webviews 限定 main，工作台（label=workbench）拿不到本条权限。",
+  "local": true,
+  "remote": {
+    "urls": ["http://127.0.0.1:*", "http://localhost:*"]
+  },
+  "webviews": ["main"],
+  "permissions": ["core:event:allow-listen"]
+}

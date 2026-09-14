@@ -246,7 +246,15 @@ fn ensure_ready_on_main(app: &AppHandle, url: &str) -> bool {
         // 自愈：child 确实存在 ⇒ 撤销降级标记。FALLBACK 会被「主线程拥塞超 5s 的
         // recv_timeout」等瞬时原因误置，而旧实现一旦置位就再不复位，工作台会永久停在
         // 屏幕外（后续 apply_bounds / hide 全部走 fallback 分支）。
-        FALLBACK.store(false, Ordering::SeqCst);
+        if FALLBACK.swap(false, Ordering::SeqCst) {
+            // 降级窗口已开出、但 child 随后创建成功（recv_timeout 5s 超时判成失败，
+            // 主线程只是被拥塞）——必须关掉那个独立窗口，否则它会一直留在屏幕上，
+            // 与嵌入的工作台各显示一份 dsh。
+            if let Some(fw) = app.get_window(LABEL) {
+                crate::logln("[workbench] child 已就绪，关闭降级独立窗口");
+                let _ = fw.close();
+            }
+        }
         if url_changed(crate::mlock(&CUR_URL).as_deref(), url) {
             let _ = wv.navigate(parsed);
             *crate::mlock(&CUR_URL) = Some(url.to_string());
@@ -350,7 +358,7 @@ fn ensure_ready_on_main(app: &AppHandle, url: &str) -> bool {
         .unwrap_or(PhysicalSize::new(1280u32, 820u32));
     match window.add_child(builder, PhysicalPosition::new(OFFSCREEN, OFFSCREEN), init_size) {
         Ok(_) => {
-            *CUR_URL.lock().unwrap() = Some(url.to_string());
+            *crate::mlock(&CUR_URL) = Some(url.to_string());
             // 崩溃自愈会「关闭主窗 → 重建」（boot 既有行为）：新窗口需要重新挂
             // Resized 监听。此处是唯一创建点，webview 不存在 ⇒ 窗口必为新建/首次。
             RESIZE_HOOKED.store(false, Ordering::SeqCst);
@@ -402,7 +410,11 @@ fn attach_resize_hook(app: &AppHandle) {
     };
     let app2 = app.clone();
     window.on_window_event(move |ev| {
-        if let tauri::WindowEvent::Resized(_) = ev {
+        // ScaleFactorChanged：窗口被拖到不同缩放比的显示器时，逻辑尺寸可能不变、
+        // 只有 scale factor 变了——不重算几何的话工作台会按旧缩放错位（Windows
+        // per-monitor DPI 尤其常见）。
+        let dpi_changed = matches!(ev, tauri::WindowEvent::ScaleFactorChanged { .. });
+        if matches!(ev, tauri::WindowEvent::Resized(_)) || dpi_changed {
             sync_bounds(&app2);
             notify_shell_window_size(&app2);
             // 全屏/最大化过渡结束后再补算一次（见 sync_bounds_deferred 注释）
@@ -469,9 +481,9 @@ fn bounds_on_main(app: &AppHandle) -> Option<Rect> {
         "y={} h={} scale={} collapsed={} win={}x{} inset={} titlebar_pt={}",
         y, h, scale, collapsed, size.width, size.height, inset, tb_pt
     );
-    if LAST_BOUNDS.lock().unwrap().as_deref() != Some(desc.as_str()) {
+    if crate::mlock(&LAST_BOUNDS).as_deref() != Some(desc.as_str()) {
         crate::logln(&format!("[workbench] bounds: {desc}"));
-        *LAST_BOUNDS.lock().unwrap() = Some(desc);
+        *crate::mlock(&LAST_BOUNDS) = Some(desc);
     }
     Some(Rect {
         position: Position::Physical(PhysicalPosition::new(g.x, y as i32)),

@@ -142,6 +142,7 @@ mod macwin {
         #[link(name = "CoreGraphics", kind = "framework")]
         extern "C" {
             fn CGColorCreateSRGB(r: f64, g: f64, b: f64, a: f64) -> *mut std::ffi::c_void;
+            fn CGColorRelease(color: *mut std::ffi::c_void);
         }
         extern "C" {
             fn objc_msgSend();
@@ -161,6 +162,9 @@ mod macwin {
                 return;
             }
             let color: *mut Object = msg_send![class!(NSColor), colorWithCGColor: cg];
+            // CGColorCreateSRGB 是 +1 所有权，NSColor 已把颜色值拷走：这里必须 Release，
+            // 否则每次 reveal（托盘/Dock 召回都会调进来）泄漏一个颜色对象。
+            CGColorRelease(cg);
             if color.is_null() {
                 return;
             }
@@ -176,12 +180,18 @@ mod macwin {
             let key: *mut Object = msg_send![key, initWithUTF8String: kc.as_ptr()];
             let no: *mut Object = msg_send![class!(NSNumber), numberWithBool: false];
             if key.is_null() || no.is_null() {
+                // alloc/init 出来的 key 归我们所有：这两条早退路径同样要 release
+                if !key.is_null() {
+                    let _: () = msg_send![key, release];
+                }
                 return;
             }
             let sel_key = Sel::register("setValue:forKey:");
             let f: unsafe extern "C" fn(*mut Object, Sel, *mut Object, *mut Object) =
                 std::mem::transmute(objc_msgSend as *const ());
             let n = clear_webview_bg(cv, f, sel_key, no, key);
+            // alloc/init 的 NSString 用完释放（no 是 autoreleased 的 NSNumber，无需处理）
+            let _: () = msg_send![key, release];
             crate::logln(&format!("[main] 已关闭 {n} 个 WKWebView 的背景绘制（消除刷新白闪）"));
         }
     }
@@ -334,14 +344,29 @@ static REVEALED: AtomicBool = AtomicBool::new(false);
 /// 采样与窗口日志可证），导致 reveal 误判「主窗不存在」→ 走重建分支并 return，
 /// 跳过显示窗口/恢复工作台（用户症状：托盘召回只见背景、无工作台）。
 /// `get_window()`（普通窗口查找）在该环境正常，故 workbench 几何路径不受影响。
-static MAIN_WIN: std::sync::OnceLock<tauri::WebviewWindow> = std::sync::OnceLock::new();
+///
+/// 用 `Mutex<Option<_>>` 而非 `OnceLock`：卸载流程会 `destroy()` 主窗，之后
+/// （teardown 失败或重建壳页时）必须能把缓存换成新窗口——`OnceLock` 既清不掉也
+/// 覆写不了，会让 `main_window()` 永远返回死句柄。
+static MAIN_WIN: Mutex<Option<tauri::WebviewWindow>> = Mutex::new(None);
 
-/// 取主窗 handle：优先用创建时保存的 handle，回退按 label 查找（其他平台/版本）。
+/// 取主窗 handle：优先用保存的 handle，回退按 label 查找（其他平台/版本）。
 pub(crate) fn main_window(app: &AppHandle) -> Option<tauri::WebviewWindow> {
-    if let Some(w) = MAIN_WIN.get() {
+    if let Some(w) = mlock(&MAIN_WIN).as_ref() {
         return Some(w.clone());
     }
     app.get_webview_window(WINDOW_LABEL)
+}
+
+/// 记录主窗 handle（创建/重建成功后调用）。
+pub(crate) fn set_main_window(w: &tauri::WebviewWindow) {
+    *mlock(&MAIN_WIN) = Some(w.clone());
+}
+
+/// 主窗被销毁时清掉缓存句柄（卸载流程 `destroy()` 后调用），使后续
+/// `main_window()` 返回 None → reveal 走重建分支，用户重新拿到窗口。
+fn clear_main_window() {
+    *mlock(&MAIN_WIN) = None;
 }
 /// Launcher log file (packaged mode). Empty in dev (stderr goes to terminal).
 static LOG_FILE: Mutex<Option<std::fs::File>> = Mutex::new(None);
@@ -434,6 +459,60 @@ pub(crate) fn redact_token(url: &str) -> String {
             format!("{}token=***{}", &url[..i], &url[end..])
         }
     }
+}
+
+/// 日志/诊断用：抹掉 URL 里可能携带的凭据。覆盖两类：
+/// - `scheme://user:pass@host` 的 userinfo（registry 源可以这么写、插件 spec 可以是
+///   带 token 的 git URL）；
+/// - query 里敏感键的值（`token` / `key` / `access_token` / `auth` / `password`）。
+///
+/// 只影响写日志的文本，不改任何实际请求。
+pub(crate) fn redact_url(url: &str) -> String {
+    // 先拆 fragment，避免它被当成 query 最后一对 key=value 的一部分
+    let (main, frag) = match url.split_once('#') {
+        Some((m, f)) => (m, Some(f)),
+        None => (url, None),
+    };
+    let (head, query) = match main.split_once('?') {
+        Some((h, q)) => (h, Some(q)),
+        None => (main, None),
+    };
+    let mut s = head.to_string();
+    // 1) userinfo：只在 authority 段（`://` 之后、第一个 '/' 之前）里找 '@'，
+    //    避免把路径里的 '@' 当凭据
+    if let Some(i) = s.find("://") {
+        let start = i + 3;
+        let rest = &s[start..];
+        let slash = rest.find('/').unwrap_or(rest.len());
+        if let Some(at) = rest[..slash].find('@') {
+            if rest[..at].contains(':') {
+                s = format!("{}***@{}", &s[..start], &s[start + at + 1..]);
+            }
+        }
+    }
+    // 2) query：逐对 key=value 处理，敏感键的值一律替换为 ***
+    if let Some(q) = query {
+        let masked = q
+            .split('&')
+            .map(|kv| match kv.split_once('=') {
+                Some((k, _)) if is_secret_key(k) => format!("{k}=***"),
+                _ => kv.to_string(),
+            })
+            .collect::<Vec<_>>()
+            .join("&");
+        s = format!("{s}?{masked}");
+    }
+    if let Some(f) = frag {
+        s = format!("{s}#{f}");
+    }
+    s
+}
+
+fn is_secret_key(k: &str) -> bool {
+    matches!(
+        k.to_ascii_lowercase().as_str(),
+        "token" | "key" | "access_token" | "auth" | "password" | "pwd" | "secret"
+    )
 }
 
 macro_rules! logln {
@@ -1104,8 +1183,20 @@ fn kill_stale_children(app: &AppHandle) {
         ));
         std::thread::sleep(Duration::from_millis(800));
         for pid in killed {
-            // 仍存活则升级到 SIGKILL（只对刚确认过匹配的那些 pid）
-            if unsafe { libc::kill(pid as libc::pid_t, 0) } == 0 {
+            // 仍存活则升级到 SIGKILL。**动手前重新读一次该 pid 的命令行**：这 800ms
+            // 里 pid 可能已被系统回收并分配给别的进程，只凭 `kill(pid,0)` 存活就补刀
+            // 会误杀新进程（这些残留进程是上个实例的孤儿，其 pid 不在我们手上，可被复用）。
+            let Ok(out) = Command::new("ps")
+                .args(["-p", &pid.to_string(), "-o", "command="])
+                .output()
+            else {
+                continue;
+            };
+            let cmd = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            let still_ours = !cmd.is_empty()
+                && (is_stale_dsh_cmdline(&cmd, &closure_dir)
+                    || is_stale_pnpm_cmdline(&cmd, &closure_dir));
+            if still_ours && unsafe { libc::kill(pid as libc::pid_t, 0) } == 0 {
                 let _ = unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
             }
         }
@@ -1184,7 +1275,12 @@ pub(crate) fn boot(app: AppHandle) {
     let stdout = match child.stdout.take() {
         Some(s) => s,
         None => {
+            // 没有 stdout 管道：这个 child 永远不会进 CHILD（下面那行才存），
+            // 若直接 return 它会变成没人管的孤儿——继续占着 profile 锁，下次启动
+            // 的 dsh 会秒退（kill_stale_children 也只能事后补救）。就地收干净。
             logln!("no stdout on child");
+            let _ = child.kill();
+            let _ = child.wait();
             return;
         }
     };
@@ -1222,6 +1318,12 @@ pub(crate) fn boot(app: AppHandle) {
         }
     }
     logln!("dsh process exited (stdout closed)");
+    // 回收已退出的子进程：`Child` 被覆盖/丢弃不会 wait，自愈重启每崩一次就留一个
+    // 僵尸（macOS/Linux 到父进程退出为止；Windows 是句柄泄漏）。CHILD 里此刻装的
+    // 就是刚退出的这个（kill_dsh 路径已 take 过则拿到 None，正常）。
+    if let Some(mut dead) = mlock(&CHILD).take() {
+        let _ = dead.wait();
+    }
 
     if !INTENTIONAL_STOP.swap(false, Ordering::SeqCst) {
         let n = CRASHES.fetch_add(1, Ordering::SeqCst) + 1;
@@ -1295,6 +1397,9 @@ pub(crate) fn reveal_main_window(app: &AppHandle, url: Option<&str>) {
             .on_new_window(webview_new_window_policy)
             .build()
         {
+            // 重建后必须写回缓存 handle：否则 main_window() 仍返回旧死句柄，
+            // 后续 reveal/几何/托盘操作全部打在已销毁的窗口上。
+            set_main_window(&w);
             let _ = w.center();
             let _ = w.show();
             let _ = w.set_focus();
@@ -1854,6 +1959,10 @@ async fn uninstall_run(app: AppHandle, webview: tauri::Webview, wipe: bool) -> R
     // 随后的 teardown 删 app 数据必然 oserror 32。
     if let Some(w) = main_window(&app) {
         let _ = w.destroy();
+        // 主窗已销毁：清掉缓存 handle，否则后续 main_window() 仍返回这个死句柄
+        // （reveal 的 is_visible/show 全部 Err 被吞，重建分支因 Some 永不进入），
+        // 卸载失败时用户会落进「没有窗口也退不出去」的死角。
+        clear_main_window();
     }
     if let Some(w) = app.get_window(MODAL_LABEL) {
         let _ = w.destroy();
@@ -1891,7 +2000,11 @@ async fn uninstall_run(app: AppHandle, webview: tauri::Webview, wipe: bool) -> R
         }
     })
     .await
-    .map_err(|e| format!("卸载线程异常：{e}"))?;
+    // 线程 panic（JoinError）与 teardown 自身失败走同一条错误分支：**不能在这里用 `?`
+    // 提前返回**——复位 UNINSTALLING 的代码在下面，跳过去就成了「标志永真 → ExitRequested
+    // 一直被 prevent_exit 拦住」，此时窗口已全毁，用户既没窗口也退不出（只能强杀）。
+    .map_err(|e| format!("卸载线程异常：{e}"))
+    .and_then(|r| r);
     if let Err(e) = teardown {
         // 卸载确认窗口已销毁，JS 无法回显：用系统通知兜底。
         // 复位标志：否则后续 ExitRequested 一直被 prevent_exit 拦截，用户无法退出。
@@ -2033,8 +2146,13 @@ fn uninstall_targets(
     #[cfg(target_os = "windows")]
     {
         // WebView2 的用户数据/缓存落在 %LOCALAPPDATA%\<id>
+        // 空串要挡掉：`PathBuf::from("").join(APP_ID)` 是**相对路径**，卸载时会对
+        // 相对路径做 remove_dir_all（相对当前工作目录）——宁可不删也不能删错东西。
         if let Some(local) = std::env::var_os("LOCALAPPDATA") {
-            dirs.push(strip_verbatim(PathBuf::from(local)).join(APP_ID));
+            let p = PathBuf::from(local);
+            if !p.as_os_str().is_empty() && p.is_absolute() {
+                dirs.push(strip_verbatim(p).join(APP_ID));
+            }
         }
     }
     #[cfg(target_os = "macos")]
@@ -2056,15 +2174,25 @@ fn uninstall_targets(
 /// （调用方决定是否补删一轮）。失败不中断整体卸载。
 fn remove_uninstall_targets(dirs: &[PathBuf], files: &[PathBuf]) -> Vec<String> {
     let mut leftovers: Vec<String> = Vec::new();
+    // 只碰绝对路径：相对路径（例如环境变量为空串拼出来的名字）会被解析到当前工作
+    // 目录，等于删用户看不明白的东西。卸载路径上的"宁可不删"优先于"删干净"。
+    let safe = |p: &PathBuf| {
+        if p.is_absolute() {
+            true
+        } else {
+            logln(&format!("[uninstall] 跳过非绝对路径: {}", p.display()));
+            false
+        }
+    };
     for dir in dirs {
-        if dir.exists() {
+        if safe(dir) && dir.exists() {
             if let Err(e) = remove_dir_all_retry(dir) {
                 leftovers.push(format!("{}（{e}）", dir.display()));
             }
         }
     }
     for f in files {
-        if f.exists() {
+        if safe(f) && f.exists() {
             if let Err(e) = remove_file_retry(f) {
                 leftovers.push(format!("{}（{e}）", f.display()));
             }
@@ -2187,17 +2315,24 @@ fn trash_self() -> bool {
 /// 只按「本应用进程名 / 本项目 node 脚本命令行特征」匹配，避免误杀用户其它 node。
 fn kill_other_app_instances() {
     let self_pid = std::process::id();
+    // node 的匹配必须带本 App 的闭包目录：只匹配 `bin.js.*--profile web` 会把**用户
+    // 自己在终端里跑的 dsh**（同一 profile web、却装在别处）一起杀掉。与
+    // `is_stale_dsh_cmdline` 的判定保持一致：命令行里必须出现本 App 的 app-data
+    // 闭包路径才算"我们的 dsh"。
+    let closure_dir = paths_from_cli().app_data.join("dsh");
+    let closure_dir = closure_dir.to_string_lossy().replace('\'', "''"); // PowerShell 单引号转义
     let script = format!(
         r#"$self={self_pid};
 Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {{
   ($_.ProcessId -ne $self) -and (
     $_.Name -eq 'dsh-desktop.exe' -or
-    ($_.Name -eq 'node.exe' -and $_.CommandLine -match 'bin\.js.*--profile web')
+    ($_.Name -eq 'node.exe' -and $_.CommandLine -match 'bin\.js.*--profile' -and $_.CommandLine -like '*{closure_dir}*')
   )
 }} | ForEach-Object {{
   taskkill /PID $_.ProcessId /T /F 2>$null | Out-Null
 }}"#,
-        self_pid = self_pid
+        self_pid = self_pid,
+        closure_dir = closure_dir
     );
     let status = no_console(Command::new("powershell"))
         .arg("-NoProfile")
@@ -2299,6 +2434,12 @@ fn main() {
     tauri::Builder::default()
         // 单实例：已有实例被二次启动时聚焦主窗口（跨平台统一激活）
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            // 二次启动 = 用户明确想看到窗口，先清「关到后台」标记再 reveal。
+            // 不清则 reveal 会在 USER_HIDDEN 分支直接早退（只发 dsh:url、不弹窗）——
+            // 表现为「关到托盘后再次双击图标毫无反应」（Windows 没有 RunEvent::Reopen
+            // 兜底，只能在托盘右键召回；macOS 双击 .app 会走 Reopen 清标记，故只在
+            // Windows 上必现）。与托盘「显示主窗口」同一语义。
+            USER_HIDDEN.store(false, Ordering::SeqCst);
             crate::reveal_main_window(app, mlock(&DSH_URL).as_deref());
         }))
         .invoke_handler(tauri::generate_handler![
@@ -2470,7 +2611,7 @@ fn main() {
                     && !REVEALED.load(Ordering::SeqCst)
                     && !USER_HIDDEN.load(Ordering::SeqCst)
                 {
-                    if let Some(w) = MAIN_WIN.get() {
+                    if let Some(w) = main_window(_webview.app_handle()) {
                         reveal_main_window(&w.app_handle().clone(), None);
                     }
                 }
@@ -2482,7 +2623,7 @@ fn main() {
                 Ok(w) => {
                     // 保存 handle 供后续所有主窗操作使用（该环境按 label 查找不可用，
                     // 见 MAIN_WIN 注释）
-                    let _ = MAIN_WIN.set(w);
+                    set_main_window(&w);
                     logln("[main] 主窗已创建并保存 handle");
                 }
                 Err(e) => logln(&format!("[main] 主窗创建失败: {e}")),
@@ -2690,6 +2831,31 @@ mod tests {
     use super::*;
 
     #[test]
+    fn redact_url_hides_credentials_and_keeps_shape() {
+        // userinfo（registry 源可写成 https://user:pass@host）
+        assert_eq!(
+            redact_url("https://user:s3cr3t@npm.example.com/repo"),
+            "https://***@npm.example.com/repo"
+        );
+        // query 里的敏感键（dsh 就绪 URL 的 token=）
+        assert_eq!(
+            redact_url("http://127.0.0.1:65333/?token=abc123&port=65333"),
+            "http://127.0.0.1:65333/?token=***&port=65333"
+        );
+        // fragment 不被当成 query 的一部分，且原样保留
+        assert_eq!(redact_url("http://h/p?auth=xyz#frag"), "http://h/p?auth=***#frag");
+        // 路径里的 '@' 不是凭据：保持不变
+        assert_eq!(
+            redact_url("https://example.com/@scope/pkg"),
+            "https://example.com/@scope/pkg"
+        );
+        // 无凭据时不动（含中文路径）
+        assert_eq!(redact_url("https://example.com/中文/包"), "https://example.com/中文/包");
+        // 不带 scheme 的 registry（npm 允许 host:port/path 写法）也不会误改
+        assert_eq!(redact_url("registry.npmmirror.com"), "registry.npmmirror.com");
+    }
+
+    #[test]
     fn stale_dsh_cmdline_matches_only_our_closure() {
         let dir = std::path::Path::new("/Users/u/Library/Application Support/com.dsh-desktop.app/dsh");
         // 本 App 闭包启动的 dsh（node 跑 app-data 里的 bin.js）→ 命中
@@ -2762,6 +2928,9 @@ mod tests {
         for p in dirs.iter().chain(files.iter()) {
             assert_ne!(p, &home);
             assert_ne!(p, &home.join("Library"));
+            // 全部必须是绝对路径：相对路径会被解析到当前工作目录（remove_* 会删到
+            // 用户看不出关系的目录），remove_uninstall_targets 会跳过它们
+            assert!(p.is_absolute(), "卸载目标 {p:?} 不是绝对路径");
         }
     }
 

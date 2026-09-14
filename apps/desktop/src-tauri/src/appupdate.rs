@@ -11,7 +11,19 @@ pub fn parse_tag_from_effective_url(final_url: &str) -> Option<String> {
     let idx = final_url.find("/releases/tag/")?;
     let tag = &final_url[idx + "/releases/tag/".len()..];
     let tag = tag.split(['?', '#']).next().unwrap_or(tag);
-    tag.strip_prefix('v').map(|s| s.to_string())
+    let ver = tag.strip_prefix('v')?;
+    // 版本号来自远端（GitHub tag 名），会拼进下载 URL 与本地临时文件名：
+    // 只接受 `[0-9A-Za-z.+-]`，其余一律判为无效。否则 `1.0/../../x` 这类 tag 能让
+    // `temp_dir().join("dsh-desktop-update-{ver}.dmg")` 写到临时目录之外。
+    if ver.is_empty()
+        || ver.len() > 64
+        || !ver
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '+'))
+    {
+        return None;
+    }
+    Some(ver.to_string())
 }
 
 /// Download URL for the current platform's installer (naming mirrors
@@ -207,16 +219,25 @@ fn is_stale_installer(name: &str, age: Option<Duration>) -> bool {
 #[cfg(any(target_os = "macos", test))]
 fn parse_mount_point(plist: &str) -> Option<String> {
     let key = "<key>mount-point</key>";
-    let idx = plist.find(key)?;
-    let rest = &plist[idx + key.len()..];
-    let s = rest.find("<string>")? + "<string>".len();
-    let e = rest[s..].find("</string>")?;
-    let v = &rest[s..s + e];
-    if v.is_empty() {
-        None
-    } else {
-        Some(v.to_string())
+    // 取第一个**非空**值：plist 里可能先出现空 mount-point（占位实体），
+    // 只看第一项会直接判定失败（旧实现遇到空值就走 None）
+    let mut rest = plist;
+    while let Some(idx) = rest.find(key) {
+        let after = &rest[idx + key.len()..];
+        if let Some(s) = after.find("<string>").map(|i| i + "<string>".len()) {
+            if let Some(e) = after[s..].find("</string>") {
+                let v = &after[s..s + e];
+                if !v.is_empty() {
+                    return Some(v.to_string());
+                }
+            }
+        }
+        rest = &after[0..]; // 跳过这一个 key 继续找
+        if rest.is_empty() {
+            break;
+        }
     }
+    None
 }
 
 #[cfg(target_os = "macos")]
@@ -238,36 +259,52 @@ fn install_macos(dmg: &Path) -> Result<(), String> {
     let stdout = String::from_utf8_lossy(&out.stdout);
     let mount = parse_mount_point(&stdout)
         .ok_or_else(|| format!("无法解析挂载点:\n{stdout}"))?;
-    // 2. find .app
-    let app_name = std::fs::read_dir(&mount)
-        .map_err(|e| format!("读取 DMG 内容失败: {e}"))?
-        .flatten()
-        .find(|e| e.path().extension().map(|x| x == "app").unwrap_or(false))
-        .map(|e| e.file_name().to_string_lossy().to_string())
-        .ok_or_else(|| "DMG 中未找到 .app".to_string())?;
-    let src = std::path::Path::new(&mount).join(&app_name);
-    let dst = std::path::Path::new("/Applications").join(&app_name);
-    // 3. copy (plain first; escalate via osascript if permission denied)
-    let cp = Command::new("ditto").arg(&src).arg(&dst).status();
-    if !matches!(cp, Ok(s) if s.success()) {
-        // 路径含单引号时按 shell 单引号规则转义（' → '\''），防提权脚本损坏
-        let esc = |p: &Path| p.display().to_string().replace('\'', "'\\''");
-        let script = format!(
-            "do shell script \"ditto '{}' '{}'\" with administrator privileges",
-            esc(&src),
-            esc(&dst)
-        );
-        let ok = Command::new("osascript")
-            .args(["-e", &script])
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false);
-        if !ok {
-            return Err("复制到 /Applications 失败（无写入权限且提权被取消）".to_string());
+    // 2/3. 取 .app 并复制到 /Applications。用闭包包住：**挂载之后的每条失败路径都必须
+    // detach**，否则每次失败的更新都在 /Volumes 下留一个挂载点（累积成 "名称 1/2/3"，
+    // 卷名冲突还会改变后续挂载点解析）。旧实现在 read_dir / 未找到 .app / 复制失败三处
+    // 直接 return，跳过了唯一的 detach。
+    let copy_in = || -> Result<std::path::PathBuf, String> {
+        // 2. find .app
+        let app_name = std::fs::read_dir(&mount)
+            .map_err(|e| format!("读取 DMG 内容失败: {e}"))?
+            .flatten()
+            .find(|e| e.path().extension().map(|x| x == "app").unwrap_or(false))
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .ok_or_else(|| "DMG 中未找到 .app".to_string())?;
+        let src = std::path::Path::new(&mount).join(&app_name);
+        let dst = std::path::Path::new("/Applications").join(&app_name);
+        // 3. copy (plain first; escalate via osascript if permission denied)
+        let cp = Command::new("ditto").arg(&src).arg(&dst).status();
+        if !matches!(cp, Ok(s) if s.success()) {
+            // 路径要穿过两层转义：先按 AppleScript 字符串规则（\\ 与 \"），再按 shell
+            // 单引号规则（' → '\''）。只转义单引号时，路径里带 `"` 或 `\` 会让脚本解析失败。
+            let esc = |p: &Path| {
+                p.display()
+                    .to_string()
+                    .replace('\\', "\\\\")
+                    .replace('"', "\\\"")
+                    .replace('\'', "'\\''")
+            };
+            let script = format!(
+                "do shell script \"ditto '{}' '{}'\" with administrator privileges",
+                esc(&src),
+                esc(&dst)
+            );
+            let ok = Command::new("osascript")
+                .args(["-e", &script])
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false);
+            if !ok {
+                return Err("复制到 /Applications 失败（无写入权限且提权被取消）".to_string());
+            }
         }
-    }
-    // 4. detach (best-effort)
+        Ok(dst)
+    };
+    let copied = copy_in();
+    // 4. detach（成功失败都执行）
     let _ = Command::new("hdiutil").args(["detach"]).arg(&mount).output();
+    let dst = copied?;
     // 5. 重启新版——不能在这里直接 `open`：当前实例随即 app.exit(0)，
     //    open 请求会被 Launch Services 路由给"仍注册中的旧实例"（实测更新后
     //    App 消失且无新进程）。改用独立延迟进程：sleep 等旧实例退净后
@@ -338,6 +375,27 @@ mod tests {
             "Windows: {}",
             asset_url("0.3.1").unwrap()
         );
+    }
+
+    #[test]
+    fn tag_version_is_sanitized() {
+        // 用别名 parse_tag_impl：模块内同名测试函数会遮蔽 glob 导入的实现
+        assert_eq!(
+            parse_tag_impl("https://github.com/a/b/releases/tag/v0.4.2").as_deref(),
+            Some("0.4.2")
+        );
+        assert_eq!(
+            parse_tag_impl("https://github.com/a/b/releases/tag/v0.1.5-rc.2?x=1").as_deref(),
+            Some("0.1.5-rc.2")
+        );
+        // 远端可控：带路径分隔符 / .. / 非 ASCII 的 tag 一律拒绝
+        // （否则会拼进下载 URL 与本地临时文件名，写到临时目录之外）
+        assert_eq!(
+            parse_tag_impl("https://github.com/a/b/releases/tag/v1.0/../../evil"),
+            None
+        );
+        assert_eq!(parse_tag_impl("https://github.com/a/b/releases/tag/v中文"), None);
+        assert_eq!(parse_tag_impl("https://github.com/a/b/releases"), None);
     }
 
     #[test]
