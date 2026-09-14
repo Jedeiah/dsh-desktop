@@ -79,7 +79,7 @@
 
   /* ---------- 尺寸 ---------- */
   --dsh-h-chrome: 36px;   /* 顶栏（可折叠为 0）；与 workbench.rs TOPBAR_H_LOGICAL 同步 */
-  --dsh-h-handle: 18px;   /* 折叠态展开把手条高；与 workbench.rs HANDLE_H_LOGICAL 同步 */
+  --dsh-h-handle: 8px;    /* 折叠态展开把手条高；与 workbench.rs HANDLE_H_LOGICAL 同步 */
   --dsh-h-ctl:    32px;   /* 输入框 / 按钮 */
   --dsh-h-ctl-sm: 26px;   /* 小按钮 / 分段控件 / 顶栏控件 */
   --dsh-drawer-w: 560px;  /* 管理抽屉宽度（≤900px 或矮窗时转整幅） */
@@ -172,9 +172,9 @@ body {
   background: transparent;
   transition: top var(--dur) var(--ease);
 }
-/* 折叠：顶栏收起，但保留 18px 把手条（原生工作台从这条下方开始渲染，否则
+/* 折叠：顶栏收起，但保留 8px 把手条（原生工作台从这条下方开始渲染，否则
    层级更高的 child webview 会盖住把手，用户点不到展开入口）。
-   与 workbench.rs HANDLE_H_LOGICAL（18pt）保持一致。 */
+   与 workbench.rs HANDLE_H_LOGICAL（8pt）保持一致。 */
 body.chrome-collapsed .stage { top: var(--h-handle); }
 
 /* =============================================================================
@@ -286,7 +286,7 @@ img.startup-mark, img.brand-mark, img.setup-mark, img.about-mark {
   transition: transform var(--dur) var(--ease), opacity var(--dur) var(--ease);
 }
 /* 折叠：顶栏只上移「把手条高」而不是整条高度——因为原生工作台的顶边在折叠态只上移
-   18px（HANDLE_H_LOGICAL），两边位移量一致才不会在动画中途裂开一条缝（用户反馈
+   8px（HANDLE_H_LOGICAL），两边位移量一致才不会在动画中途裂开一条缝（用户反馈
    「上面的字和伸缩的线不一起联动」）。文字随 opacity 淡出。 */
 body.chrome-collapsed .chrome {
   transform: translateY(calc(-100% + var(--h-handle)));
@@ -364,14 +364,15 @@ kbd {
 #btnCollapseChrome:disabled { opacity: 0.35; cursor: default; pointer-events: none; }
 
 /* 折叠后的唤出把手（原交互）：折叠时出现在窗口顶部中央，点击展开。
-   折叠态工作台从 --h-handle 条下方开始，把手不会被原生工作台盖住。
+   折叠态工作台从 --h-handle（8px）条下方开始，把手不会被原生工作台盖住。
+   （条高按用户要求从 18px 收到 8px：更少占用、折叠时的高度重排也更小。）
    视觉上做得明显（浅色底 + 阴影），避免用户找不到展开入口。 */
 .chrome-restore {
   position: absolute; top: 0; left: 50%; transform: translateX(-50%); z-index: 46;
   width: 52px; height: var(--h-handle); padding: 0;
   display: grid; place-items: center;
   border: 1px solid var(--border); border-top: 0;
-  border-radius: 0 0 9px 9px;
+  border-radius: 0 0 6px 6px;
   background: var(--surface-3); color: var(--fg-muted); cursor: pointer;
   box-shadow: 0 2px 6px rgba(0, 0, 0, 0.35);
   /* 显隐交给 CSS（不再用 hidden 属性）：折叠/展开时与顶栏一起过渡，避免"啪"地出现 */
@@ -381,7 +382,7 @@ kbd {
 }
 body.chrome-collapsed .chrome-restore { opacity: 1; visibility: visible; pointer-events: auto; }
 .chrome-restore:hover { background: var(--surface-2); color: var(--fg); }
-.chrome-restore .ic { width: 12px; height: 12px; }
+.chrome-restore .ic { width: 8px; height: 8px; } /* 8px 条内放得下（原 12px 会溢出） */
 
 /* =============================================================================
  * 命令面板（⌘K）

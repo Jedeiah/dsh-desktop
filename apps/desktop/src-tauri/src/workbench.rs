@@ -17,8 +17,8 @@ pub const TOPBAR_H_LOGICAL: f64 = 36.0;
 /// 折叠态留给「展开把手」的条高（逻辑 px）。原生 child webview 盖在所有壳页
 /// 元素之上：折叠时若工作台顶到窗口最顶，展开把手会被盖住、点不到（用户实测
 /// 「看不到展开的按钮」）。故折叠态预留这条把手空间，把手常驻于此。
-/// 与 ui/theme.css `--dsh-h-handle`（18px）、shell.js 折叠布局保持一致。
-pub const HANDLE_H_LOGICAL: f64 = 18.0;
+/// 与 ui/theme.css `--dsh-h-handle`（8px）、shell.js 折叠布局保持一致。
+pub const HANDLE_H_LOGICAL: f64 = 8.0;
 
 /// macOS 标题栏高（逻辑 pt，带装饰窗口 frame 顶到内容顶的差值）。
 ///
@@ -840,10 +840,10 @@ mod tests {
 
     #[test]
     fn geom_collapsed_keeps_handle_strip() {
-        // 折叠：顶栏收起，但保留 18pt 展开把手条（否则原生工作台会盖住把手，
-        // 用户点不到展开入口）→ y = 18*2 = 36，h = 1640 - 36 = 1604
+        // 折叠：顶栏收起，但保留 8pt 展开把手条（否则原生工作台会盖住把手——原生 child
+        // 永远在壳页 HTML 之上，用户点不到展开入口）→ y = 8*2 = 16，h = 1640 - 16 = 1624
         let g = geom(2560, 1640, 2.0, true);
-        assert_eq!((g.x, g.y, g.w, g.h), (0, 36, 2560, 1604));
+        assert_eq!((g.x, g.y, g.w, g.h), (0, 16, 2560, 1624));
     }
 
     #[test]
