@@ -1063,15 +1063,15 @@ async fn update_dsh_cmd(app: AppHandle, webview: tauri::Webview, ver: String) ->
 }
 
 
-/// 启动时清理「上一次运行残留的 dsh 子进程」。
+/// 启动时清理「上一次运行残留的子进程」：dsh 服务进程 与 安装用的 pnpm。
 ///
 /// 为什么需要（实测复现）：dsh 是独立进程，App 被强杀（崩溃 / 强退 / dev 工具重启）时
 /// 它不会跟着退出。残留进程占住 `~/.dsh/profiles/web` 的 profile 锁，本次启动的 dsh
 /// 会秒退——表现为「dsh 连续崩溃 N 次」弹窗，用户以为应用坏了。
-/// 单实例插件保证同一时刻只有一个 App，所以此刻任何「命令行命中本 App 闭包路径 +
-/// bin.js --profile」的进程必然是残留。只按本 App 的 app-data 路径匹配，**不会误伤**
-/// 用户终端里自己跑的 dsh（那是另一份安装，不在此路径下）。
-fn kill_stale_dsh_children(app: &AppHandle) {
+/// 单实例插件保证同一时刻只有一个 App，所以此刻任何「命令行命中本 App app-data 路径」
+/// 且形如「dsh 服务进程」或「安装 dsh 的 pnpm」的进程必然是残留。只按本 App 的 app-data
+/// 路径匹配，**不会误伤**用户终端里自己跑的那份 dsh / pnpm（不在此路径下）。
+fn kill_stale_children(app: &AppHandle) {
     let closure_dir = paths_from_app(app).app_data.join("dsh");
     let self_pid = std::process::id();
     #[cfg(unix)]
@@ -1088,7 +1088,9 @@ fn kill_stale_dsh_children(app: &AppHandle) {
             let Ok(pid) = pid_s.trim().parse::<u32>() else {
                 continue;
             };
-            if pid == self_pid || !is_stale_dsh_cmdline(cmd, &closure_dir) {
+            let stale = is_stale_dsh_cmdline(cmd, &closure_dir)
+                || is_stale_pnpm_cmdline(cmd, &closure_dir);
+            if pid == self_pid || !stale {
                 continue;
             }
             let _ = unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM) };
@@ -1098,7 +1100,7 @@ fn kill_stale_dsh_children(app: &AppHandle) {
             return;
         }
         logln(&format!(
-            "[main] 清理残留 dsh 进程 {killed:?}（占 profile 锁会导致本次启动连崩）"
+            "[main] 清理残留子进程 {killed:?}（dsh 占 profile 锁会连崩；pnpm 会撞 store/tmp）"
         ));
         std::thread::sleep(Duration::from_millis(800));
         for pid in killed {
@@ -1112,12 +1114,22 @@ fn kill_stale_dsh_children(app: &AppHandle) {
     {
         let needle = closure_dir.display().to_string().replace('\'', "''");
         let script = format!(
-            "Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {{ $_.ProcessId -ne {self_pid} -and $_.CommandLine -like '*{needle}*' -and $_.CommandLine -match 'bin\\.js.*--profile' }} | ForEach-Object {{ taskkill /PID $_.ProcessId /T /F 2>$null | Out-Null }}"
+            "Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {{ $_.ProcessId -ne {self_pid} -and $_.CommandLine -like '*{needle}*' -and ($_.CommandLine -match 'bin\\.js.*--profile' -or ($_.CommandLine -like '*pnpm*' -and $_.CommandLine -like '*--store-dir*' -and $_.CommandLine -like '*deepseek-ai/dsh*')) }} | ForEach-Object {{ taskkill /PID $_.ProcessId /T /F 2>$null | Out-Null }}"
         );
         let _ = no_console(Command::new("powershell"))
             .args(["-NoProfile", "-NonInteractive", "-Command", &script])
             .status();
     }
+}
+
+/// 命令行是否属于「本 App 安装 dsh 时启动的 pnpm」——纯函数便于单测。
+/// 命中条件：本 App app-data 下的 dsh 路径（`--store-dir .../dsh/pnpm-store` 必然含它）
+/// + pnpm + --store-dir + 安装目标 @deepseek-ai/dsh。四个条件同时在，误判概率极低。
+fn is_stale_pnpm_cmdline(cmdline: &str, closure_dir: &std::path::Path) -> bool {
+    cmdline.contains(&closure_dir.to_string_lossy().to_string())
+        && cmdline.contains("pnpm")
+        && cmdline.contains("--store-dir")
+        && cmdline.contains("deepseek-ai/dsh")
 }
 
 /// 命令行是否属于「本 App 闭包启动的 dsh 进程」——纯函数便于单测。
@@ -1130,7 +1142,7 @@ fn is_stale_dsh_cmdline(cmdline: &str, closure_dir: &std::path::Path) -> bool {
 
 pub(crate) fn boot(app: AppHandle) {
     // 先清掉上一次运行残留的 dsh 进程：它们占着 profile 锁，会让本次启动的 dsh 秒退
-    kill_stale_dsh_children(&app);
+    kill_stale_children(&app);
     // thin shell: no bundled closure — first run must install dsh first
     let p = paths_from_app(&app);
     if crate::dsh::current_closure(&p).is_none() {
@@ -1431,6 +1443,9 @@ pub(crate) fn kill_dsh() {
     // mark as intentional so the boot thread never treats the EOF as a crash
     // and never spawns a restart after the app is quitting (avoids orphans).
     INTENTIONAL_STOP.store(true, Ordering::SeqCst);
+    // 安装中的 pnpm 也是我们的子进程：退出路径必须一起结束，否则它会变成孤儿继续跑
+    // （还留着 v<ver>-tmp 目录，下次安装可能撞 tmp/共享 store 锁）。幂等：没在装就是 no-op。
+    crate::dsh::kill_setup_child_blocking();
     if let Some(mut c) = mlock(&CHILD).take() {
         // Windows：先按进程树整棵结束——node 派生的 dsh 执行器不会随
         // TerminateProcess 一起结束，残留进程会占住 ~/.dsh 的 profile 锁，导致下次
@@ -2667,6 +2682,16 @@ mod tests {
             "/x/node /Users/u/Library/Application Support/com.dsh-desktop.app/dsh/v0.1.5-rc.2/tool.js",
             dir
         ));
+        // 安装 dsh 的 pnpm（App 自己起的）→ 命中
+        let pnpm = "/x/resources/pnpm-bin/pnpm install @deepseek-ai/dsh@0.1.5-rc.2 --store-dir /Users/u/Library/Application Support/com.dsh-desktop.app/dsh/pnpm-store";
+        assert!(is_stale_pnpm_cmdline(pnpm, dir));
+        // 用户终端里自己跑的 pnpm（不同 store/cwd）→ 不碰
+        assert!(!is_stale_pnpm_cmdline(
+            "pnpm install @deepseek-ai/dsh@0.1.5-rc.2 --store-dir /Users/u/.pnpm-store",
+            dir
+        ));
+        // dsh 服务进程不应被 pnpm 判定命中（两个判定互不越界）
+        assert!(!is_stale_pnpm_cmdline(ours, dir));
         // 路径命中但不带 --profile（比如我们自己的 sidecar）→ 不碰
         assert!(!is_stale_dsh_cmdline(
             "/x/node /Users/u/Library/Application Support/com.dsh-desktop.app/dsh/v0.1.5-rc.2/node_modules/@deepseek-ai/dsh/lib/bin.js --self-uninstall-full",

@@ -153,6 +153,40 @@ pub fn cancel_install() {
     }
 }
 
+/// 退出路径专用：立刻结束安装子进程（SIGTERM → 最多等 600ms → SIGKILL）。
+///
+/// 为什么要有：托盘/菜单「退出」原来只调 kill_dsh()（只管 dsh 服务子进程），安装用的
+/// pnpm 从没被结束过——安装中点退出，pnpm 会变成孤儿继续跑，还留着 `v<ver>-tmp`
+/// 目录，下次安装可能撞同一个 tmp/共享 store（锁）。返回前最多阻塞 600ms，不拖慢退出。
+/// 两种 pid 补刀都先过 pid_is_our_pnpm 身份校验（pid 复用防线，见 cancel_install）。
+pub fn kill_setup_child_blocking() {
+    let Some(pid) = SETUP_CHILD.lock().unwrap().take() else {
+        return;
+    };
+    install_log(&format!("退出应用：结束安装子进程 pid={pid}"));
+    #[cfg(unix)]
+    {
+        let _ = unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM) };
+        for _ in 0..6 {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            if unsafe { libc::kill(pid as libc::pid_t, 0) } != 0 {
+                return; // 已退出（ESRCH）
+            }
+        }
+        if pid_is_our_pnpm(pid) {
+            let _ = unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
+        }
+    }
+    #[cfg(windows)]
+    {
+        if pid_is_our_pnpm(pid) {
+            let _ = crate::no_console(std::process::Command::new("taskkill"))
+                .args(["/PID", &pid.to_string(), "/T", "/F"])
+                .spawn();
+        }
+    }
+}
+
 /// 该 pid 现在是否仍是「本次安装的 pnpm 进程」——pid 复用防线。
 /// 只认同时包含 `pnpm` 与 `deepseek-ai/dsh` 的命令行：被复用的无关进程几乎不可能两者都中。
 fn pid_is_our_pnpm(pid: u32) -> bool {
