@@ -64,7 +64,8 @@ try {
     Get-CimInstance Win32_Process -Filter "Name = 'node.exe'" -ErrorAction SilentlyContinue |
         Where-Object {
             $cl = $_.CommandLine
-            if (-not $cl -or $cl -notmatch 'bin\.js' -or $cl -notmatch '--profile') { return $false }
+            # 限定 `--profile web`（App 恒定以 --profile web --port 0 启动，main.rs:915-917）
+            if (-not $cl -or $cl -notmatch 'bin\.js' -or $cl -notmatch '--profile\s+web') { return $false }
             # 用 Contains 而不是 -like：路径里的 [ ] 会被 -like 当字符类，导致恒不匹配
             foreach ($d in $DshClosureDirs) {
                 if ($d -and $cl.ToLower().Contains($d.ToLower())) { return $true }

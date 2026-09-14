@@ -1207,7 +1207,7 @@ fn kill_stale_children(app: &AppHandle) {
         let script = format!(
             // 闭包路径用 [regex]::Escape 精确匹配，不用 -like：路径含 [ ] 时 -like 会把它
             // 当字符类，过滤恒不成立（漏杀）。
-            "Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {{ $_.ProcessId -ne {self_pid} -and $_.CommandLine -match [regex]::Escape('{needle}') -and ($_.CommandLine -match 'bin\\.js.*--profile' -or ($_.CommandLine -like '*pnpm*' -and $_.CommandLine -like '*--store-dir*' -and $_.CommandLine -like '*deepseek-ai/dsh*')) }} | ForEach-Object {{ taskkill /PID $_.ProcessId /T /F 2>$null | Out-Null }}"
+            "Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {{ $_.ProcessId -ne {self_pid} -and $_.CommandLine -match [regex]::Escape('{needle}') -and ($_.CommandLine -match 'bin\\.js.*--profile\\s+web' -or ($_.CommandLine -like '*pnpm*' -and $_.CommandLine -like '*--store-dir*' -and $_.CommandLine -like '*deepseek-ai/dsh*')) }} | ForEach-Object {{ taskkill /PID $_.ProcessId /T /F 2>$null | Out-Null }}"
         );
         let _ = no_console(Command::new("powershell"))
             .args(["-NoProfile", "-NonInteractive", "-Command", &script])
@@ -1228,13 +1228,15 @@ fn is_stale_pnpm_cmdline(cmdline: &str, closure_dir: &std::path::Path) -> bool {
 }
 
 /// 命令行是否属于「本 App 闭包启动的 dsh 进程」——纯函数便于单测。
-/// 三个条件同时满足才算：本 App app-data 下的 dsh 路径 + bin.js + --profile。
+/// 三个条件同时满足才算：本 App app-data 下的 dsh 路径 + bin.js + `--profile web`。
+/// profile 限定 web：App 恒定以 `--profile web --port 0` 启动闭包（见 spawn_dsh），
+/// 收紧后既覆盖所有「本 App 起的」dsh，也不会误伤用户拿同一份闭包手动跑别的 profile。
 // 同上：unix 分支与单测使用，Windows 非测试构建里是死代码
 #[cfg_attr(not(unix), allow(dead_code))]
 fn is_stale_dsh_cmdline(cmdline: &str, closure_dir: &std::path::Path) -> bool {
     cmdline.contains(&closure_dir.to_string_lossy().to_string())
         && cmdline.contains("bin.js")
-        && cmdline.contains("--profile")
+        && cmdline.contains("--profile web")
 }
 
 pub(crate) fn boot(app: AppHandle) {
@@ -2324,7 +2326,8 @@ fn trash_self() -> bool {
 /// 只按「本应用进程名 / 本项目 node 脚本命令行特征」匹配，避免误杀用户其它 node。
 fn kill_other_app_instances() {
     let self_pid = std::process::id();
-    // node 的匹配必须带本 App 的闭包目录：只匹配 `bin.js.*--profile web` 会把**用户
+    // node 的匹配必须同时带「本 App 的闭包目录」与 `--profile web`：只匹配
+    // `bin.js.*--profile web` 会把**用户
     // 自己在终端里跑的 dsh**（同一 profile web、却装在别处）一起杀掉。与
     // `is_stale_dsh_cmdline` 的判定保持一致：命令行里必须出现本 App 的 app-data
     // 闭包路径才算"我们的 dsh"。
@@ -2335,7 +2338,7 @@ fn kill_other_app_instances() {
 Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {{
   ($_.ProcessId -ne $self) -and (
     $_.Name -eq 'dsh-desktop.exe' -or
-    ($_.Name -eq 'node.exe' -and $_.CommandLine -match 'bin\.js.*--profile' -and $_.CommandLine -like '*{closure_dir}*')
+    ($_.Name -eq 'node.exe' -and $_.CommandLine -match 'bin\.js.*--profile\s+web' -and $_.CommandLine -like '*{closure_dir}*')
   )
 }} | ForEach-Object {{
   taskkill /PID $_.ProcessId /T /F 2>$null | Out-Null
@@ -2873,6 +2876,11 @@ mod tests {
         // 用户终端里自己装的 dsh：没有本 App 的 app-data 路径 → 不碰
         let theirs = "/usr/local/bin/node /usr/local/lib/node_modules/@deepseek-ai/dsh/lib/bin.js --profile web";
         assert!(!is_stale_dsh_cmdline(theirs, dir));
+        // 同一份闭包、但不是本 App 起的 web profile（用户拿它手动跑别的 profile）→ 不碰
+        assert!(!is_stale_dsh_cmdline(
+            "/x/resources/node/bin/node /Users/u/Library/Application Support/com.dsh-desktop.app/dsh/v0.1.5-rc.2/node_modules/@deepseek-ai/dsh/lib/bin.js --profile other",
+            dir
+        ));
         // 同路径但不是 dsh 服务进程（例如某个一次性的 CLI 调用）→ 不碰
         assert!(!is_stale_dsh_cmdline(
             "/x/node /Users/u/Library/Application Support/com.dsh-desktop.app/dsh/v0.1.5-rc.2/tool.js",
