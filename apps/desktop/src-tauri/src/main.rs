@@ -895,12 +895,10 @@ async fn setup_dsh_cmd(
     if !crate::registry::valid_version(&ver) {
         return Err("版本号不合法".to_string());
     }
-    // registry 与 save_registry_cmd 同规则：必须 http(s) 前缀，防任意串进
-    // npm --registry / ureq URL（安全审查 should-fix）。
+    // registry 与 save_registry_cmd 同规则（非空 / http(s) 前缀 / 长度上限），
+    // 防任意串进 npm --registry / ureq URL（安全审查 should-fix）。
     let reg = registry.trim();
-    if !(reg.starts_with("http://") || reg.starts_with("https://")) {
-        return Err("Registry 源必须以 http:// 或 https:// 开头".to_string());
-    }
+    valid_registry_url(reg)?;
     if SETUP_BUSY.swap(true, Ordering::SeqCst) {
         return Err("已有一个安装正在进行中".to_string());
     }
@@ -1642,16 +1640,31 @@ fn get_shell_state(app: AppHandle) -> ShellState {
 /// 持久化 npm registry 源（安装/更新 dsh 的下载源）。校验非空且以 http(s)://
 /// 开头，规范化后写入 settings.json；后续 list_dsh_versions_cmd / get_dsh_state
 /// 都从 settings 读 registry，保存后自动生效。
-#[tauri::command]
-fn save_registry_cmd(app: AppHandle, webview: tauri::Webview, registry: String) -> Result<(), String> {
-    crate::ensure_shell_webview(&webview)?;
-    let trimmed = registry.trim();
+/// Registry 源长度上限（前端输入框同值 maxlength）：registry URL 实际都很短，
+/// 超长串只可能是误粘贴——显式报错比"静默截断成另一个 URL"安全得多。
+const MAX_REGISTRY_LEN: usize = 400;
+
+/// 校验 registry 源（保存与安装入口共用同一规则）：非空、http(s) 前缀、长度受限。
+fn valid_registry_url(trimmed: &str) -> Result<(), String> {
     if trimmed.is_empty() {
         return Err("Registry 源不能为空".into());
     }
     if !(trimmed.starts_with("http://") || trimmed.starts_with("https://")) {
         return Err("Registry 源必须以 http:// 或 https:// 开头".into());
     }
+    if trimmed.len() > MAX_REGISTRY_LEN {
+        return Err(format!("Registry 源过长（最多 {MAX_REGISTRY_LEN} 字符）"));
+    }
+    Ok(())
+}
+
+/// 保存 registry 源（壳页「Registry 源设置」弹窗）。
+/// 都从 settings 读 registry，保存后自动生效。
+#[tauri::command]
+fn save_registry_cmd(app: AppHandle, webview: tauri::Webview, registry: String) -> Result<(), String> {
+    crate::ensure_shell_webview(&webview)?;
+    let trimmed = registry.trim();
+    valid_registry_url(trimmed)?;
     let canonical = crate::registry::registry_url(Some(trimmed));
     let mut settings = load_settings(&app);
     settings.registry = Some(canonical);

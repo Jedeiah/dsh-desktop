@@ -116,7 +116,7 @@
           <tbody id="versionRows"></tbody>
         </table>
         <div class="inline-form">
-          <input class="input mono" id="verInput" type="text" placeholder="输入版本号安装，如 0.1.1-rc.2" autocomplete="off" spellcheck="false" />
+          <input class="input mono" id="verInput" type="text" placeholder="输入版本号安装，如 0.1.1-rc.2" autocomplete="off" spellcheck="false" maxlength="64" />
           <button class="btn ghost" id="btnInstallVer">安装</button>
         </div>
         <div class="panel-hint">列表默认只显示最近 5 个版本；如需安装其它版本，直接在上方输入版本号。</div>
@@ -135,7 +135,7 @@
           <li>指定版本（npm / Git）：<span class="mono">#ref</span>、<span class="mono">#semver:^1</span>、<span class="mono">#path:sub</span></li>
         </ul>
         <div class="inline-form">
-          <input class="input mono" id="pkgInput" type="text" placeholder="npm 包名 / Git 源 / 本地绝对路径" spellcheck="false" />
+          <input class="input mono" id="pkgInput" type="text" placeholder="npm 包名 / Git 源 / 本地绝对路径" spellcheck="false" maxlength="1024" />
           <button class="btn" id="btnInstallPkg">安装</button>
           <button class="btn danger-ghost" id="btnRemovePkg">卸载</button>
         </div>
@@ -213,7 +213,7 @@
 <!-- ===================== 命令面板 ===================== -->
 <div class="palette-overlay" id="paletteOverlay" role="dialog" aria-modal="true" aria-label="命令面板" hidden>
   <div class="palette" role="dialog" aria-modal="true" aria-label="命令面板">
-    <input class="palette-input" id="paletteInput" type="text" placeholder="搜索区域或命令…" autocomplete="off" spellcheck="false" />
+    <input class="palette-input" id="paletteInput" type="text" placeholder="搜索区域或命令…" autocomplete="off" spellcheck="false" maxlength="64" />
     <div class="palette-list" id="paletteList"></div>
   </div>
 </div>
@@ -249,7 +249,7 @@
           <div class="field">
             <span>Registry 源</span>
             <div class="row">
-              <input class="input mono" id="setupReg" type="text" value="https://registry.npmmirror.com" spellcheck="false" />
+              <input class="input mono" id="setupReg" type="text" value="https://registry.npmmirror.com" spellcheck="false" maxlength="400" />
               <button class="btn ghost sm" id="btnRefreshVer" title="按当前 Registry 源重新获取可用版本">刷新版本</button>
             </div>
           </div>
@@ -262,7 +262,7 @@
               </button>
               <ul class="cselect-menu" id="setupVerMenu" role="listbox" hidden></ul>
             </div>
-            <input class="input mono" id="verManual" type="text" placeholder="或输入指定版本号（如 0.1.1-rc.2）" spellcheck="false" />
+            <input class="input mono" id="verManual" type="text" placeholder="或输入指定版本号（如 0.1.1-rc.2）" spellcheck="false" maxlength="64" />
           </div>
           <p class="adv-note">列表默认只显示最近 5 个版本，其它版本请直接在上方版本号输入框输入。<br />更改将应用于本次下载；Registry 源建议保持默认，改动后点「刷新版本」重新获取列表。</p>
         </div>
@@ -327,7 +327,7 @@
     </div>
     <div class="modal-msg" style="margin-top:4px">安装与更新 dsh 时使用的下载源，保存后立即生效。</div>
     <div style="margin-top:12px">
-      <input class="input mono" id="registryInput" type="text" value="https://registry.npmmirror.com" spellcheck="false" />
+      <input class="input mono" id="registryInput" type="text" value="https://registry.npmmirror.com" spellcheck="false" maxlength="400" />
     </div>
     <div class="modal-foot">
       <button class="btn ghost" id="registryCancel">取消</button>

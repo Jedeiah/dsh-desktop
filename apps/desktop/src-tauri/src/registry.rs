@@ -17,11 +17,21 @@ pub fn registry_url(registry: Option<&str>) -> String {
     }
 }
 
+/// 版本号长度上限：真实 semver 的预发布段不会长于这个量级。前端输入框用同值
+/// maxlength（见 shell.html），保证「输入框里能填的值后端一定接受」，不会出现
+/// 前端能填、后端却拒的错配。
+pub const MAX_VERSION_LEN: usize = 64;
+
 /// 校验版本号是否形如 semver：`数字.数字.数字`，可选 `-` 预发布段
 /// （预发布段由非空字母数字段以 `.` 分隔）。用于安装/更新命令入口的
 /// 白名单校验，防止任意字符串（如 npm 参数注入）进入安装流程。
+/// 另限制总长度（MAX_VERSION_LEN）：结构白名单本身不限长，超长串会被拼进
+/// registry URL，既无意义、也会把失败信息撑爆。
 pub fn valid_version(s: &str) -> bool {
     let s = s.trim();
+    if s.is_empty() || s.len() > MAX_VERSION_LEN {
+        return false;
+    }
     let (main, pre) = match s.split_once('-') {
         Some((m, p)) => (m, Some(p)),
         None => (s, None),
@@ -174,6 +184,25 @@ mod tests {
         // 部分 registry 镜像对不存在的版本返回 200 + {"error": ...} → 不存在
         assert!(!version_exists_response(r#"{"error":"Not found"}"#));
         assert!(!version_exists_response(r#"{"error":"version not found: 9.9.9"}"#));
+    }
+
+    #[test]
+    fn valid_version_accepts_semver_and_caps_length() {
+        // 正常形态
+        assert!(valid_version("0.1.1"));
+        assert!(valid_version("0.1.1-rc.2"));
+        assert!(valid_version("0.1.2-alpha.5"));
+        assert!(valid_version("  1.2.3  ")); // 前后空白先 trim
+        // 结构不合法
+        assert!(!valid_version("0.1"));
+        assert!(!valid_version("v0.1.1"));
+        assert!(!valid_version("0.1.1-"));
+        assert!(!valid_version("0.1.1-rc..2"));
+        assert!(!valid_version("1.2.3; rm -rf /"));
+        // 长度上限：结构合法但过长（前端输入框 maxlength 同值，正常途径填不出来）
+        let long_pre = "a".repeat(MAX_VERSION_LEN); // 3+2+1+64 > 64
+        assert!(!valid_version(&format!("1.2.3-{long_pre}")));
+        assert!(valid_version(&format!("1.2.3-{}", "a".repeat(MAX_VERSION_LEN - 6))));
     }
 
     #[test]
