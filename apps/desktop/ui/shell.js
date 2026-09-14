@@ -233,7 +233,7 @@
 
   // ---------------- 顶栏折叠（状态记忆；Rust 几何联动 workbench_set_collapsed_cmd） ----------------
   // 原交互：顶栏右上角「收起」按钮折叠；折叠后顶栏滑出、窗口顶部中央出现展开
-  // 把手（chromeRestore）。bug 修复：折叠态工作台预留 18px 把手条，把手不再被
+  // 把手（chromeRestore）。bug 修复：折叠态工作台预留 8px 把手条（与 Rust HANDLE_H_LOGICAL、
   // 层级更高的原生工作台盖住（此前折叠后点不到展开按钮）。
   let chromeCollapsed = false; // 供命令面板把文案/行为切换成「展开导航栏」
   function setChromeCollapsed(v) {
@@ -251,7 +251,7 @@
   $('chromeRestore').addEventListener('click', () => setChromeCollapsed(false));
   // 启动总是展开顶栏（不恢复上次折叠状态）：
   // 用户实测反馈——折叠状态一旦持久化，重启应用就会看到「管理那一行整行消失」，
-  // 而展开把手只是窗口顶部中央一个 52×18 的小条，不易发现，体验不可接受。
+  // 而展开把手只是窗口顶部中央一个 52×8 的小条，不易发现，体验不可接受。
   // 折叠功能本身保留（右上角按钮 / ⌘K 命令面板的「收起 / 展开导航栏」），仅不再跨会话记忆；
   // 同时清除历史遗留标记，避免旧值继续影响。
   setChromeCollapsed(false);
