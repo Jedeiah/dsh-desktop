@@ -256,6 +256,10 @@ img.startup-mark, img.brand-mark, img.setup-mark, img.about-mark {
     rgba(21, 21, 23, 0.62) 100%
   );
 }
+/* 抽屉占用右侧时，启动页内容改在剩余区域居中（与 .ambient-mark / .ambient-info 同规则）：
+   启动占位在加载期顶替氛围层当背景，若仍按整窗居中，文案右侧会被抽屉边缘切掉——
+   用户实测「启动页打开抽屉会显示两个重叠的页面」。 */
+body.drawer-open .startup { padding-right: var(--drawer-w); }
 .startup-meta {
   font-size: var(--fs-aux); color: var(--fg-subtle);
   font-variant-numeric: tabular-nums; letter-spacing: 0.01em; min-height: 16px;
