@@ -33,7 +33,8 @@
 
 - `capabilities/shell-events.json`：壳页只授 `core:event:allow-listen`；`workbench-shortcut.json` 仍只授工作台 `core:event:allow-emit`
 - 单元测试补充：日志脱敏、发布 tag 白名单、registry 版本存在性、卸载目标绝对路径、临时目录命名
-- 一键安装脚本（macOS / Windows）增加 **SHA-256 校验**；Windows 脚本修正 currentUser 安装路径探测（原先探测不到安装结果，装完不自动启动）
+- 一键安装脚本（macOS / Windows）增加 **SHA-256 校验**，并修正若干真实缺陷：PowerShell 7 下校验必失败（`.Content` 对非文本 MIME 为空）、Windows 闭包目录基准写成 `%LOCALAPPDATA%`（应为 `%APPDATA%`，导致升级前子进程清理静默失效）、macOS 在 Rosetta 终端里被误判为 Intel 而拒装、`pkill -f` 模式缺闭包目录（会误杀终端里手动跑的 dsh）、下载无重试且硬超时 600s；Windows 脚本修正 currentUser 安装路径探测（原先探测不到安装结果，装完不自动启动）
+- `bump-version.sh` 增加**后置一致性断言**（5 处版本源必须都等于目标值，否则 exit 1——避免 CI 依 tag 重 bump 后版本错位）；CI 新增 `scripts-syntax` job（`bash -n` 全部 .sh + pwsh 解析两个 .ps1）
 - `docs/regression-checklist.md` 与实现对齐（托盘项数、NSIS `/S /R`）
 
 ## 0.4.2 — 弹窗 label 泄漏修复（2026-09-14）
