@@ -1227,6 +1227,11 @@ pub(crate) fn reveal_main_window(app: &AppHandle, url: Option<&str>) {
     REVEALED.store(true, Ordering::SeqCst);
     // macOS child webview 是独立 NSWindow，不随主窗恢复——同步恢复，否则工作台
     // 从后台召回后是空白页。
+    // 恢复前先让壳页收起浮层（抽屉/命令面板）：show_child 是无条件把原生工作台
+    // 移回窗口内，而原生视图盖在所有 HTML 之上——浮层若还开着就被压到下面，
+    // 用户看到的是「工作台上残留一个输入框和按钮」（实测反馈）。浮层已由
+    // 关到后台时的 __onHideToTray 收过一轮，这里是托盘/Dock 召回等其它入口的兜底。
+    let _ = w.eval("window.__onMainReveal && window.__onMainReveal()");
     crate::workbench::show_child(app);
 }
 
@@ -2482,6 +2487,14 @@ fn main() {
                 // child webview 是独立窗口，单独移出屏幕（同步 + 排队兜底）
                 crate::workbench::hide_child_now(_app_handle);
                 crate::workbench::hide_child(_app_handle);
+                // 收起壳页浮层（抽屉/命令面板）：浮层状态不能跨「隐藏 → 召回」存活，
+                // 否则召回时 reveal 无条件 show_child 会把它压到原生工作台下面
+                // （用户实测：召回后看到残留的输入框与按钮）。静默关闭——不触发
+                // show_workbench，否则 260ms 后的回调会把工作台移回窗口内，而此刻
+                // 窗口不可见，macOS 上会变成一个孤立浮窗。
+                if let Some(w) = main_window(_app_handle) {
+                    let _ = w.eval("window.__onHideToTray && window.__onHideToTray()");
+                }
                 // 主窗：原生 orderOut（Tauri 的 hide() 无效 / AppHandle::hide() 会
                 // 清空窗口注册表导致召回丢工作台——见 macwin 模块注释）
                 if let Some(w) = main_window(_app_handle) {

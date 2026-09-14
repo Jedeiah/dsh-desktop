@@ -127,9 +127,15 @@
     <section class="drawer-section" data-section="plugins">
       <div class="panel">
         <div class="panel-title">安装插件</div>
-        <div class="panel-hint">支持 npm 包名（@scope/pkg）、Git/tarball 源（owner/repo、github:owner/repo、git+ssh://…、git+https://…、https://…tgz，可用 #ref、#semver:、#path: 指定版本），以及本地插件目录的绝对路径（如 D:\plugins\my-plugin）；操作完成后工作台自动重启</div>
+        <div class="panel-hint">支持以下来源；装/卸完成后工作台自动重启：</div>
+        <ul class="hint-list">
+          <li>npm 包名：<span class="mono">@scope/pkg</span></li>
+          <li>Git / tarball：<span class="mono">owner/repo</span>、<span class="mono">github:…</span>、<span class="mono">git+https://…</span>、<span class="mono">https://…tgz</span></li>
+          <li>本地插件目录的<b>绝对路径</b>：<span class="mono">D:\plugins\my-plugin</span></li>
+          <li>指定版本（npm / Git）：<span class="mono">#ref</span>、<span class="mono">#semver:^1</span>、<span class="mono">#path:sub</span></li>
+        </ul>
         <div class="inline-form">
-          <input class="input mono" id="pkgInput" type="text" placeholder="例如 @your-scope/dsh-plugin-demo，或本地插件目录的绝对路径" spellcheck="false" />
+          <input class="input mono" id="pkgInput" type="text" placeholder="npm 包名 / Git 源 / 本地绝对路径" spellcheck="false" />
           <button class="btn" id="btnInstallPkg">安装</button>
           <button class="btn danger-ghost" id="btnRemovePkg">卸载</button>
         </div>
@@ -228,7 +234,7 @@
       <div class="stage-line" id="setupStage">准备安装 dsh 运行时</div>
       <div class="panel-hint" id="setupVerDisplay" style="margin-top:0">将安装版本 <b class="mono" id="setupVerShow">—</b> · 可在高级选项更改</div>
       <div class="progress" id="setupProgress" hidden role="progressbar" aria-label="安装进度"><div class="progress-fill"></div></div>
-      <div class="panel-hint" id="setupMeta">首次安装需下载约 300MB 依赖包，视网络通常需要几分钟，请耐心等待；可展开高级选项选择版本与 Registry 源</div>
+      <div class="panel-hint" id="setupMeta">首次安装需下载约 300MB 依赖包，通常需要几分钟。可在下方「高级选项」选择版本与 Registry 源。</div>
       <div class="setup-actions">
         <button class="btn" id="btnSetupInstall">安装 dsh</button>
         <button class="btn ghost" id="btnSetupCancel" hidden>取消安装</button>
@@ -258,7 +264,7 @@
             </div>
             <input class="input mono" id="verManual" type="text" placeholder="或输入指定版本号（如 0.1.1-rc.2）" spellcheck="false" />
           </div>
-          <p class="adv-note">更改将应用于本次下载。列表默认只显示最近 5 个版本，其它版本请直接在上方版本号输入框输入；Registry 源建议保持默认，改动后点「刷新版本」重新获取列表。</p>
+          <p class="adv-note">列表默认只显示最近 5 个版本，其它版本请直接在上方版本号输入框输入。<br />更改将应用于本次下载；Registry 源建议保持默认，改动后点「刷新版本」重新获取列表。</p>
         </div>
       </details>
     </div>

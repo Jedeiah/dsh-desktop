@@ -458,6 +458,13 @@ body.chrome-collapsed .drawer { top: 0; }
 .panel-title { font-size: var(--fs-title); font-weight: 600; color: var(--fg); }
 .panel-label { font-size: var(--fs-aux); color: var(--fg-subtle); }
 .panel-hint { font-size: var(--fs-aux); color: var(--fg-subtle); line-height: 1.6; margin-top: 4px; }
+/* 结构化提示列表：长文案（插件来源等）分行列点，比一整段更好扫读 */
+.hint-list {
+  margin: 6px 0 0; padding-left: 18px;
+  font-size: var(--fs-aux); color: var(--fg-subtle); line-height: 1.65;
+}
+.hint-list li + li { margin-top: 2px; }
+.hint-list .mono { color: var(--fg-muted); }
 
 .ver-row { display: flex; align-items: center; gap: 10px; margin: 4px 0 6px; flex-wrap: wrap; }
 .ver-num { font-size: var(--fs-data); font-weight: 600; letter-spacing: -0.3px; color: var(--fg); line-height: 1.2; }
@@ -891,5 +898,5 @@ body.chrome-collapsed .drawer { top: 0; }
   to   { opacity: 1; transform: translateY(0); }
 }
 @media (prefers-reduced-motion: reduce) {
-  .glow, .anim { animation: none; opacity: 1; }
+  .anim { animation: none; opacity: 1; }
 }

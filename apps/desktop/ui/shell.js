@@ -311,15 +311,31 @@
     if ($('drawer').classList.contains('open')) return;
     invoke('show_workbench_cmd').catch(() => {});
   }
-  function closeDrawer() {
+  function closeDrawer(restoreWorkbench = true) {
     $('drawer').classList.remove('open');
     document.body.classList.remove('drawer-open');
     region = 'workbench';
     syncCollapseGuard();
     // 等抽屉收回动画（0.2s transition）播完再恢复工作台：立即恢复会让工作台
     // 突然盖住还在滑动中的抽屉，观感变成「收回没有动效、一下消失」
-    setTimeout(maybeShowWorkbench, 260);
+    if (restoreWorkbench) setTimeout(maybeShowWorkbench, 260);
   }
+  // 收起所有浮层。restoreWorkbench=false 用于「关到后台」这类不能动工作台的场合
+  // （此刻窗口不可见，把原生工作台移回窗口内会在 macOS 上变成孤立浮窗）。
+  function closeOverlays(restoreWorkbench = true) {
+    closePalette(restoreWorkbench);
+    if ($('drawer').classList.contains('open')) closeDrawer(restoreWorkbench);
+  }
+  // 关到后台（红点 / ⌘W）时由 Rust 调用：浮层不能跨「隐藏→召回」存活。
+  // 否则召回时 reveal 会无条件 show_child，原生工作台盖在所有 HTML 之上，
+  // 抽屉/面板被压在下面——用户看到的是「workbench 上残留一个输入框和按钮」。
+  window.__onHideToTray = () => closeOverlays(false);
+  // 主窗被召回（托盘「显示主窗口」/ Dock 点击 / 启动首显）时由 Rust 调用：
+  // 先清掉浮层再让工作台归位，避免同样的"浮层被盖住/反过来盖住工作台"错配。
+  window.__onMainReveal = () => {
+    closeOverlays(false);
+    maybeShowWorkbench();
+  };
   function goRegion(id) {
     if (id === 'workbench') closeDrawer();
     else openDrawer(id);
@@ -345,13 +361,13 @@
     renderPalette('');
     $('paletteInput').focus();
   }
-  function closePalette() {
+  function closePalette(restoreWorkbench = true) {
     paletteOpen = false;
     $('paletteOverlay').hidden = true;
     syncCollapseGuard();
     // 恢复工作台（受守卫：抽屉/面板仍占用时不恢复；runPaletteItem → goRegion
     // 还会再开抽屉，两次 invoke 按发出顺序执行，最终态正确）。
-    maybeShowWorkbench();
+    if (restoreWorkbench) maybeShowWorkbench();
   }
   function renderPalette(q) {
     q = (q || '').trim().toLowerCase();
@@ -406,6 +422,10 @@
   // 2) 工作台 webview 转发来的 shell:shortcut 事件（焦点在工作台时——它是独立
   //    原生 webview，按键不会冒泡到壳页，由注入脚本 + capability 转发）。
   function handleAppCombo(key) {
+    // 首次安装引导期间不响应 App 级组合键/菜单「管理面板」：引导层 z-index 最高，
+    // 此时打开命令面板会被它盖住（用户看不见，但它确实打开了，还会 hide_workbench），
+    // 等安装完成、引导层撤掉就"凭空"露出一个面板 + 工作台被压住（用户实测）。
+    if (setupActive) return;
     if (key === 'k') {
       if (paletteOpen) cycleRegionSelection();
       else openPalette();
@@ -440,12 +460,10 @@
   });
   $('paletteOverlay').addEventListener('click', (e) => { if (e.target === $('paletteOverlay')) closePalette(); });
   $('btnManage').addEventListener('click', openPalette);
-  // 系统菜单 ⌘K（Rust 侧「视图 → 管理面板」菜单项 / 全局快捷键）的入口：
-  // 焦点在工作台 webview 时壳页收不到 keydown，由菜单快捷键转发到这里。
-  window.__openManagePalette = () => {
-    if (paletteOpen) cycleRegionSelection();
-    else openPalette();
-  };
+  // 系统菜单 ⌘K（Rust 侧「视图 → 管理面板」菜单项）的入口：焦点在工作台 webview
+  // 时壳页收不到 keydown，由菜单快捷键转发到这里。走 handleAppCombo 以共用
+  // 「引导期间不响应」等守卫。
+  window.__openManagePalette = () => handleAppCombo('k');
 
   // ---------------- 确认弹窗（modal，供插件卸载/版本操作/更新确认复用） ----------------
   const modalEl = $('modal');
@@ -543,6 +561,8 @@
 
   function showSetupView() {
     setupActive = true;
+    // 引导层是阻塞式最高层：进入时收起可能开着的浮层，避免"装完才冒出来"
+    closeOverlays();
     hidePlaceholder();
     setupOverlay.hidden = false;
     loadSetupVersions(); // 预填版本下拉（失败仅提示，不阻塞安装主流程）
@@ -552,6 +572,8 @@
     setupOverlay.hidden = true;
     clearInterval(setupProgressTimer); // 进度轮询停止
     if (!workbenchReady) showPlaceholder(); // 引导收起但工作台未就绪：恢复占位 spinner
+    // 引导结束即让工作台归位（受守卫：浮层占用时不动作）——否则装完仍是壳页背景
+    maybeShowWorkbench();
   }
   function setSetupPhase(phase) {
     // phase: 'stage'（进行中）/ 'error'（失败或取消，可重试）/ 'done'（完成）
