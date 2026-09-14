@@ -126,23 +126,63 @@ fn install_log(msg: &str) {
 /// cleans tmp, and the caller can retry). Best-effort per platform.
 pub fn cancel_install() {
     let pid = SETUP_CHILD.lock().unwrap().take();
+    install_log(&format!("取消安装请求（目标 pid={pid:?}）"));
     if let Some(pid) = pid {
         #[cfg(unix)]
         {
             let _ = unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM) };
             // npm 在 CPU 密集阶段（idealTree/reify）信号处理会被事件循环延迟——
-            // SIGTERM 可能迟迟不生效（用户实测"点好几次取消才取消"）。5 秒后强制
-            // SIGKILL 兜底；npm 若已正常退出，kill 返回 ESRCH 忽略。
+            // SIGTERM 可能迟迟不生效（用户实测"点好几次取消才取消"）。5 秒后补 SIGKILL。
+            // **补刀前必须确认该 pid 仍是我们的 pnpm**：pid 会被系统复用，盲杀可能命中
+            // 无关进程（"安装刚起来就被 SIGKILL"的可疑现象就是这么来的）。
             std::thread::spawn(move || {
                 std::thread::sleep(std::time::Duration::from_secs(5));
-                let _ = unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
+                if pid_is_our_pnpm(pid) {
+                    let _ = unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
+                }
             });
         }
         #[cfg(windows)]
         {
-            let _ = std::process::Command::new("taskkill")
-                .args(["/PID", &pid.to_string(), "/T", "/F"])
-                .spawn();
+            if pid_is_our_pnpm(pid) {
+                let _ = crate::no_console(std::process::Command::new("taskkill"))
+                    .args(["/PID", &pid.to_string(), "/T", "/F"])
+                    .spawn();
+            }
+        }
+    }
+}
+
+/// 该 pid 现在是否仍是「本次安装的 pnpm 进程」——pid 复用防线。
+/// 只认同时包含 `pnpm` 与 `deepseek-ai/dsh` 的命令行：被复用的无关进程几乎不可能两者都中。
+fn pid_is_our_pnpm(pid: u32) -> bool {
+    #[cfg(unix)]
+    {
+        match std::process::Command::new("ps")
+            .args(["-p", &pid.to_string(), "-o", "command="])
+            .output()
+        {
+            Ok(o) if o.status.success() => {
+                let s = String::from_utf8_lossy(&o.stdout);
+                s.contains("pnpm") && s.contains("deepseek-ai/dsh")
+            }
+            _ => false,
+        }
+    }
+    #[cfg(windows)]
+    {
+        let script = format!(
+            "(Get-CimInstance Win32_Process -Filter \"ProcessId = {pid}\" -ErrorAction SilentlyContinue).CommandLine"
+        );
+        match crate::no_console(std::process::Command::new("powershell"))
+            .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+            .output()
+        {
+            Ok(o) => {
+                let s = String::from_utf8_lossy(&o.stdout);
+                s.contains("pnpm") && s.contains("deepseek-ai/dsh")
+            }
+            Err(_) => false,
         }
     }
 }

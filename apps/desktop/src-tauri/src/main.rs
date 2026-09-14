@@ -1062,7 +1062,75 @@ async fn update_dsh_cmd(app: AppHandle, webview: tauri::Webview, ver: String) ->
     Ok(())
 }
 
+
+/// 启动时清理「上一次运行残留的 dsh 子进程」。
+///
+/// 为什么需要（实测复现）：dsh 是独立进程，App 被强杀（崩溃 / 强退 / dev 工具重启）时
+/// 它不会跟着退出。残留进程占住 `~/.dsh/profiles/web` 的 profile 锁，本次启动的 dsh
+/// 会秒退——表现为「dsh 连续崩溃 N 次」弹窗，用户以为应用坏了。
+/// 单实例插件保证同一时刻只有一个 App，所以此刻任何「命令行命中本 App 闭包路径 +
+/// bin.js --profile」的进程必然是残留。只按本 App 的 app-data 路径匹配，**不会误伤**
+/// 用户终端里自己跑的 dsh（那是另一份安装，不在此路径下）。
+fn kill_stale_dsh_children(app: &AppHandle) {
+    let closure_dir = paths_from_app(app).app_data.join("dsh");
+    let self_pid = std::process::id();
+    #[cfg(unix)]
+    {
+        let Ok(out) = Command::new("ps").args(["-Ao", "pid=,command="]).output() else {
+            return;
+        };
+        let text = String::from_utf8_lossy(&out.stdout);
+        let mut killed: Vec<u32> = Vec::new();
+        for line in text.lines() {
+            let Some((pid_s, cmd)) = line.trim_start().split_once(' ') else {
+                continue;
+            };
+            let Ok(pid) = pid_s.trim().parse::<u32>() else {
+                continue;
+            };
+            if pid == self_pid || !is_stale_dsh_cmdline(cmd, &closure_dir) {
+                continue;
+            }
+            let _ = unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM) };
+            killed.push(pid);
+        }
+        if killed.is_empty() {
+            return;
+        }
+        logln(&format!(
+            "[main] 清理残留 dsh 进程 {killed:?}（占 profile 锁会导致本次启动连崩）"
+        ));
+        std::thread::sleep(Duration::from_millis(800));
+        for pid in killed {
+            // 仍存活则升级到 SIGKILL（只对刚确认过匹配的那些 pid）
+            if unsafe { libc::kill(pid as libc::pid_t, 0) } == 0 {
+                let _ = unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
+            }
+        }
+    }
+    #[cfg(windows)]
+    {
+        let needle = closure_dir.display().to_string().replace('\'', "''");
+        let script = format!(
+            "Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {{ $_.ProcessId -ne {self_pid} -and $_.CommandLine -like '*{needle}*' -and $_.CommandLine -match 'bin\\.js.*--profile' }} | ForEach-Object {{ taskkill /PID $_.ProcessId /T /F 2>$null | Out-Null }}"
+        );
+        let _ = no_console(Command::new("powershell"))
+            .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+            .status();
+    }
+}
+
+/// 命令行是否属于「本 App 闭包启动的 dsh 进程」——纯函数便于单测。
+/// 三个条件同时满足才算：本 App app-data 下的 dsh 路径 + bin.js + --profile。
+fn is_stale_dsh_cmdline(cmdline: &str, closure_dir: &std::path::Path) -> bool {
+    cmdline.contains(&closure_dir.to_string_lossy().to_string())
+        && cmdline.contains("bin.js")
+        && cmdline.contains("--profile")
+}
+
 pub(crate) fn boot(app: AppHandle) {
+    // 先清掉上一次运行残留的 dsh 进程：它们占着 profile 锁，会让本次启动的 dsh 秒退
+    kill_stale_dsh_children(&app);
     // thin shell: no bundled closure — first run must install dsh first
     let p = paths_from_app(&app);
     if crate::dsh::current_closure(&p).is_none() {
@@ -2584,6 +2652,27 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stale_dsh_cmdline_matches_only_our_closure() {
+        let dir = std::path::Path::new("/Users/u/Library/Application Support/com.dsh-desktop.app/dsh");
+        // 本 App 闭包启动的 dsh（node 跑 app-data 里的 bin.js）→ 命中
+        let ours = "/x/resources/node/bin/node /Users/u/Library/Application Support/com.dsh-desktop.app/dsh/v0.1.5-rc.2/node_modules/@deepseek-ai/dsh/lib/bin.js --profile web --port 0";
+        assert!(is_stale_dsh_cmdline(ours, dir));
+        // 用户终端里自己装的 dsh：没有本 App 的 app-data 路径 → 不碰
+        let theirs = "/usr/local/bin/node /usr/local/lib/node_modules/@deepseek-ai/dsh/lib/bin.js --profile web";
+        assert!(!is_stale_dsh_cmdline(theirs, dir));
+        // 同路径但不是 dsh 服务进程（例如某个一次性的 CLI 调用）→ 不碰
+        assert!(!is_stale_dsh_cmdline(
+            "/x/node /Users/u/Library/Application Support/com.dsh-desktop.app/dsh/v0.1.5-rc.2/tool.js",
+            dir
+        ));
+        // 路径命中但不带 --profile（比如我们自己的 sidecar）→ 不碰
+        assert!(!is_stale_dsh_cmdline(
+            "/x/node /Users/u/Library/Application Support/com.dsh-desktop.app/dsh/v0.1.5-rc.2/node_modules/@deepseek-ai/dsh/lib/bin.js --self-uninstall-full",
+            dir
+        ));
+    }
 
     #[test]
     fn strip_verbatim_prefix_logic() {
