@@ -64,6 +64,14 @@
   window.addEventListener('scroll', resetPageScroll, { passive: true });
 
   // ---------------- Toast（短反馈，2.8s 消失） ----------------
+  // 清掉正在显示的 toast。壳页即将被原生裁回顶栏时（浮层收起 / 工作台归位）必须清：
+  // toast 是「视口底部」定位，视口一被裁成 36px，它就会重新布局到那一条里、压在管理行上
+  // （用户实测：按 Esc 回工作台，之前的提示还留在管理行上）。
+  function clearToasts() {
+    const box = $('toasts');
+    if (box) box.textContent = '';
+  }
+
   function toast(msg, kind) {
     // 壳页在「工作台可见且无浮层」时被原生裁到只剩顶栏（视口 36px/8px，见
     // apply_shell_clip_on_main）：此时任何 HTML 提示都只能挤在那一条里，必然盖住
@@ -352,9 +360,11 @@
   function maybeShowWorkbench() {
     if (paletteOpen) return;
     if ($('drawer').classList.contains('open')) return;
+    clearToasts(); // 工作台即将回归、壳页将被裁回顶栏：先清掉定位在视口底部的提示
     invoke('show_workbench_cmd').catch(() => {});
   }
   function closeDrawer(restoreWorkbench = true) {
+    clearToasts(); // 抽屉一收起，视口马上会被裁回顶栏（见 clearToasts 注释）
     $('drawer').classList.remove('open');
     document.body.classList.remove('drawer-open');
     region = 'workbench';
@@ -466,6 +476,7 @@
     $('paletteInput').focus({ preventScroll: true });
   }
   function closePalette(restoreWorkbench = true) {
+    clearToasts();
     paletteOpen = false;
     $('paletteOverlay').hidden = true;
     syncCollapseGuard();
