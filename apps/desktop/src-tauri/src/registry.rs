@@ -17,9 +17,9 @@ pub fn registry_url(registry: Option<&str>) -> String {
     }
 }
 
-/// 版本号长度上限：真实 semver 的预发布段不会长于这个量级。前端输入框用同值
-/// maxlength（见 shell.html），保证「输入框里能填的值后端一定接受」，不会出现
-/// 前端能填、后端却拒的错配。
+/// 版本号长度上限。前端两个版本输入框的 maxlength 取得更紧（32）：真实 dsh 版本
+/// 形如 `0.1.2-alpha.5`（约 14 字符），32 足够手输；后端留到 64 是给「registry 返回的
+/// 版本列表」留余量。UI 上限 ≤ 后端上限是安全方向：输入框能填的值后端一定接受。
 pub const MAX_VERSION_LEN: usize = 64;
 
 /// 校验版本号是否形如 semver：`数字.数字.数字`，可选 `-` 预发布段

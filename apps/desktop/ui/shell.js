@@ -578,6 +578,7 @@
   const setupAdv = $('setupAdv');
   const btnEnterWorkbench = $('btnEnterWorkbench');
   let setupVerValue = ''; // 自定义下拉当前选中版本（替代原生 select.value）
+  let setupListVer = ''; // 下拉里选中的版本；手输清空后回落到它（否则"框是空的、实际还装旧值"）
   let setupCancelled = false;
   let setupProgressTimer = null; // 安装进度轮询（setup_state_cmd 兜底）
   let waitBusyReset = false; // 撞 BUSY 分支：等后端收尾结束后回初始页
@@ -651,6 +652,7 @@
   }
 
   function selectSetupVersion(v, silent) {
+    setupListVer = v;
     setupVerValue = v;
     setupVerLabel.textContent = 'v' + v;
     syncSetupVerDisplay(v);
@@ -678,10 +680,23 @@
   setupVerMenu.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') { e.preventDefault(); closeSetupVerMenu(); setupVerTrigger.focus(); }
   });
-  // 手输版本：优先展示（联动主区），不清空下拉 label（下拉仅记录选中态）
+  // 手输版本：优先展示（联动主区），不清空下拉 label（下拉仅记录选中态）。
+  // 清空输入框 → 回落到下拉里选中的版本（或列表默认的最新版）：此前清空后
+  // setupVerValue 仍是旧的手输值，界面显示"将由列表决定"、实际却装的是那个旧值。
   verManual.addEventListener('input', function () {
     const v = this.value.trim();
-    if (v) { setupVerValue = v; syncSetupVerDisplay(v.startsWith('v') ? v.slice(1) : v); }
+    if (v) {
+      setupVerValue = v;
+      syncSetupVerDisplay(v.startsWith('v') ? v.slice(1) : v);
+      return;
+    }
+    if (setupListVer) {
+      setupVerValue = setupListVer;
+      syncSetupVerDisplay(setupListVer);
+    } else {
+      setupVerValue = '';
+      setupVerShow.textContent = '—'; // 连列表都没获取到：显示"未定"
+    }
   });
 
   async function runSetup() {

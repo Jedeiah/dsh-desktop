@@ -116,7 +116,7 @@
           <tbody id="versionRows"></tbody>
         </table>
         <div class="inline-form">
-          <input class="input mono" id="verInput" type="text" placeholder="输入版本号安装，如 0.1.1-rc.2" autocomplete="off" spellcheck="false" maxlength="64" />
+          <input class="input mono" id="verInput" type="text" placeholder="输入版本号安装，如 0.1.1-rc.2" autocomplete="off" spellcheck="false" maxlength="32" />
           <button class="btn ghost" id="btnInstallVer">安装</button>
         </div>
         <div class="panel-hint">列表默认只显示最近 5 个版本；如需安装其它版本，直接在上方输入版本号。</div>
@@ -262,7 +262,7 @@
               </button>
               <ul class="cselect-menu" id="setupVerMenu" role="listbox" hidden></ul>
             </div>
-            <input class="input mono" id="verManual" type="text" placeholder="或输入指定版本号（如 0.1.1-rc.2）" spellcheck="false" maxlength="64" />
+            <input class="input mono" id="verManual" type="text" placeholder="或输入指定版本号（如 0.1.1-rc.2）" spellcheck="false" maxlength="32" />
           </div>
           <p class="adv-note">列表默认只显示最近 5 个版本，其它版本请直接在上方版本号输入框输入。<br />更改将应用于本次下载；Registry 源建议保持默认，改动后点「刷新版本」重新获取列表。</p>
         </div>
