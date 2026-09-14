@@ -1705,6 +1705,11 @@ struct ShellState {
     app_version: String,
     dsh_version: String,
     registry: String,
+    /// 真实窗口是否属于「小窗」（窄 ≤900pt 或矮 ≤620pt）。见 shell.js 的 body.small-window：
+    /// 壳页视口在「工作台可见且无浮层」时被裁到只剩顶栏（≈36pt），CSS 的 max-height
+    /// 媒体查询会把这种正常状态误判成矮窗（抽屉打开那一帧闪成整幅），故高度条件改由
+    /// Rust 按真实窗口尺寸判定后下发。
+    window_small: bool,
 }
 
 #[tauri::command]
@@ -1717,7 +1722,23 @@ fn get_shell_state(app: AppHandle) -> ShellState {
             .and_then(|dir| crate::dsh::closure_version(&dir))
             .unwrap_or_else(|| "未知".into()),
         registry: crate::registry::registry_url(settings.registry.as_deref()),
+        window_small: window_is_small(&app),
     }
+}
+
+/// 真实窗口是否「小窗」（窄 ≤900pt 或矮 ≤620pt）——供壳页切 body.small-window。
+/// 为什么不直接用 CSS 媒体查询的 max-height：壳页 webview 在「工作台可见且无浮层」时
+/// 被裁到只剩顶栏（视口≈36pt），media query 会把这种正常状态误判成矮窗。
+fn window_is_small(app: &AppHandle) -> bool {
+    let Some(w) = main_window(app) else {
+        return false;
+    };
+    let Ok(size) = w.inner_size() else {
+        return false;
+    };
+    let scale = w.scale_factor().unwrap_or(1.0);
+    let (lw, lh) = (size.width as f64 / scale, size.height as f64 / scale);
+    lw <= 900.0 || lh <= 620.0
 }
 
 /// 持久化 npm registry 源（安装/更新 dsh 的下载源）。校验非空且以 http(s)://

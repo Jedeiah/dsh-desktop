@@ -41,6 +41,14 @@
     el.textContent = (el.getAttribute('data-modkey') || '').replace(/MOD/g, MODKEY);
   });
 
+  // 真实窗口是否「小窗」（窄 ≤900pt 或矮 ≤620pt）：由 Rust 按真实窗口尺寸判定，初值来自
+  // get_shell_state.window_small，之后由主窗 Resized 事件更新。**不能改用 CSS 的
+  // max-height 媒体查询**：壳页视口在「工作台可见且无浮层」时被裁到只剩顶栏（≈36px），
+  // 会把这种正常状态误判成矮窗（抽屉打开那一帧闪成整幅宽度）。
+  window.__onWindowSize = (small) => {
+    document.body.classList.toggle('small-window', !!small);
+  };
+
   // ---------------- 页面滚动兜底 ----------------
   // 壳页是固定布局（html/body 均 overflow:hidden），但 overflow:hidden **挡不住
   // 程序化滚动**：抽屉滑入动画期间若对离屏元素执行 focus()（或浏览器把聚焦元素
@@ -163,6 +171,7 @@
   (async () => {
     try {
       const st = await invoke('get_shell_state');
+      if (st) window.__onWindowSize(st.window_small);
       const url = await invoke('get_dsh_url');
       const port = url ? (String(url).match(/:([0-9]+)/) || [])[1] : '';
       const parts = [];
@@ -366,6 +375,60 @@
     if (id === 'workbench') closeDrawer();
     else openDrawer(id);
   }
+  // ---------------- 抽屉宽度可拖动（左边缘 6px 热区） ----------------
+  // 宽度写进 --drawer-w：抽屉本体、氛围水印居中、窄窗判定都读它。持久化到 localStorage，
+  // 越界自动夹紧（最小 360，最大 min(900, 窗口宽 − 420)，给右侧工作台留空间）。
+  const DRAWER_MIN = 360, DRAWER_DEFAULT = 560, DRAWER_RESERVED = 420;
+  const drawerEl = $('drawer');
+  const drawerResizeEl = $('drawerResize');
+  const drawerW = () =>
+    parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--drawer-w')) || DRAWER_DEFAULT;
+  function clampDrawerWidth(px) {
+    const max = Math.max(DRAWER_MIN, Math.min(900, window.innerWidth - DRAWER_RESERVED));
+    return Math.max(DRAWER_MIN, Math.min(max, Math.round(px)));
+  }
+  function setDrawerWidth(px, persist) {
+    const w = clampDrawerWidth(px);
+    document.documentElement.style.setProperty('--drawer-w', w + 'px');
+    if (persist) { try { localStorage.setItem('drawerWidth', String(w)); } catch (e) { /* 忽略 */ } }
+    return w;
+  }
+  // 启动恢复（旧值越界会被夹紧；窄窗下 CSS 仍会让抽屉转整幅）
+  (function restoreDrawerWidth() {
+    let saved = DRAWER_DEFAULT;
+    try {
+      const v = Number(localStorage.getItem('drawerWidth'));
+      if (Number.isFinite(v) && v > 0) saved = v;
+    } catch (e) { /* 忽略 */ }
+    setDrawerWidth(saved, false);
+  })();
+  window.addEventListener('resize', () => setDrawerWidth(drawerW(), false));
+  drawerResizeEl.addEventListener('pointerdown', (e) => {
+    e.preventDefault();
+    document.body.classList.add('drawer-resizing'); // 拖动期间全局 col-resize + 禁选中
+    drawerResizeEl.setPointerCapture(e.pointerId);
+    const move = (ev) => setDrawerWidth(window.innerWidth - ev.clientX, false);
+    const up = (ev) => {
+      drawerResizeEl.removeEventListener('pointermove', move);
+      drawerResizeEl.removeEventListener('pointerup', up);
+      document.body.classList.remove('drawer-resizing');
+      setDrawerWidth(window.innerWidth - ev.clientX, true); // 松手才落盘
+    };
+    drawerResizeEl.addEventListener('pointermove', move);
+    drawerResizeEl.addEventListener('pointerup', up);
+  });
+  // 双击复位；键盘 ←/→（Shift 加速）、Home 复位（把手 tabindex=0）
+  drawerResizeEl.addEventListener('dblclick', () => {
+    try { localStorage.removeItem('drawerWidth'); } catch (e) { /* 忽略 */ }
+    setDrawerWidth(DRAWER_DEFAULT, false);
+  });
+  drawerResizeEl.addEventListener('keydown', (e) => {
+    const step = e.shiftKey ? 48 : 12;
+    if (e.key === 'ArrowLeft') { e.preventDefault(); setDrawerWidth(drawerW() + step, true); }
+    else if (e.key === 'ArrowRight') { e.preventDefault(); setDrawerWidth(drawerW() - step, true); }
+    else if (e.key === 'Home') { e.preventDefault(); setDrawerWidth(DRAWER_DEFAULT, true); }
+  });
+
   $('drawerClose').addEventListener('click', closeDrawer);
   $('drawer').querySelectorAll('.segmented button').forEach((b) => {
     b.addEventListener('click', () => openDrawer(b.dataset.section));

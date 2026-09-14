@@ -73,7 +73,9 @@
 
 <!-- ===================== 管理抽屉 ===================== -->
 <aside class="drawer" id="drawer" role="dialog" aria-modal="true" aria-label="管理">
-  <div class="drawer-head">
+  <div class="drawer-resize" id="drawerResize" role="separator" aria-orientation="vertical"
+       tabindex="0" aria-label="拖动调整抽屉宽度" title="拖动调整宽度 · 双击复位"></div>
+    <div class="drawer-head">
     <div class="segmented" role="tablist" aria-label="管理分区">
       <button role="tab" data-section="dsh" class="active" aria-selected="true">dsh</button>
       <button role="tab" data-section="plugins" aria-selected="false">插件</button>

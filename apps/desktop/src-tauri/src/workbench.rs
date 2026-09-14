@@ -355,8 +355,27 @@ fn attach_resize_hook(app: &AppHandle) {
     window.on_window_event(move |ev| {
         if let tauri::WindowEvent::Resized(_) = ev {
             sync_bounds(&app2);
+            notify_shell_window_size(&app2);
         }
     });
+}
+
+/// 把「真实窗口是否小窗」告诉壳页（分类没变就不发，避免 resize 风暴里反复 eval）。
+/// 用途见 shell.js 的 body.small-window：壳页视口在无浮层时被裁到只剩顶栏，
+/// CSS 的 max-height 媒体查询会把 36pt 视口误判成矮窗 → 抽屉打开那一帧闪成整幅。
+fn notify_shell_window_size(app: &AppHandle) {
+    static SENT: Mutex<Option<bool>> = Mutex::new(None);
+    let small = crate::window_is_small(app);
+    {
+        let Ok(mut g) = SENT.lock() else { return };
+        if *g == Some(small) {
+            return;
+        }
+        *g = Some(small);
+    }
+    if let Some(w) = crate::main_window(app) {
+        let _ = w.eval(format!("window.__onWindowSize && window.__onWindowSize({small})"));
+    }
 }
 
 /// child webview 隐藏时的屏幕外坐标。隐藏 = 保持尺寸移出可视区：不触发
@@ -643,12 +662,16 @@ pub fn workbench_ready_cmd() -> bool {
 /// 折叠动画代际号：新一次切换作废正在跑的旧动画（快速连点不会出现错位/回弹）。
 static ANIM_GEN: AtomicU32 = AtomicU32::new(0);
 
-/// 折叠/展开顶栏：把原生 child 的 bounds 在 ~160ms 内**分步插值**到目标几何，与
-/// CSS 的顶栏过渡（`--dur` 150ms）同步。
+/// 折叠/展开顶栏：把原生 child 的几何按**与 CSS 完全相同的时间轴与缓动**过渡到目标。
 ///
-/// 此前实现是「延迟 170ms 后一次 set_bounds」：CSS 那边顶栏平滑滑出，原生视图却在
-/// 170ms 时「啪」地跳一格——观感就是「一下子消失/出现」（用户反馈：能不能有伸缩
-/// 效果）。分步插值后两者同步滑动。
+/// 之前用「步索引 / 步数」算进度 + ease-out 三次曲线，与 CSS 的
+/// `cubic-bezier(0.2, 0, 0, 1)`（慢起慢收）并不同曲线，所以原生工作台那条边与顶栏里的
+/// 文字各走各的（用户反馈「字和线不一起联动」）。现在：
+///   - 进度按**单调时钟**算（`elapsed / --dur`，150ms），不累积 sleep 抖动；
+///   - 缓动用 css_ease()，与 theme.css 的 --ease 是同一条贝塞尔；
+///   - 动画期间**只改位置、不改尺寸**（高度取两态较大者，多出的部分被窗口裁掉、看不见），
+///     避免每步都 resize child webview 触发页面重排——那正是"不丝滑"的主因；
+///   - 结束时用 apply_bounds_on_main 精确落位（一次尺寸变更）。
 /// 抽屉/面板占用（SUPPRESSED）或降级路径不参与动画，等 show 时按目标几何一次到位。
 #[tauri::command]
 pub fn workbench_set_collapsed_cmd(app: AppHandle, collapsed: bool) {
@@ -657,24 +680,28 @@ pub fn workbench_set_collapsed_cmd(app: AppHandle, collapsed: bool) {
     let gen = ANIM_GEN.fetch_add(1, Ordering::SeqCst) + 1;
     let app2 = app.clone();
     std::thread::spawn(move || {
-        const STEPS: u32 = 10;
-        const STEP_MS: u64 = 16; // ≈160ms，对齐 CSS 的 --dur
-        for i in 1..=STEPS {
+        // 与 theme.css 的 --dur 一致；步进略密于 60Hz，高刷屏更顺
+        const DUR: std::time::Duration = std::time::Duration::from_millis(150);
+        const STEP: std::time::Duration = std::time::Duration::from_millis(6);
+        let start = std::time::Instant::now();
+        loop {
             if ANIM_GEN.load(Ordering::SeqCst) != gen {
                 return; // 已被新的切换作废
             }
-            let t = i as f64 / STEPS as f64;
-            let e = 1.0 - (1.0 - t).powi(3); // ease-out，贴近 CSS cubic-bezier(.2,0,0,1)
+            let t = (start.elapsed().as_secs_f64() / DUR.as_secs_f64()).min(1.0);
+            let e = css_ease(t);
             let a = app2.clone();
-            // 用临时 clone 调用以免与闭包内的 &a 冲突（同 show_child 的写法）
             let _ = a.clone().run_on_main_thread(move || {
                 if ANIM_GEN.load(Ordering::SeqCst) == gen {
-                    lerp_bounds_on_main(&a, e);
+                    slide_bounds_on_main(&a, e);
                 }
             });
-            std::thread::sleep(std::time::Duration::from_millis(STEP_MS));
+            if t >= 1.0 {
+                break;
+            }
+            std::thread::sleep(STEP);
         }
-        // 收尾兜底：精确落位（也覆盖动画被跳过/打断的情形）
+        // 收尾：精确落位（含最终尺寸，一次到位）
         let a = app2.clone();
         let _ = a.clone().run_on_main_thread(move || {
             if ANIM_GEN.load(Ordering::SeqCst) == gen {
@@ -685,9 +712,34 @@ pub fn workbench_set_collapsed_cmd(app: AppHandle, collapsed: bool) {
     });
 }
 
-/// 把 child 放到「展开态 ↔ 折叠态」两套几何之间：e=0 展开、e=1 折叠。
-/// 只做 y/h 线性插值（x/w 不变），与 CSS 只动顶栏高度一致。
-fn lerp_bounds_on_main(app: &AppHandle, e: f64) {
+/// CSS `cubic-bezier(0.2, 0, 0, 1)` 求值——与 theme.css 的 `--ease` 是同一条曲线，
+/// 保证原生工作台的位移与 HTML 顶栏的 transform 同速同形（否则观感"不联动"）。
+/// 二分法解 x(s)=progress 得参数 s，再取 y(s)。
+fn css_ease(progress: f64) -> f64 {
+    const X1: f64 = 0.2;
+    const Y1: f64 = 0.0;
+    const X2: f64 = 0.0;
+    const Y2: f64 = 1.0;
+    fn bez(a: f64, b: f64, s: f64) -> f64 {
+        3.0 * a * s * (1.0 - s).powi(2) + 3.0 * b * s * s * (1.0 - s) + s * s * s
+    }
+    let p = progress.clamp(0.0, 1.0);
+    let (mut lo, mut hi) = (0.0_f64, 1.0_f64);
+    for _ in 0..24 {
+        let mid = (lo + hi) / 2.0;
+        if bez(X1, X2, mid) < p {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    bez(Y1, Y2, (lo + hi) / 2.0)
+}
+
+/// 动画中间帧：只平移 y（保持尺寸为该帧两态中较大的高度）。
+/// 尺寸不变 → child webview 不重排，动起来才顺；多出的高度落在窗口外被裁掉，看不见。
+/// e=0 展开态位置、e=1 折叠态位置。
+fn slide_bounds_on_main(app: &AppHandle, e: f64) {
     if SUPPRESSED.load(Ordering::SeqCst) || FALLBACK.load(Ordering::SeqCst) {
         return;
     }
@@ -699,14 +751,14 @@ fn lerp_bounds_on_main(app: &AppHandle, e: f64) {
     };
     let scale = window.scale_factor().unwrap_or(1.0);
     let size = window.inner_size().unwrap_or(PhysicalSize::new(1280u32, 820u32));
-    let tb = (TITLEBAR_H_PT * scale).round() as i32;
+    let tb = (TITLEBAR_H_PT * scale).round() as u32;
     let open = geom(size.width, size.height, scale, false);
     let shut = geom(size.width, size.height, scale, true);
-    let y = (open.y as f64 + (shut.y - open.y) as f64 * e).round() as i32 + tb;
-    let h = (open.h as f64 + (shut.h as f64 - open.h as f64) * e).round() as u32;
+    let y = (open.y as f64 + (shut.y - open.y) as f64 * e).round() as i32 + tb as i32;
+    let h = open.h.max(shut.h).saturating_sub(tb);
     let rect = Rect {
         position: Position::Physical(PhysicalPosition::new(open.x, y)),
-        size: Size::Physical(PhysicalSize::new(open.w, h.saturating_sub(tb as u32))),
+        size: Size::Physical(PhysicalSize::new(open.w, h)),
     };
     let _ = wv.set_bounds(rect);
 }
@@ -728,6 +780,28 @@ mod tests {
         // 用户点不到展开入口）→ y = 18*2 = 36，h = 1640 - 36 = 1604
         let g = geom(2560, 1640, 2.0, true);
         assert_eq!((g.x, g.y, g.w, g.h), (0, 36, 2560, 1604));
+    }
+
+    #[test]
+    fn css_ease_matches_bezier_shape() {
+        // 端点必须精确
+        assert!((css_ease(0.0) - 0.0).abs() < 1e-6);
+        assert!((css_ease(1.0) - 1.0).abs() < 1e-6);
+        // 单调不减
+        let mut prev = -1.0;
+        for i in 0..=100 {
+            let v = css_ease(i as f64 / 100.0);
+            assert!(v >= prev - 1e-9, "progress={i} 非单调: {v} < {prev}");
+            prev = v;
+        }
+        // cubic-bezier(0.2,0,0,1) 的实际形状：快起慢收（前段领先线性）
+        assert!(css_ease(0.1) > 0.1);          // ≈0.156
+        assert!(css_ease(0.5) > 0.8);          // ≈0.878
+        // 与旧实现 1-(1-t)^3 相比：中段几乎一致，只有最前段更缓——所以"不联动"的主因
+        // 不是曲线，而是位移量不同（顶栏滑 36px、工作台顶边只移 18px），见 theme.css
+        let old_ease = |t: f64| 1.0 - (1.0 - t).powi(3);
+        assert!((css_ease(0.5) - old_ease(0.5)).abs() < 0.02);
+        assert!(css_ease(0.1) < old_ease(0.1));
     }
 
     #[test]

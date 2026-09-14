@@ -285,7 +285,13 @@ img.startup-mark, img.brand-mark, img.setup-mark, img.about-mark {
   border-bottom: 1px solid var(--border-subtle);
   transition: transform var(--dur) var(--ease), opacity var(--dur) var(--ease);
 }
-body.chrome-collapsed .chrome { transform: translateY(-100%); opacity: 0; pointer-events: none; }
+/* 折叠：顶栏只上移「把手条高」而不是整条高度——因为原生工作台的顶边在折叠态只上移
+   18px（HANDLE_H_LOGICAL），两边位移量一致才不会在动画中途裂开一条缝（用户反馈
+   「上面的字和伸缩的线不一起联动」）。文字随 opacity 淡出。 */
+body.chrome-collapsed .chrome {
+  transform: translateY(calc(-100% + var(--h-handle)));
+  opacity: 0; pointer-events: none;
+}
 
 .brand {
   display: flex; align-items: center; gap: 8px; flex: none;
@@ -425,6 +431,18 @@ body.chrome-collapsed .chrome-restore { opacity: 1; visibility: visible; pointer
   box-shadow: var(--shadow-lg);
   transform: translateX(100%);
   transition: transform 0.2s var(--ease), top var(--dur) var(--ease);
+}
+/* 拖动中：全局改指针为 col-resize 并禁止选中（否则会选到抽屉里的文字） */
+body.drawer-resizing, body.drawer-resizing * { cursor: col-resize !important; user-select: none !important; }
+
+/* 抽屉左边缘拖拽把手：6px 热区（视觉上只在悬停/聚焦时显出淡色条） */
+.drawer-resize {
+  position: absolute; left: -3px; top: 0; bottom: 0; width: 6px;
+  cursor: col-resize; z-index: 1; background: transparent;
+  transition: background var(--dur) var(--ease);
+}
+.drawer-resize:hover, .drawer-resize:focus-visible {
+  background: var(--accent-soft); outline: none;
 }
 .drawer.open { transform: none; }
 body.chrome-collapsed .drawer { top: 0; }
@@ -789,12 +807,20 @@ body.chrome-collapsed .drawer { top: 0; }
 ::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, 0.24); }
 ::-webkit-scrollbar-track { background: transparent; }
 
-/* 800×560 最小窗：抽屉转为整幅，避免工作台被压到不可用 */
-@media (max-width: 900px), (max-height: 620px) {
+/* 小窗（窄 ≤900pt 或矮 ≤620pt）：抽屉转整幅，避免工作台被压到不可用。
+   宽度条件用媒体查询即可；**高度条件必须走 body.small-window（由 Rust 按真实窗口尺寸
+   判定后下发）**：壳页 webview 在「工作台可见且无浮层」时被裁到只剩顶栏（视口≈36px），
+   这里若也写 max-height 就会把这种正常状态误判成矮窗——表现为抽屉刚打开那一帧闪成整幅。 */
+@media (max-width: 900px) {
   .drawer { width: 100%; border-left: 0; }
+  .drawer-resize { display: none; } /* 整幅抽屉无可拖 */
   .palette-overlay { padding-top: 6vh; }
   .toasts { right: 12px; bottom: 12px; }
 }
+body.small-window .drawer { width: 100%; border-left: 0; }
+body.small-window .drawer-resize { display: none; }
+body.small-window .palette-overlay { padding-top: 6vh; }
+body.small-window .toasts { right: 12px; bottom: 12px; }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
