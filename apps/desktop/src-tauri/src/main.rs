@@ -1082,12 +1082,24 @@ pub(crate) fn boot(app: AppHandle) {
                 "无法启动内置 dsh：\n{e}\n\n日志位置：\n{}",
                 logs.display()
             );
-            show_modal(
-                &app,
-                "DeepSeek Harness Desktop 启动失败",
-                &msg,
-                "ok",
-            );
+            // 致命错误：必须给出路，不能只弹一个「确定」就把用户丢在加载页
+            //（实测反馈：点确定后既没有工作台、也退不出去）。「重试」重新拉起，
+            //「退出」关闭应用（✕/Esc 也走重试，避免误退）。
+            // 先显示主窗：启动失败时它可能还停在"隐藏创建"状态，否则弹窗会浮在空桌面上。
+            reveal_main_window(&app, None);
+            if fatal_choice(&app, "DeepSeek Harness Desktop 启动失败", &msg) {
+                logln!("[boot] 启动失败 → 用户选择重试");
+                CRASHES.store(0, Ordering::SeqCst);
+                let a = app.clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(Duration::from_millis(500));
+                    boot(a);
+                });
+            } else {
+                logln!("[boot] 启动失败 → 用户选择退出");
+                kill_dsh();
+                app.exit(0);
+            }
             return;
         }
     };
@@ -1143,12 +1155,19 @@ pub(crate) fn boot(app: AppHandle) {
                 "dsh 连续崩溃 {n} 次，已停止自动重启。\n\n日志位置：\n{}\n\n其中 dsh.log 记录了 dsh 的异常输出。",
                 logs.display()
             );
-            show_modal(
-                &app,
-                "DeepSeek Harness Desktop 运行异常",
-                &msg,
-                "ok",
-            );
+            if fatal_choice(&app, "DeepSeek Harness Desktop 运行异常", &msg) {
+                logln!("[boot] 运行异常 → 用户选择重试（重置崩溃计数）");
+                CRASHES.store(0, Ordering::SeqCst);
+                let a = app.clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(Duration::from_millis(500));
+                    boot(a);
+                });
+            } else {
+                logln!("[boot] 运行异常 → 用户选择退出");
+                kill_dsh();
+                app.exit(0);
+            }
             return;
         }
         let delay_ms = (RESTART_BASE_MS * 2_u64.pow(n.min(6))).min(RESTART_MAX_MS);
@@ -1521,14 +1540,24 @@ fn modal_respond(webview: tauri::Webview, accept: bool) -> Result<(), String> {
     Ok(())
 }
 
-/// 显示自绘弹窗并阻塞等待用户按钮结果（替代 rfd 同步对话框）。
-/// 在后台线程调用（boot 线程 / 更新检查线程）：窗口在主线程打开，本线程阻塞等结果。
-/// kind="ok" 忽略按钮值；kind="yesno" 返回用户是否选择"确定"。
-fn show_modal(app: &AppHandle, title: &str, message: &str, kind: &str) -> bool {
-    show_modal_with_labels(app, title, message, kind, None, None)
+/// 致命错误弹窗（dsh 起不来 / 连续崩溃放弃重启）：主按钮「退出」、次按钮「重试」。
+/// 返回 true = 用户选「重试」，false = 选「退出」。
+///
+/// 为什么这么映射：`show_modal_with_labels` 的返回值只代表**主按钮(ok)**是否被点，
+/// 而 modal.js 里 ✕ / Esc 对 yesno 一律回 false。把「重试」放在 no 上，就能保证
+/// 「顺手把弹窗关掉」不会把应用退掉（误关不该等于退出）；要真正退出必须点主按钮。
+/// 用户反馈的原始问题：致命错误只弹一个「确定」，点完什么也没发生，dsh 已死、
+/// 应用却还停在加载页 —— 既没有工作台也退不出去。
+fn fatal_choice(app: &AppHandle, title: &str, msg: &str) -> bool {
+    let body = format!("{msg}\n\n点「退出」关闭应用；点「重试」重新拉起 dsh（✕ 等同于重试）。");
+    let quit = show_modal_with_labels(app, title, &body, "yesno", Some("退出"), Some("重试"));
+    !quit
 }
 
-/// show_modal 的按钮文案自定义版（卸载确认等场景）。
+/// 显示自绘弹窗并阻塞等待用户按钮结果（替代 rfd 同步对话框）。
+/// 在后台线程调用（boot 线程 / 更新检查线程）：窗口在主线程打开，本线程阻塞等结果。
+/// kind="ok" 忽略按钮值；kind="yesno" 返回用户是否选择"确定"（主按钮）。
+/// 按钮文案自定义版（卸载确认 / 致命错误等场景用）。
 fn show_modal_with_labels(
     app: &AppHandle,
     title: &str,
