@@ -155,18 +155,16 @@ xattr -dr com.apple.quarantine "/Applications/DeepSeek Harness Desktop.app"
 壳页是「满屏工作台 + 一条可折叠顶栏」，所有管理能力都收在**命令面板**与**管理抽屉**里：
 
 <p align="center">
-  <img src="docs/images/shell-drawer.png" alt="壳页界面：顶栏 + 右侧管理抽屉（左侧为 dsh 工作台区域）" width="820">
+  <img src="docs/images/workbench.png" alt="工作台：原生窗口 + 36px 顶栏 + 官方 dsh web UI" width="100%">
   <br>
-  <sub>顶栏与管理抽屉（图中左侧为工作台区域，实际运行时显示 dsh 工作台）</sub>
+  <sub>工作台：原生窗口 + 一条 36px 顶栏，下面是官方 dsh web UI（与终端 <code>dsh web</code> 同一套）</sub>
 </p>
 
-<!-- 实机截图：用 ⌘⇧4 / Win+Shift+S 截「工作台 + 抽屉」与「命令面板」各一张，
-     存为 docs/images/workbench.png 与 docs/images/palette.png，再把下面两行取消注释即可。
 <p align="center">
-  <img src="docs/images/workbench.png" alt="工作台" width="820">
-  <img src="docs/images/palette.png" alt="命令面板" width="410">
+  <img src="docs/images/drawer.png" alt="管理抽屉：插件分段" width="100%">
+  <br>
+  <sub>管理抽屉（图为「插件」分段）。打开抽屉/命令面板时工作台会按设计让位，收起后自动归位</sub>
 </p>
--->
 
 - **顶栏**：左侧「工作台」（单击刷新工作台，双击在系统浏览器打开当前地址）；右侧「管理」与「收起导航栏」。
 - **命令面板**：点「管理」或 `⌘K` / `Ctrl+K`，可就地搜索并执行——切到工作台 / dsh / 插件 / 关于，刷新工作台，在浏览器打开，检查 dsh 更新，检查应用更新，展开 / 收起导航栏。
