@@ -45,6 +45,31 @@ fn topbar_offset(collapsed: bool) -> f64 {
     }
 }
 
+/// 标题栏补偿（逻辑 pt）。macOS 的子树坐标以窗口 frame（含标题栏区）为基准，窗口化时
+/// 需要把工作台下推一个标题栏高；**全屏时没有标题栏**——再补这 32pt 会让工作台整体下移
+/// 32pt、顶部露出 32pt 壳页底、底部被裁（实测：全屏窗口 1512×949 时工作台起点 68、高 881，
+/// 应为起点 36、高 913）。Windows 的 inner_size 即客户区、wry 用客户区坐标，恒为 0。
+/// 窗口（含 WebviewWindow）当前的标题栏补偿（逻辑 pt）。
+fn titlebar_pt_for_window(window: &tauri::Window) -> f64 {
+    titlebar_pt(window.is_fullscreen().unwrap_or(false))
+}
+
+fn titlebar_pt(fullscreen: bool) -> f64 {
+    #[cfg(target_os = "macos")]
+    {
+        if fullscreen {
+            0.0
+        } else {
+            TITLEBAR_H_PT
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = fullscreen;
+        0.0
+    }
+}
+
 /// child webview 在主窗客户区内的几何（物理像素）。
 pub struct Geom {
     pub x: i32,
@@ -344,6 +369,30 @@ fn ensure_ready_on_main(app: &AppHandle, url: &str) -> bool {
 }
 
 /// 主窗 Resized → 同步 child webview 几何（只挂一次）。
+/// Resized 后的延迟补算代际号：macOS 全屏切换是异步过渡——Resized 事件先到、
+/// `is_fullscreen()` 要等过渡结束才翻转，而且**没有第二次 Resized 来纠正**（实测：
+/// 切全屏后工作台一直按窗口化算，多留 32pt 标题栏 → 顶部露一条壳页底、底部被裁）。
+/// 这里在 resize 后延迟再算一次；用代际号合并连续事件（拖拽窗口时不会堆线程）。
+static RESIZE_GEN: AtomicU32 = AtomicU32::new(0);
+const RESIZE_SETTLE_MS: u64 = 700;
+
+fn sync_bounds_deferred(app: &AppHandle) {
+    let gen = RESIZE_GEN.fetch_add(1, Ordering::SeqCst) + 1;
+    let app2 = app.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(RESIZE_SETTLE_MS));
+        if RESIZE_GEN.load(Ordering::SeqCst) != gen {
+            return; // 期间又有新的 resize，交给那一次
+        }
+        let a = app2.clone();
+        let _ = a.clone().run_on_main_thread(move || {
+            sync_bounds(&a);
+            apply_shell_clip_on_main(&a);
+            crate::logln("[workbench] 尺寸稳定后补算几何（全屏/最大化切换）");
+        });
+    });
+}
+
 fn attach_resize_hook(app: &AppHandle) {
     if RESIZE_HOOKED.swap(true, Ordering::SeqCst) {
         return;
@@ -356,6 +405,8 @@ fn attach_resize_hook(app: &AppHandle) {
         if let tauri::WindowEvent::Resized(_) = ev {
             sync_bounds(&app2);
             notify_shell_window_size(&app2);
+            // 全屏/最大化过渡结束后再补算一次（见 sync_bounds_deferred 注释）
+            sync_bounds_deferred(&app2);
         }
     });
 }
@@ -409,13 +460,14 @@ fn bounds_on_main(app: &AppHandle) -> Option<Rect> {
     let outer_h = window.outer_size().unwrap_or(size).height as i64;
     let inset = (outer_h - size.height as i64).max(0) as u32; // 仅用于日志观测
     let g = geom(size.width, size.height, scale, collapsed);
-    // 顶栏 + 标题栏补偿（见 TITLEBAR_H_PT 注释）；高度再扣掉标题栏
-    let tb_px = (TITLEBAR_H_PT * scale).round() as u32;
+    // 顶栏 + 标题栏补偿（见 titlebar_pt 注释：全屏时为 0）；高度再扣掉同一个值
+    let tb_pt = titlebar_pt_for_window(&window);
+    let tb_px = (tb_pt * scale).round() as u32;
     let y = g.y as u32 + tb_px;
     let h = g.h.saturating_sub(tb_px);
     let desc = format!(
         "y={} h={} scale={} collapsed={} win={}x{} inset={} titlebar_pt={}",
-        y, h, scale, collapsed, size.width, size.height, inset, TITLEBAR_H_PT
+        y, h, scale, collapsed, size.width, size.height, inset, tb_pt
     );
     if LAST_BOUNDS.lock().unwrap().as_deref() != Some(desc.as_str()) {
         crate::logln(&format!("[workbench] bounds: {desc}"));
@@ -464,7 +516,7 @@ fn apply_shell_clip_on_main(_app: &AppHandle) {
             } else {
                 TOPBAR_H_LOGICAL
             };
-            base + TITLEBAR_H_PT
+            base + titlebar_pt(w.is_fullscreen().unwrap_or(false))
         } else {
             0.0
         };
@@ -751,7 +803,7 @@ fn slide_bounds_on_main(app: &AppHandle, e: f64) {
     };
     let scale = window.scale_factor().unwrap_or(1.0);
     let size = window.inner_size().unwrap_or(PhysicalSize::new(1280u32, 820u32));
-    let tb = (TITLEBAR_H_PT * scale).round() as u32;
+    let tb = (titlebar_pt_for_window(&window) * scale).round() as u32;
     let open = geom(size.width, size.height, scale, false);
     let shut = geom(size.width, size.height, scale, true);
     let y = (open.y as f64 + (shut.y - open.y) as f64 * e).round() as i32 + tb as i32;
@@ -780,6 +832,16 @@ mod tests {
         // 用户点不到展开入口）→ y = 18*2 = 36，h = 1640 - 36 = 1604
         let g = geom(2560, 1640, 2.0, true);
         assert_eq!((g.x, g.y, g.w, g.h), (0, 36, 2560, 1604));
+    }
+
+    #[test]
+    fn titlebar_offset_drops_in_fullscreen() {
+        // 全屏无标题栏 → 不补偿；窗口化 macOS 下补 32（Windows 恒 0）
+        assert_eq!(titlebar_pt(true), 0.0);
+        #[cfg(target_os = "macos")]
+        assert_eq!(titlebar_pt(false), TITLEBAR_H_PT);
+        #[cfg(not(target_os = "macos"))]
+        assert_eq!(titlebar_pt(false), 0.0);
     }
 
     #[test]
