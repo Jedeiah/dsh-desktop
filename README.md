@@ -1,19 +1,19 @@
 <h1 align="center">DeepSeek Harness Desktop</h1>
 
 <p align="center">
-  <img src="apps/desktop/src-tauri/icons/icon-rounded-256.png" alt="DeepSeek Harness Desktop" width="120">
-</p>
-
-<p align="center">
-  <b>把官方 DeepSeek Harness（dsh web）装进一个桌面 App</b><br>
-  双击即用，零环境依赖，工作台与配置和终端 dsh 完全共用。
-</p>
-
-<p align="center">
   <a href="https://github.com/Jedeiah/dsh-desktop/releases/latest"><img src="https://img.shields.io/github/v/release/Jedeiah/dsh-desktop?label=release&color=3d5af0" alt="Release"></a>
   <a href="LICENSE"><img src="https://img.shields.io/github/license/Jedeiah/dsh-desktop?color=3d5af0" alt="License"></a>
   <img src="https://img.shields.io/badge/platform-macOS%20arm64%20%7C%20Windows%20x64-3d5af0" alt="Platform">
   <a href="https://tauri.app"><img src="https://img.shields.io/badge/built%20with-Tauri%202-24c8db" alt="Tauri"></a>
+</p>
+
+<p align="center">
+  <img src="docs/images/hero.png" alt="DeepSeek Harness Desktop —— 把官方 DeepSeek Harness（dsh web）装进桌面 App" width="100%">
+</p>
+
+<p align="center">
+  <sub>把官方 <b>DeepSeek Harness</b>（dsh web）装进一个桌面 App：<b>零环境依赖</b>、双击即用，<br>
+  工作台与配置和终端 dsh <b>完全共用</b>。</sub>
 </p>
 
 ---
@@ -321,16 +321,11 @@ App 启动时会静默检查并在 dsh 段提示，但**不会自动安装**—�
 
 > 下面几节给想自己折腾或贡献代码的人。日常使用不需要读。
 
-**进程模型**：App 是单个原生进程（Rust + Tauri 2），它托管一个 dsh 子进程——
+**进程模型**：App 是单个原生进程（Rust + Tauri 2），它托管一个 dsh 子进程——壳页、工作台（原生子 WebView）、dsh 子进程与数据目录的分层关系如下图：
 
-```
-DeepSeek Harness Desktop (Rust/Tauri 2)
-├── 主窗（壳页 WebView）            # HTML/JS 壳：顶栏 / 命令面板 / 管理抽屉 / 引导页
-├── dsh 工作台                      # 原生 child webview（AddChild），预渲染后移入窗口
-│                                 # 工作台可见时壳页被裁到只剩顶栏——两层不重叠，避免光标闪烁
-└── dsh 子进程                      # 内置 node 运行 <app-data>/dsh/v<版本>/…/bin.js --profile web --port 0
-                                    # stdout 回传就绪 URL；退出回收；崩溃重启
-```
+<p align="center">
+  <img src="docs/images/architecture.png" alt="进程与视图分层：壳页 WebView / 原生 child webview 工作台 / Rust 主进程 / dsh 子进程 / 数据目录" width="820">
+</p>
 
 壳页与工作台之间的分工是刻意设计的：工作台是**原生视图**（永远画在 HTML 之上），所以「打开抽屉/命令面板」时会显式把工作台移出窗口，收起后再移回；顶栏折叠则是原生化几何动画（按 CSS `cubic-bezier` 采样逐帧下发边界）。
 
