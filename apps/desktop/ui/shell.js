@@ -41,6 +41,20 @@
     el.textContent = (el.getAttribute('data-modkey') || '').replace(/MOD/g, MODKEY);
   });
 
+  // ---------------- 页面滚动兜底 ----------------
+  // 壳页是固定布局（html/body 均 overflow:hidden），但 overflow:hidden **挡不住
+  // 程序化滚动**：抽屉滑入动画期间若对离屏元素执行 focus()（或浏览器把聚焦元素
+  // 滚入视野），页面会被横向滚动一个抽屉宽，顶栏随之滚出视口且不会自己回来——
+  // 用户实测症状「召回后管理行不见了、也找不到展开把手」（实测 chrome.x 从 0 变
+  // -560 = --drawer-w）。这里在任何滚动后归零，状态切换点也主动调一次。
+  function resetPageScroll() {
+    const d = document.documentElement;
+    const b = document.body;
+    if (d.scrollLeft || d.scrollTop) { d.scrollLeft = 0; d.scrollTop = 0; }
+    if (b.scrollLeft || b.scrollTop) { b.scrollLeft = 0; b.scrollTop = 0; }
+  }
+  window.addEventListener('scroll', resetPageScroll, { passive: true });
+
   // ---------------- Toast（短反馈，2.8s 消失） ----------------
   function toast(msg, kind) {
     const el = document.createElement('div');
@@ -215,9 +229,14 @@
   let chromeCollapsed = false; // 供命令面板把文案/行为切换成「展开导航栏」
   function setChromeCollapsed(v) {
     chromeCollapsed = !!v;
-    document.body.classList.toggle('chrome-collapsed', v);
-    $('chromeRestore').hidden = !v;
+    reassertChromeDom();
     invoke('workbench_set_collapsed_cmd', { collapsed: v }).catch(() => {});
+  }
+  // 只按当前状态重写 DOM（类名 + 把手可访问性），不通知 Rust、不触发几何动画：
+  // 用于「关到后台 → 召回」等场景重新断言，消除任何 DOM 漂移。
+  function reassertChromeDom() {
+    document.body.classList.toggle('chrome-collapsed', chromeCollapsed);
+    $('chromeRestore').setAttribute('aria-hidden', String(!chromeCollapsed));
   }
   $('btnCollapseChrome').addEventListener('click', () => setChromeCollapsed(true));
   $('chromeRestore').addEventListener('click', () => setChromeCollapsed(false));
@@ -295,6 +314,7 @@
     // 极易误触导致整个顶栏消失（用户多次踩坑）。折叠仍可在收起抽屉后/⌘K
     // 命令面板里进行。
     syncCollapseGuard();
+    resetPageScroll();
     // 工作台是原生 webview，盖在所有 HTML 之上：抽屉打开必须显式隐藏
     if (section !== 'workbench') invoke('hide_workbench_cmd').catch(() => {});
     // 切到该分段时刷新数据（安装/插件状态可能已在后台变化）
@@ -316,6 +336,7 @@
     document.body.classList.remove('drawer-open');
     region = 'workbench';
     syncCollapseGuard();
+    resetPageScroll();
     // 等抽屉收回动画（0.2s transition）播完再恢复工作台：立即恢复会让工作台
     // 突然盖住还在滑动中的抽屉，观感变成「收回没有动效、一下消失」
     if (restoreWorkbench) setTimeout(maybeShowWorkbench, 260);
@@ -329,11 +350,16 @@
   // 关到后台（红点 / ⌘W）时由 Rust 调用：浮层不能跨「隐藏→召回」存活。
   // 否则召回时 reveal 会无条件 show_child，原生工作台盖在所有 HTML 之上，
   // 抽屉/面板被压在下面——用户看到的是「workbench 上残留一个输入框和按钮」。
-  window.__onHideToTray = () => closeOverlays(false);
+  window.__onHideToTray = () => {
+    closeOverlays(false);
+    reassertChromeDom();
+  };
   // 主窗被召回（托盘「显示主窗口」/ Dock 点击 / 启动首显）时由 Rust 调用：
   // 先清掉浮层再让工作台归位，避免同样的"浮层被盖住/反过来盖住工作台"错配。
   window.__onMainReveal = () => {
     closeOverlays(false);
+    resetPageScroll(); // 召回时归零页面滚动（否则顶栏可能停在视口外）
+    reassertChromeDom(); // 折叠态跨「隐藏 → 召回」重新断言，消除顶栏/把手的 DOM 漂移
     maybeShowWorkbench();
   };
   function goRegion(id) {
@@ -349,6 +375,7 @@
   let paletteOpen = false, paletteSel = 0, paletteItems = [];
   function openPalette() {
     paletteOpen = true;
+    resetPageScroll();
     $('paletteOverlay').hidden = false;
     // 命令面板与抽屉同样禁用折叠按钮（同一个右上角误触坑）
     syncCollapseGuard();
@@ -359,7 +386,7 @@
     $('paletteInput').value = '';
     paletteSel = 0;
     renderPalette('');
-    $('paletteInput').focus();
+    $('paletteInput').focus({ preventScroll: true });
   }
   function closePalette(restoreWorkbench = true) {
     paletteOpen = false;
@@ -478,7 +505,7 @@
     $('modalNo').textContent = opts.noLabel || '取消';
     modalAccept = opts.onAccept || null;
     modalEl.hidden = false;
-    $('modalOk').focus();
+    $('modalOk').focus({ preventScroll: true });
   }
   function closeModal() { modalEl.hidden = true; modalAccept = null; }
   $('modalNo').addEventListener('click', closeModal);
@@ -1216,7 +1243,7 @@
       const st = await invoke('get_shell_state');
       if (st && st.registry) { currentRegistry = st.registry; input.value = st.registry; }
     } catch (e) { /* 读取失败：保留当前值 */ }
-    input.focus();
+    input.focus({ preventScroll: true });
     input.select();
   }
   function closeRegistryModal() { $('registryModal').hidden = true; }

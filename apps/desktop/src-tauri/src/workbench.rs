@@ -3,7 +3,7 @@
 //! dsh 就绪 URL 直接作为 child webview 的顶层导航地址：token→303→Set-Cookie
 //! 全部由 WebView 原生处理，壳不解析/不注入任何认证细节（spec 2026-09-13）。
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 use tauri::{
@@ -640,16 +640,75 @@ pub fn workbench_ready_cmd() -> bool {
 /// 几何延迟到顶栏 CSS 动画（theme.css --dur，150ms）结束后再应用：工作台是
 /// 原生 webview，位置无法参与 CSS 动画，若立即 set_bounds 会出现「工作台已
 /// 跳到新位置、顶栏还在滑动」的重叠/露底闪烁（用户反馈「伸缩有问题」）。
+/// 折叠动画代际号：新一次切换作废正在跑的旧动画（快速连点不会出现错位/回弹）。
+static ANIM_GEN: AtomicU32 = AtomicU32::new(0);
+
+/// 折叠/展开顶栏：把原生 child 的 bounds 在 ~160ms 内**分步插值**到目标几何，与
+/// CSS 的顶栏过渡（`--dur` 150ms）同步。
+///
+/// 此前实现是「延迟 170ms 后一次 set_bounds」：CSS 那边顶栏平滑滑出，原生视图却在
+/// 170ms 时「啪」地跳一格——观感就是「一下子消失/出现」（用户反馈：能不能有伸缩
+/// 效果）。分步插值后两者同步滑动。
+/// 抽屉/面板占用（SUPPRESSED）或降级路径不参与动画，等 show 时按目标几何一次到位。
 #[tauri::command]
 pub fn workbench_set_collapsed_cmd(app: AppHandle, collapsed: bool) {
     crate::logln(&format!("[workbench] collapsed 同步: {collapsed}"));
     COLLAPSED.store(collapsed, Ordering::SeqCst);
+    let gen = ANIM_GEN.fetch_add(1, Ordering::SeqCst) + 1;
     let app2 = app.clone();
     std::thread::spawn(move || {
-        std::thread::sleep(std::time::Duration::from_millis(170));
-        // sync_bounds 内部检查 SUPPRESSED：抽屉/命令面板打开期间不会被移动
-        sync_bounds(&app2);
+        const STEPS: u32 = 10;
+        const STEP_MS: u64 = 16; // ≈160ms，对齐 CSS 的 --dur
+        for i in 1..=STEPS {
+            if ANIM_GEN.load(Ordering::SeqCst) != gen {
+                return; // 已被新的切换作废
+            }
+            let t = i as f64 / STEPS as f64;
+            let e = 1.0 - (1.0 - t).powi(3); // ease-out，贴近 CSS cubic-bezier(.2,0,0,1)
+            let a = app2.clone();
+            // 用临时 clone 调用以免与闭包内的 &a 冲突（同 show_child 的写法）
+            let _ = a.clone().run_on_main_thread(move || {
+                if ANIM_GEN.load(Ordering::SeqCst) == gen {
+                    lerp_bounds_on_main(&a, e);
+                }
+            });
+            std::thread::sleep(std::time::Duration::from_millis(STEP_MS));
+        }
+        // 收尾兜底：精确落位（也覆盖动画被跳过/打断的情形）
+        let a = app2.clone();
+        let _ = a.clone().run_on_main_thread(move || {
+            if ANIM_GEN.load(Ordering::SeqCst) == gen {
+                let ok = apply_bounds_on_main(&a);
+                crate::logln(&format!("[workbench] 折叠动画完成（应用几何: {ok}）"));
+            }
+        });
     });
+}
+
+/// 把 child 放到「展开态 ↔ 折叠态」两套几何之间：e=0 展开、e=1 折叠。
+/// 只做 y/h 线性插值（x/w 不变），与 CSS 只动顶栏高度一致。
+fn lerp_bounds_on_main(app: &AppHandle, e: f64) {
+    if SUPPRESSED.load(Ordering::SeqCst) || FALLBACK.load(Ordering::SeqCst) {
+        return;
+    }
+    let Some(window) = app.get_window(crate::WINDOW_LABEL) else {
+        return;
+    };
+    let Some(wv) = window.get_webview(LABEL) else {
+        return;
+    };
+    let scale = window.scale_factor().unwrap_or(1.0);
+    let size = window.inner_size().unwrap_or(PhysicalSize::new(1280u32, 820u32));
+    let tb = (TITLEBAR_H_PT * scale).round() as i32;
+    let open = geom(size.width, size.height, scale, false);
+    let shut = geom(size.width, size.height, scale, true);
+    let y = (open.y as f64 + (shut.y - open.y) as f64 * e).round() as i32 + tb;
+    let h = (open.h as f64 + (shut.h as f64 - open.h as f64) * e).round() as u32;
+    let rect = Rect {
+        position: Position::Physical(PhysicalPosition::new(open.x, y)),
+        size: Size::Physical(PhysicalSize::new(open.w, h.saturating_sub(tb as u32))),
+    };
+    let _ = wv.set_bounds(rect);
 }
 
 #[cfg(test)]
