@@ -1836,18 +1836,48 @@ fn remove_dir_all_retry(dir: &std::path::Path) -> std::io::Result<()> {
     unreachable!()
 }
 
-fn uninstall_teardown(p: &Paths, wipe_dsh: bool) -> Result<(), String> {
-    kill_dsh();
-    let home = home_dir();
-    // 关闭日志句柄：当前进程持有 logs/launcher.log，Windows 共享锁下不关则
-    // 删除 app_data 必然 oserror 32。后续 logln 不再写文件（卸载流程无需日志）。
-    *mlock(&LOG_FILE) = None;
-    // app 数据 + WebView 缓存/状态（卸载器必须连缓存一起清干净）
-    let mut dirs = vec![p.app_data.clone()];
+/// 删除单个文件（卸载时的 cookie 存储 / 偏好 plist）：与目录一样做有限重试
+/// ——浏览器/WebKit 进程可能短暂占用。失败由调用方汇总为"延迟清理"。
+fn remove_file_retry(path: &std::path::Path) -> std::io::Result<()> {
+    const ATTEMPTS: u32 = 5;
+    const DELAY: Duration = Duration::from_millis(400);
+    for i in 0..ATTEMPTS {
+        match std::fs::remove_file(path) {
+            Ok(()) => return Ok(()),
+            Err(e) => {
+                if i + 1 == ATTEMPTS {
+                    return Err(e);
+                }
+                std::thread::sleep(DELAY);
+            }
+        }
+    }
+    unreachable!()
+}
+
+/// 卸载时要清理的路径——纯函数，便于审计与单测；调用方只按返回结果删除。
+///
+/// **安全约束（有单测守护，见 tests::uninstall_targets_only_touch_app_owned_paths）**：
+/// 每个返回路径的最后一段都必须包含本 App 的 bundle id（`APP_ID`），或者就是
+/// `app_data` 自身。换句话说，只会删「以本 App 命名」的目录/文件，
+/// **不会**返回 `~/Library/Preferences`、`~/Library/HTTPStorages`、`~/Library` 这类
+/// 共享父目录，也不含任何通配符 —— 因此不可能误删其它 App 或系统数据。
+/// 返回 (目录列表, 文件列表)。
+fn uninstall_targets(
+    home: &std::path::Path,
+    app_data: &std::path::Path,
+) -> (Vec<PathBuf>, Vec<PathBuf>) {
+    // app 数据目录（macOS: ~/Library/Application Support/<id>，Windows: %APPDATA%\<id>）
+    let mut dirs = vec![app_data.to_path_buf()];
     #[cfg(target_os = "macos")]
     {
-        dirs.push(home.join("Library/Caches").join(APP_ID));
-        dirs.push(home.join("Library/WebKit").join(APP_ID));
+        let lib = home.join("Library");
+        dirs.push(lib.join("Caches").join(APP_ID)); // WebView 资源缓存
+        dirs.push(lib.join("WebKit").join(APP_ID)); // WebView 存储（LocalStorage/IndexedDB）
+        dirs.push(
+            lib.join("Saved Application State")
+                .join(format!("{APP_ID}.savedState")),
+        );
     }
     #[cfg(target_os = "windows")]
     {
@@ -1856,31 +1886,70 @@ fn uninstall_teardown(p: &Paths, wipe_dsh: bool) -> Result<(), String> {
             dirs.push(strip_verbatim(PathBuf::from(local)).join(APP_ID));
         }
     }
-    // 目录级删除：失败不中断整体卸载。Caches/WebKit 常被 WebView 进程延迟占用
-    // （destroy 后 300ms 不够释放），失败项再等 1s 补删一轮（实测可清）。
+    #[cfg(target_os = "macos")]
+    let files = vec![
+        // 工作台认证用的 cookie 存储 —— 就是当初导致工作台空白（431）的那个文件。
+        // 卸载不删它，重装后旧 cookie 仍在（用户实测卸载残留）。
+        home.join("Library/HTTPStorages")
+            .join(format!("{APP_ID}.binarycookies")),
+        // 偏好（窗口位置等）
+        home.join("Library/Preferences")
+            .join(format!("{APP_ID}.plist")),
+    ];
+    #[cfg(not(target_os = "macos"))]
+    let files: Vec<PathBuf> = Vec::new();
+    (dirs, files)
+}
+
+/// 按 uninstall_targets 的结果删除：目录与文件各自有限重试，失败项汇总返回
+/// （调用方决定是否补删一轮）。失败不中断整体卸载。
+fn remove_uninstall_targets(dirs: &[PathBuf], files: &[PathBuf]) -> Vec<String> {
     let mut leftovers: Vec<String> = Vec::new();
-    for dir in &dirs {
+    for dir in dirs {
         if dir.exists() {
             if let Err(e) = remove_dir_all_retry(dir) {
                 leftovers.push(format!("{}（{e}）", dir.display()));
             }
         }
     }
-    if !leftovers.is_empty() {
-        std::thread::sleep(Duration::from_millis(1000));
-        let mut still: Vec<String> = Vec::new();
-        for dir in &dirs {
-            if dir.exists() {
-                if let Err(e) = remove_dir_all_retry(dir) {
-                    still.push(format!("{}（{e}）", dir.display()));
-                }
+    for f in files {
+        if f.exists() {
+            if let Err(e) = remove_file_retry(f) {
+                leftovers.push(format!("{}（{e}）", f.display()));
             }
         }
-        leftovers = still;
+    }
+    leftovers
+}
+
+fn uninstall_teardown(p: &Paths, wipe_dsh: bool) -> Result<(), String> {
+    kill_dsh();
+    let home = home_dir();
+    // 关闭日志句柄：当前进程持有 logs/launcher.log，Windows 共享锁下不关则
+    // 删除 app_data 必然 oserror 32。后续 logln 不再写文件（卸载流程无需日志）。
+    *mlock(&LOG_FILE) = None;
+    #[cfg(target_os = "macos")]
+    {
+        // 偏好域交给 cfprefsd 删除：只删文件的话它可能把缓存里的域写回磁盘，
+        // 于是"卸载后 Preferences 又出现"。域名为本 App 的 bundle id，精确无副作用。
+        let _ = std::process::Command::new("defaults")
+            .args(["delete", APP_ID])
+            .status();
+    }
+    let (dirs, files) = uninstall_targets(&home, &p.app_data);
+    // 目录/文件删除：失败不中断整体卸载。Caches/WebKit 常被 WebView 进程延迟占用
+    // （destroy 后 300ms 不够释放），失败项再等 1s 补删一轮（实测可清）。
+    let mut leftovers = remove_uninstall_targets(&dirs, &files);
+    if !leftovers.is_empty() {
+        std::thread::sleep(Duration::from_millis(1000));
+        leftovers = remove_uninstall_targets(&dirs, &files);
     }
     if !leftovers.is_empty() {
-        let msg = format!("以下目录被占用未能删除，重启电脑后即可手动清理：\n{}", leftovers.join("\n"));
-        logln!("[uninstall] 残留目录: {msg}");
+        let msg = format!(
+            "以下数据被占用未能删除，重启电脑后即可手动清理：\n{}",
+            leftovers.join("\n")
+        );
+        logln!("[uninstall] 残留: {msg}");
         notify("部分数据将延迟清理", &msg);
     }
     if wipe_dsh {
@@ -2149,6 +2218,8 @@ fn main() {
 
             let handle = app.handle().clone();
             init_log(&paths_from_app(app.handle()));
+            // 清扫更新器遗留的安装包（Windows 上「装完即删」执行不到，靠这里兜底）
+            crate::appupdate::sweep_stale_installers();
 
             // 主菜单（macOS 菜单栏）：「关于」→ 唤起主窗口并切到关于页（信息与
             // App 内关于页一致的内容走 metadata（macOS 系统关于面板支持
@@ -2466,6 +2537,42 @@ mod tests {
         assert_eq!(strip_verbatim_prefix(r"C:\foo"), None);
         assert_eq!(strip_verbatim_prefix(r"\\host\share\x"), None);
         assert_eq!(strip_verbatim_prefix(""), None);
+    }
+
+    /// 卸载误删防线：uninstall_targets 返回的每个路径都必须「以本 App 命名」
+    /// （末段含 bundle id）——这条不变量保证卸载不会删到共享父目录
+    /// （~/Library/Preferences、~/Library/HTTPStorages、~/Library…）或其它 App 的数据。
+    #[test]
+    fn uninstall_targets_only_touch_app_owned_paths() {
+        let home = PathBuf::from("/Users/someone");
+        let app_data = home.join("Library/Application Support").join(APP_ID);
+        let (dirs, files) = uninstall_targets(&home, &app_data);
+        assert!(dirs.contains(&app_data), "app_data 必须被清理");
+        let shared = [
+            "Library",
+            "Preferences",
+            "HTTPStorages",
+            "Caches",
+            "WebKit",
+            "Saved Application State",
+            "Application Support",
+        ];
+        for p in dirs.iter().chain(files.iter()) {
+            let name = p
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default();
+            assert!(
+                name.contains(APP_ID),
+                "卸载目标 {p:?} 的末段不含 App id，存在误删风险"
+            );
+            assert!(!shared.contains(&name.as_str()), "卸载目标 {p:?} 是共享父目录");
+        }
+        // 共享目录的父路径也绝不能被当作目标
+        for p in dirs.iter().chain(files.iter()) {
+            assert_ne!(p, &home);
+            assert_ne!(p, &home.join("Library"));
+        }
     }
 
     #[test]

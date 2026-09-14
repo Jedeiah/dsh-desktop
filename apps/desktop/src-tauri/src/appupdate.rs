@@ -131,15 +131,19 @@ pub async fn app_update_cmd(
     crate::ensure_shell_webview(&webview)?;
     let ver = latest_app_version()?;
     let url = asset_url(&ver).ok_or_else(|| "当前平台暂不支持自动安装".to_string())?;
-    let tmp = std::env::temp_dir().join(format!("dsh-desktop-update-{ver}"));
-    let installer = match asset_url(&ver) {
-        Some(u) if u.ends_with(".dmg") => tmp.with_extension("dmg"),
-        Some(u) if u.ends_with(".exe") => tmp.with_extension("exe"),
-        _ => return Err("未知安装包类型".to_string()),
+    // 文件名显式拼装，**不要**用 Path::with_extension：它会把 "0.4.2" 的 ".2" 当扩展名
+    // 替换掉，生成 dsh-desktop-update-0.4.dmg（版本号被截断，且 0.4.2 / 0.4.3 会撞名）。
+    let installer = if url.ends_with(".dmg") {
+        std::env::temp_dir().join(format!("dsh-desktop-update-{ver}.dmg"))
+    } else if url.ends_with(".exe") {
+        std::env::temp_dir().join(format!("dsh-desktop-update-{ver}.exe"))
+    } else {
+        return Err("未知安装包类型".to_string());
     };
-    let _ = std::fs::remove_file(&installer);
+    let _ = std::fs::remove_file(&installer); // 清掉同版本的历史残留
 
-    tauri::async_runtime::spawn_blocking(move || {
+    let cleanup = installer.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
         let dest = installer.clone();
         download_installer(&url, &dest)?;
         #[cfg(target_os = "macos")]
@@ -149,11 +153,51 @@ pub async fn app_update_cmd(
         Ok::<(), String>(())
     })
     .await
-    .map_err(|e| format!("更新线程异常：{e}"))??;
+    .map_err(|e| format!("更新线程异常：{e}"))?;
+
+    // 安装包用完即删（成功失败都删）：否则每次更新都把整个包留在临时区
+    // （macOS DMG ≈54MB、Windows setup.exe ≈30MB；用户实测残留 dsh-desktop-update-0.4.dmg）。
+    // macOS 此刻已 hdiutil detach、重启交给独立延迟进程，删除安全。
+    // Windows 走不到这里（/S 安装器在安装开始就杀掉本进程，见 install_windows 注释），
+    // 那种情况由下次启动的 sweep_stale_installers 兜底。
+    let _ = std::fs::remove_file(&cleanup);
+    result?;
 
     // 安装成功 → 退出当前实例（安装器/新版会负责启动）
     app.exit(0);
     Ok(())
+}
+
+/// 启动时清扫更新器遗留的安装包。存在的必要性（Windows）：`/S` 安装器在安装 Section
+/// 开头就 KillProcessCurrentUser，所以「装完即删」的代码根本执行不到，残留只能在
+/// **下一次启动**（新版起来、安装器早已退出）时清掉。
+pub fn sweep_stale_installers() {
+    let Ok(rd) = std::fs::read_dir(std::env::temp_dir()) else {
+        return;
+    };
+    for e in rd.flatten() {
+        let name = e.file_name().to_string_lossy().to_string();
+        let age = e
+            .metadata()
+            .ok()
+            .and_then(|m| m.modified().ok())
+            .and_then(|t| t.elapsed().ok());
+        if is_stale_installer(&name, age) {
+            crate::logln(&format!("[update] 清理遗留安装包: {}", e.path().display()));
+            let _ = std::fs::remove_file(e.path());
+        }
+    }
+}
+
+/// 更新包在临时区的保留时长上限：超过才清（正在进行的更新刚下载完，mtime 很新，
+/// 绝不会被误删——这是"下一次启动清扫"能安全落地的关键）。
+const STALE_INSTALLER_AGE: Duration = Duration::from_secs(3600);
+
+/// 是否属于「本 App 的、已过期的更新包」——纯函数便于测试。
+/// 只认固定前缀 `dsh-desktop-update-`，不做通配匹配，因此不会波及临时区其它文件。
+fn is_stale_installer(name: &str, age: Option<Duration>) -> bool {
+    name.starts_with("dsh-desktop-update-")
+        && age.map(|d| d > STALE_INSTALLER_AGE).unwrap_or(false)
 }
 
 /// 从 `hdiutil attach -plist` 的 XML 输出解析挂载点。
@@ -313,5 +357,19 @@ mod tests {
         // 无挂载点（attach 失败/无卷）→ None
         assert_eq!(parse_mount_point("<plist><dict></dict></plist>"), None);
         assert_eq!(parse_mount_point(""), None);
+    }
+
+    #[test]
+    fn stale_installer_sweep_is_conservative() {
+        let old = Some(Duration::from_secs(7200));
+        let fresh = Some(Duration::from_secs(60));
+        // 只清「本 App 前缀 + 已过期」的文件
+        assert!(is_stale_installer("dsh-desktop-update-0.4.2.dmg", old));
+        assert!(is_stale_installer("dsh-desktop-update-0.4.2.exe", old));
+        assert!(!is_stale_installer("dsh-desktop-update-0.4.2.dmg", fresh)); // 刚下载的安装包不能删
+        assert!(!is_stale_installer("dsh-desktop-update-0.4.2.dmg", None)); // 拿不到 mtime → 保守不动
+        // 非本 App 文件一律不碰（临时区还有别的程序的文件）
+        assert!(!is_stale_installer("other-app.dmg", old));
+        assert!(!is_stale_installer("DSH-notes.txt", old));
     }
 }

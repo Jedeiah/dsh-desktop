@@ -62,6 +62,9 @@
 | 5.3 | Windows 唯一卸载链 | 安装后从「设置 → 应用」触发卸载 | 唤起系统卸载器，程序文件与数据彻底清理（`uninstall.exe` 内置同款清理） | |
 | 5.4 | Windows 静默卸载 | 安装版点「仅卸载应用」→ 确认 | 不再出现系统卸载器确认页（`/S` 静默）；程序文件、注册表项、快捷方式被删除；应用数据/WebView 缓存被清理；`~/.dsh` 保留 | |
 | 5.5 | Windows 便携版卸载 | 解压版运行中点「仅卸载应用」→ 确认 | 无 `uninstall.exe` → App 自行清理应用数据/WebView 缓存 → 退出；通知提示便携版需手动删除所在文件夹 | |
+| 5.6 | 卸载无残留（macOS） | 卸载后检查 `~/Library/` 下 `Application Support`、`Caches`、`WebKit`、`HTTPStorages`、`Preferences`、`Saved Application State` 里本 App 条目 | **全部不存在**（尤其是 `<bundle-id>.binarycookies` 与 `<bundle-id>.plist`）；`~/.dsh` 按所选档位保留/删除 | |
+| 5.7 | 卸载无残留（Windows） | 卸载后检查 `%APPDATA%`、`%LOCALAPPDATA%` 下本 App 条目 | 全部不存在；`~/.dsh`（`%USERPROFILE%\.dsh`）按所选档位保留/删除 | |
+| 5.8 | 更新包不留残留 | 走一次 App 内更新，更新后看临时目录 | 无 `dsh-desktop-update-*` 文件（Windows 上因安装器先杀进程，最迟在下次启动时被清扫，日志出现「清理遗留安装包」） | |
 
 ## 5b. 快捷键与托盘
 
