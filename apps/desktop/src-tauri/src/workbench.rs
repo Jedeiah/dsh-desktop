@@ -767,6 +767,10 @@ pub fn workbench_set_collapsed_cmd(app: AppHandle, collapsed: bool) {
                 return;
             }
             let ok = apply_bounds_on_main(&a);
+            // 壳页裁切高度也要跟着折叠态走（展开 = 顶栏高、折叠 = 把手条高）：这个函数
+            // 原本只在 show/hide 与 resize 时调用，切换折叠后会留着上一个高度 ——
+            // 折叠态下壳页多占 18pt，在工作台顶部压出一条壳页色带（观感"抖/跳"）。
+            apply_shell_clip_on_main(&a);
             crate::logln(&format!("[workbench] 折叠动画完成（应用几何: {ok}）"));
         });
     });
