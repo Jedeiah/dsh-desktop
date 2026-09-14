@@ -753,13 +753,21 @@ pub fn workbench_set_collapsed_cmd(app: AppHandle, collapsed: bool) {
             }
             std::thread::sleep(STEP);
         }
-        // 收尾：精确落位（含最终尺寸，一次到位）
+        // 收尾：精确落位（含最终尺寸，一次到位）。
+        // **必须尊重 SUPPRESSED**（抽屉/命令面板占用工作区）：apply_bounds_on_main 不带
+        // 这个守卫，直接调会把工作台移回窗口内、盖住浮层——用户实测「抽屉开着点『收起
+        // 导航栏』会跳到工作台」（本函数此前漏了守卫，sync_bounds 里是有的）。
         let a = app2.clone();
         let _ = a.clone().run_on_main_thread(move || {
-            if ANIM_GEN.load(Ordering::SeqCst) == gen {
-                let ok = apply_bounds_on_main(&a);
-                crate::logln(&format!("[workbench] 折叠动画完成（应用几何: {ok}）"));
+            if ANIM_GEN.load(Ordering::SeqCst) != gen {
+                return;
             }
+            if SUPPRESSED.load(Ordering::SeqCst) {
+                crate::logln("[workbench] 折叠动画收尾：工作台被浮层占用，跳过落位");
+                return;
+            }
+            let ok = apply_bounds_on_main(&a);
+            crate::logln(&format!("[workbench] 折叠动画完成（应用几何: {ok}）"));
         });
     });
 }

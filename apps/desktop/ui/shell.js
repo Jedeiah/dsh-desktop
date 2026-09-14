@@ -289,7 +289,25 @@
       get label() { return chromeCollapsed ? '展开导航栏' : '收起导航栏'; },
       get hint() { return chromeCollapsed ? '恢复顶栏与导航区' : '折叠顶栏以扩展工作区'; },
       icon: ICON.chevron,
-      run: () => setChromeCollapsed(!chromeCollapsed),
+      run: () => {
+
+        // 与折叠按钮的防误触守卫一致：抽屉占用工作区时不折叠。折叠会让顶栏消失、抽屉顶到
+
+        // 窗口最上沿（`.chrome-collapsed .drawer { top: 0 }`），看起来像"导航栏里显示了
+
+        // 抽屉内容"（用户实测）；而且此时用户刚点完面板里的命令，容易误触发。
+
+        if ($('drawer').classList.contains('open')) {
+
+          toast('请先收起管理抽屉', 'err');
+
+          return;
+
+        }
+
+        setChromeCollapsed(!chromeCollapsed);
+
+      },
     },
   ];
   let region = 'workbench';
