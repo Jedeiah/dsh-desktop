@@ -818,11 +818,22 @@ fn slide_bounds_on_main(app: &AppHandle, e: f64) {
     let tb = (titlebar_pt_for_window(&window) * scale).round() as u32;
     let open = geom(size.width, size.height, scale, false);
     let shut = geom(size.width, size.height, scale, true);
-    let y = (open.y as f64 + (shut.y - open.y) as f64 * e).round() as i32 + tb as i32;
-    let h = open.h.max(shut.h).saturating_sub(tb);
+    // **按方向取起止**：e=0 必须是"切换前"的几何、e=1 是"切换后"的几何。COLLAPSED 在
+    // 命令入口就已置为目标态，据此判定方向即可。曾经这里写死 open→shut，于是**展开动画
+    // 会先滑向折叠态、再被收尾一步拽回来**——逐帧采样实测到「781→753→…→781→753」这种
+    // 来回，这就是用户看到的"展开抖两下"。
+    let (from, to) = if COLLAPSED.load(Ordering::SeqCst) {
+        (&open, &shut) // 折叠：open → shut
+    } else {
+        (&shut, &open) // 展开：shut → open
+    };
+    // y 与 h **一起**插值（同一条缓动）：两态的 y+h 都等于窗口底边，线性插值后底边始终钉在
+    // 窗口底部 —— 动画只表现为「顶边伸缩」一段连续运动。
+    let y = (from.y as f64 + (to.y - from.y) as f64 * e).round() as i32 + tb as i32;
+    let h = (from.h as f64 + (to.h as f64 - from.h as f64) * e).round() as u32;
     let rect = Rect {
         position: Position::Physical(PhysicalPosition::new(open.x, y)),
-        size: Size::Physical(PhysicalSize::new(open.w, h)),
+        size: Size::Physical(PhysicalSize::new(open.w, h.saturating_sub(tb))),
     };
     let _ = wv.set_bounds(rect);
 }
