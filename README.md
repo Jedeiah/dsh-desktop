@@ -146,6 +146,12 @@ xattr -dr com.apple.quarantine "/Applications/DeepSeek Harness Desktop.app"
 3. 安装过程可**随时取消**（不影响任何数据）；失败会给出错误与**重试**；
 4. 装完自动启动 dsh web，窗口里显示工作台。
 
+<p align="center">
+  <img src="docs/images/setup.png" alt="首次启动引导页：准备 dsh 运行时" width="100%">
+  <br>
+  <sub>首次启动的引导页：默认装 latest，可展开「高级选项」改 Registry 源与指定版本</sub>
+</p>
+
 之后每次启动都是秒进工作台（无需再安装）。
 
 ---
