@@ -163,7 +163,13 @@ xattr -dr com.apple.quarantine "/Applications/DeepSeek Harness Desktop.app"
 <p align="center">
   <img src="docs/images/drawer.png" alt="管理抽屉：插件分段" width="100%">
   <br>
-  <sub>管理抽屉（图为「插件」分段）。打开抽屉/命令面板时工作台会按设计让位，收起后自动归位</sub>
+  <sub>管理抽屉（图为「插件」分段）。抽屉 / 命令面板打开时工作台会按设计让位，收起后自动归位</sub>
+</p>
+
+<p align="center">
+  <img src="docs/images/palette.png" alt="命令面板（⌘K）：搜索区域与命令" width="100%">
+  <br>
+  <sub>命令面板（<code>⌘K</code>）：搜区域、搜命令，回车即执行</sub>
 </p>
 
 - **顶栏**：左侧「工作台」（单击刷新工作台，双击在系统浏览器打开当前地址）；右侧「管理」与「收起导航栏」。

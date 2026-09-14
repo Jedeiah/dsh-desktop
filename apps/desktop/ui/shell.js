@@ -503,6 +503,10 @@
   function openPalette() {
     paletteOpen = true;
     resetPageScroll();
+    // 面板背后就是氛围层的信息卡（工作台地址 / dsh 版本）：openDrawer 一直会刷新，
+    // 面板这条路径漏了——先开面板再开抽屉之前，卡片显示的是「工作台 — / dsh —」
+    // （真机截图可见）。两条浮层入口都刷新一次。
+    refreshAmbientInfo();
     const gen = ++overlayGen;
     // 先解裁再显示（同抽屉，见 afterUnclip）：面板是 fixed inset:0，被裁到 36pt 时
     // 首帧只有那条细高度，解裁后才跳成整幅。
