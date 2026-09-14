@@ -1291,6 +1291,7 @@
         const title = document.createElement('span');
         title.className = 'row-title mono';
         title.textContent = p.name;
+        title.title = p.name; // 名称过长时行内省略号截断，hover 看全
         grow.appendChild(title);
         if (p.installed) {
           const b = document.createElement('span');
@@ -1303,9 +1304,10 @@
         const meta = document.createElement('span');
         meta.className = 'row-meta mono';
         // 来源 + 名称：npm 显示版本 spec、Git/URL 显示来源类型、本地插件显示清理后的
-        // 绝对路径（后端 list_installed_plugins 分类；本地路径较长，悬浮看全）
+        // 绝对路径（后端 list_installed_plugins 分类）。可能很长 → 行内省略号截断，
+        // 完整值挂 title 供 hover 查看。
         meta.textContent = p.source_label || (p.version ? 'v' + p.version : '');
-        if (p.source === 'local') meta.title = p.source_label;
+        meta.title = meta.textContent;
         row.appendChild(meta);
         if (p.installed) {
           const btn = document.createElement('button');

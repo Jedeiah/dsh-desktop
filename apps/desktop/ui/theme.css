@@ -555,7 +555,13 @@ body.chrome-collapsed .drawer { top: 0; }
 .list-row:hover { background: var(--surface-2); }
 .list-row .grow { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; }
 .row-title { font-size: var(--fs-body); font-weight: 600; color: var(--fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.row-meta { font-size: var(--fs-aux); color: var(--fg-subtle); flex: none; }
+.row-meta {
+  font-size: var(--fs-aux); color: var(--fg-subtle);
+  /* 可收缩 + 省略号：插件来源/本地路径可能很长（本地安装显示绝对路径），原
+     flex:none 会把抽屉顶出横向滚动条或折行撑高整行。完整值由 JS 挂 title，hover 看全 */
+  flex: 0 1 auto; min-width: 0; max-width: 46%;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 .empty {
   margin-top: 8px; padding: 22px 14px; text-align: center;
   border: 1px dashed var(--border); border-radius: var(--r-sm);
