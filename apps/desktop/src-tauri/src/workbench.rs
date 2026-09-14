@@ -33,7 +33,9 @@ pub const HANDLE_H_LOGICAL: f64 = 8.0;
 ///   h = frame 高 − 标题栏 − 顶栏（不减标题栏 → 底部超出窗口被裁，「显示不全」）
 #[cfg(target_os = "macos")]
 pub const TITLEBAR_H_PT: f64 = 32.0;
+// 非 macOS 恒为 0，只在 macOS 的几何计算里被读取——Windows 的 `-D warnings` 会判死代码
 #[cfg(not(target_os = "macos"))]
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub const TITLEBAR_H_PT: f64 = 0.0;
 
 /// 折叠态工作台顶部偏移：展开 = 顶栏高；折叠 = 把手条高。

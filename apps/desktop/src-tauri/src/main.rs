@@ -1218,6 +1218,8 @@ fn kill_stale_children(app: &AppHandle) {
 /// 命令行是否属于「本 App 安装 dsh 时启动的 pnpm」——纯函数便于单测。
 /// 命中条件：本 App app-data 下的 dsh 路径（`--store-dir .../dsh/pnpm-store` 必然含它）
 /// + pnpm + --store-dir + 安装目标 @deepseek-ai/dsh。四个条件同时在，误判概率极低。
+// 调用点只在 unix 分支（清理残留子进程）+ 单测；Windows 的非测试构建里是死代码
+#[cfg_attr(not(unix), allow(dead_code))]
 fn is_stale_pnpm_cmdline(cmdline: &str, closure_dir: &std::path::Path) -> bool {
     cmdline.contains(&closure_dir.to_string_lossy().to_string())
         && cmdline.contains("pnpm")
@@ -1227,6 +1229,8 @@ fn is_stale_pnpm_cmdline(cmdline: &str, closure_dir: &std::path::Path) -> bool {
 
 /// 命令行是否属于「本 App 闭包启动的 dsh 进程」——纯函数便于单测。
 /// 三个条件同时满足才算：本 App app-data 下的 dsh 路径 + bin.js + --profile。
+// 同上：unix 分支与单测使用，Windows 非测试构建里是死代码
+#[cfg_attr(not(unix), allow(dead_code))]
 fn is_stale_dsh_cmdline(cmdline: &str, closure_dir: &std::path::Path) -> bool {
     cmdline.contains(&closure_dir.to_string_lossy().to_string())
         && cmdline.contains("bin.js")
@@ -2129,6 +2133,9 @@ fn remove_file_retry(path: &std::path::Path) -> std::io::Result<()> {
 /// **不会**返回 `~/Library/Preferences`、`~/Library/HTTPStorages`、`~/Library` 这类
 /// 共享父目录，也不含任何通配符 —— 因此不可能误删其它 App 或系统数据。
 /// 返回 (目录列表, 文件列表)。
+// Windows 分支只用 app_data（`home` 仅 macOS 的 Library 路径需要）——CI 在 Windows 上
+// 以 `-D warnings` 跑 clippy，未使用参数会直接失败，故精确豁免而不改签名。
+#[cfg_attr(target_os = "windows", allow(unused_variables))]
 fn uninstall_targets(
     home: &std::path::Path,
     app_data: &std::path::Path,
