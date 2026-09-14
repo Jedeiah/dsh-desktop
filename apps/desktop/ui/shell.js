@@ -65,6 +65,10 @@
 
   // ---------------- Toast（短反馈，2.8s 消失） ----------------
   function toast(msg, kind) {
+    // 壳页在「工作台可见且无浮层」时被原生裁到只剩顶栏（视口 36px/8px，见
+    // apply_shell_clip_on_main）：此时任何 HTML 提示都只能挤在那一条里，必然盖住
+    // 「工作台 / 管理」且被裁断（用户反馈），而这类动作通常已有可见结果。故直接跳过。
+    if (window.innerHeight < 120) return;
     const el = document.createElement('div');
     el.className = 'toast';
     const iconCls = kind === 'ok' ? 't-ok' : kind === 'err' ? 't-err' : 't-acc';
@@ -227,8 +231,9 @@
   });
   $('brand').addEventListener('dblclick', () => {
     clearTimeout(brandTimer);
+    // 不再弹 toast：动作本身（浏览器起来）就是反馈，而壳页被裁到只剩顶栏时 toast 只能
+    // 压在那 36px 里、还会盖住「工作台/管理」（用户反馈）。
     invoke('open_workbench_url_cmd').catch(() => {});
-    toast('已在浏览器打开工作台地址');
   });
 
   // ---------------- 顶栏折叠（状态记忆；Rust 几何联动 workbench_set_collapsed_cmd） ----------------
@@ -279,7 +284,7 @@
   ];
   const COMMANDS = [
     { id: 'refresh', label: '刷新工作台', hint: '重新加载 dsh 工作台', icon: ICON.refresh, run: () => invoke('workbench_reload_cmd').catch(() => {}) },
-    { id: 'openBrowser', label: '在浏览器打开工作台', hint: '用系统默认浏览器打开当前 dsh 地址', icon: ICON.external, run: () => { invoke('open_workbench_url_cmd').catch(() => {}); toast('已在浏览器打开工作台地址'); } },
+    { id: 'openBrowser', label: '在浏览器打开工作台', hint: '用系统默认浏览器打开当前 dsh 地址', icon: ICON.external, run: () => { invoke('open_workbench_url_cmd').catch(() => {}); } },
     { id: 'checkDsh', label: '检查 dsh 更新', hint: '立即检查 dsh 运行时新版本', icon: ICON.terminal, run: () => { openDrawer('dsh'); checkDsh(); } },
     { id: 'checkApp', label: '检查应用更新', hint: '检查 DeepSeek Harness Desktop 更新', icon: ICON.info, run: () => { openDrawer('about'); checkApp(); } },
     // label/hint 用 getter：命令面板每次渲染都会取到当前折叠态对应的文案
@@ -290,23 +295,14 @@
       get hint() { return chromeCollapsed ? '恢复顶栏与导航区' : '折叠顶栏以扩展工作区'; },
       icon: ICON.chevron,
       run: () => {
-
-        // 与折叠按钮的防误触守卫一致：抽屉占用工作区时不折叠。折叠会让顶栏消失、抽屉顶到
-
-        // 窗口最上沿（`.chrome-collapsed .drawer { top: 0 }`），看起来像"导航栏里显示了
-
-        // 抽屉内容"（用户实测）；而且此时用户刚点完面板里的命令，容易误触发。
-
-        if ($('drawer').classList.contains('open')) {
-
+        // 只挡「收起」：抽屉占用工作区时折叠会让顶栏消失、抽屉顶到窗口最上沿
+        // （`.chrome-collapsed .drawer { top: 0 }`），观感像"导航栏里显示了抽屉内容"（实测）；
+        // 「展开」必须放行——顶部把手此时本来就点得动，命令不能比它更严（用户实测）。
+        if (!chromeCollapsed && $('drawer').classList.contains('open')) {
           toast('请先收起管理抽屉', 'err');
-
           return;
-
         }
-
         setChromeCollapsed(!chromeCollapsed);
-
       },
     },
   ];
