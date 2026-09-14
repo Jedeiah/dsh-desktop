@@ -2917,7 +2917,13 @@ mod tests {
     /// （~/Library/Preferences、~/Library/HTTPStorages、~/Library…）或其它 App 的数据。
     #[test]
     fn uninstall_targets_only_touch_app_owned_paths() {
-        let home = PathBuf::from("/Users/someone");
+        // 假 home 必须是**平台合法**的绝对路径：Windows 上 `/Users/...` 没有盘符前缀，
+        // `Path::is_absolute()` 为 false（CI 的 Windows job 正是这样挂过一次）。
+        let home = if cfg!(windows) {
+            PathBuf::from(r"C:\Users\someone")
+        } else {
+            PathBuf::from("/Users/someone")
+        };
         let app_data = home.join("Library/Application Support").join(APP_ID);
         let (dirs, files) = uninstall_targets(&home, &app_data);
         assert!(dirs.contains(&app_data), "app_data 必须被清理");
