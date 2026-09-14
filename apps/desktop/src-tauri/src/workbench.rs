@@ -78,6 +78,27 @@ s.textContent='html,body{background:#151517 !important}';
 (e.head||e).appendChild(s);
 }catch(_){}})();"#;
 
+/// 注入 dsh 页面 document-start 的壳层快捷键转发：工作台是独立原生 webview，
+/// 壳页的 window keydown 收不到这里的按键（同 shell.js ⌘C 注释的限制）；Windows
+/// 又没有系统菜单加速键可代劳，导致焦点在工作台时快捷键全部失效（用户实测）。
+/// 把 App 级组合键（MOD+K / MOD+1–4）以 `shell:shortcut` 事件发回壳页统一处理。
+/// 不转发 Esc 等单键——dsh 页面自身可能有用，不能干扰。macOS 上 ⌘K 会被系统
+/// 菜单加速键优先接管，本脚本收不到也无需（菜单已转发）；⌘1–4 无菜单加速键，
+/// 恰好由本脚本补齐。
+const SHORTCUT_FORWARD_JS: &str = r#"(function(){try{
+var mac=/Mac/i.test(navigator.platform||navigator.userAgent||'');
+window.addEventListener('keydown',function(e){
+  var mod=mac?e.metaKey:e.ctrlKey;
+  if(!mod||e.altKey||e.shiftKey)return;
+  var k=e.key,cmd=null;
+  if(k==='k'||k==='K')cmd='k';
+  else if(k==='1'||k==='2'||k==='3'||k==='4')cmd=k;
+  if(!cmd)return;
+  e.preventDefault();e.stopPropagation();
+  try{window.__TAURI__&&window.__TAURI__.event&&window.__TAURI__.event.emit('shell:shortcut',cmd);}catch(_){}
+});
+}catch(_){}})();"#;
+
 /// child webview 标签（同时作为降级窗口的 label）。
 pub const LABEL: &str = "workbench";
 /// 降级窗口标题。
@@ -226,6 +247,7 @@ fn ensure_ready_on_main(app: &AppHandle, url: &str) -> bool {
     }
     let builder = WebviewBuilder::new(LABEL, WebviewUrl::External(parsed))
         .initialization_script(DARK_BG_JS)
+        .initialization_script(SHORTCUT_FORWARD_JS)
         .on_navigation(crate::webview_navigation_policy)
         .on_new_window(crate::webview_new_window_policy)
         .on_page_load(|wv, payload| {
@@ -528,6 +550,7 @@ fn open_fallback_window(app: &AppHandle, url: &str) {
         .inner_size(1280.0, 820.0)
         .min_inner_size(800.0, 560.0)
         .theme(Some(tauri::Theme::Dark))
+        .initialization_script(SHORTCUT_FORWARD_JS) // 降级窗口同样是独立 webview，快捷键同样需要转发
         .on_navigation(crate::webview_navigation_policy)
         .on_new_window(crate::webview_new_window_policy)
         .build();

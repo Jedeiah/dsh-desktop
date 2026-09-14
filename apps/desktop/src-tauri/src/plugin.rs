@@ -22,9 +22,16 @@ static PLUGIN_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 /// 单个已声明插件的展示信息。
 #[derive(Serialize)]
 pub struct PluginInfo {
+    /// 依赖 key（＝插件包名；手动改过 package.json 时也可能是路径，操作需原样回传）
     pub name: String,
+    /// package.json 里的依赖 spec 原样值（registry 版本 / Git spec / 本地路径）
     pub version: String,
     pub installed: bool,
+    /// 来源类别：registry（npm）/ git / url / local（本地目录）
+    pub source: String,
+    /// 来源展示文案：`npm · ^1.2.0` / `Git 源` / `URL` / `本地 · D:\plugins\x`
+    /// （本地路径已去掉 file:/link: 前缀与 Windows verbatim `\\?\`）
+    pub source_label: String,
 }
 
 /// 读取 `profile_dir/package.json` 的 dependencies + devDependencies 得到插件列表，
@@ -43,16 +50,82 @@ pub fn list_installed_plugins(profile_dir: &std::path::Path) -> Vec<PluginInfo> 
             continue;
         };
         for (name, ver) in deps {
-            let installed = profile_dir.join("node_modules").join(name).is_dir();
+            let spec = ver.as_str().unwrap_or("");
+            let (source, source_label) = classify_source(name, spec);
+            // key 是路径的罕见形态（手动编辑过 package.json）：node_modules 下按末段查
+            let installed = if looks_like_local_path(name) {
+                let base = name.rsplit(['\\', '/']).next().unwrap_or(name);
+                profile_dir.join("node_modules").join(base).is_dir()
+            } else {
+                profile_dir.join("node_modules").join(name).is_dir()
+            };
             out.push(PluginInfo {
                 name: name.clone(),
-                version: ver.as_str().unwrap_or("").to_string(),
+                version: spec.to_string(),
                 installed,
+                source,
+                source_label,
             });
         }
     }
     out.sort_by(|a, b| a.name.cmp(&b.name));
     out
+}
+
+/// 形如本地路径：POSIX 绝对 `/…`、Windows 盘符 `X:\…` / `X:/…`、UNC `\\…`。
+/// dsh 把插件 spec 原样转发 pnpm，本地目录安装会以绝对路径落进 package.json
+/// 的依赖 spec（用户看到列表里出现 `…file:D:\plugins\x` 即是此形态）。
+fn looks_like_local_path(s: &str) -> bool {
+    let b = s.as_bytes();
+    if b.len() < 3 {
+        return false;
+    }
+    b[0] == b'/' || s.starts_with("\\\\") || (b[1] == b':' && matches!(b[2], b'\\' | b'/'))
+}
+
+/// 去掉本地依赖 spec 的协议前缀与 Windows verbatim 标记，得到可读路径。
+fn clean_local_spec(spec: &str) -> String {
+    let lower = spec.to_ascii_lowercase();
+    let mut t = if lower.starts_with("file://") {
+        &spec["file://".len()..]
+    } else if lower.starts_with("file:") {
+        &spec["file:".len()..]
+    } else if lower.starts_with("link:") {
+        &spec["link:".len()..]
+    } else {
+        spec
+    };
+    // file:///D:/x 形态会剩一个多余前导 `/`；\\?\D:\x 是 Windows verbatim 标记
+    if t.starts_with('/') && t.as_bytes().get(2) == Some(&b':') {
+        t = &t[1..];
+    }
+    if let Some(r) = t.strip_prefix(r"\\?\") {
+        t = r;
+    }
+    t.to_string()
+}
+
+/// 依据依赖 spec（key 为路径时兜底）判定来源类别与展示文案。
+fn classify_source(name: &str, spec: &str) -> (String, String) {
+    let lower = spec.to_ascii_lowercase();
+    let spec_is_local = lower.starts_with("file:")
+        || lower.starts_with("link:")
+        || looks_like_local_path(spec);
+    if spec_is_local || looks_like_local_path(name) {
+        let raw = if spec_is_local { spec } else { name };
+        return ("local".to_string(), format!("本地 · {}", clean_local_spec(raw)));
+    }
+    if lower.starts_with("github:")
+        || lower.starts_with("gitlab:")
+        || lower.starts_with("bitbucket:")
+        || lower.starts_with("git+")
+    {
+        return ("git".to_string(), "Git 源".to_string());
+    }
+    if lower.starts_with("https://") || lower.starts_with("http://") {
+        return ("url".to_string(), "URL".to_string());
+    }
+    ("registry".to_string(), format!("npm · {spec}"))
 }
 
 /// npm/pnpm 包规格宽松校验（spec V9 两级白名单）：
@@ -130,6 +203,18 @@ fn valid_pkg_name(s: &str) -> bool {
         }
     }
     true
+}
+
+/// 本地插件目录的绝对路径校验。dsh 把参数原样转发 pnpm（作为 CLI 参数，不经 shell），
+/// 所以：只接受绝对路径（POSIX `/…`、UNC `\\…`、盘符 `X:\…`/`X:/…`）；拒绝控制字符、
+/// 引号与 Windows 文件名非法字符；拒绝以 `-` 开头（防被 dsh/pnpm 当成选项）。
+/// 相对路径不支持——dsh/pnpm 按调用方 cwd 解析，而 App 的 cwd 不可预期。
+fn valid_local_path(s: &str) -> bool {
+    if s.is_empty() || s.len() > 1024 || s.starts_with('-') || !looks_like_local_path(s) {
+        return false;
+    }
+    s.bytes()
+        .all(|b| b >= 0x20 && b != 0x7f && !matches!(b, b'"' | b'<' | b'>' | b'|' | b'*' | b'?'))
 }
 
 /// 内置 pnpm 可执行文件名（prepare-resources 打包：macOS/Linux 产出 `pnpm`
@@ -412,14 +497,13 @@ fn run_dsh_plugin(
 /// pnpm 11 构建脚本门禁失败时自动补写 allowBuilds 并重试（最多 2 轮）。
 /// 最终仍失败时返回 Err（输出为错误信息），前端按失败态展示。
 ///
-/// 安全：仅接受来自壳页主窗口（label == WINDOW_LABEL）的调用。远程工作台
-/// 页面（http://127.0.0.1，含第三方插件 bundle）也能拿到 window.__TAURI__
-/// （withGlobalTauri），本校验把 plugin_op 的授权面收回到壳页窗口，防止远程
-/// 内容诱导安装任意 npm 包并执行其构建脚本。
-/// 管理命令只允许壳页调用。注意工作台现在是**顶层原生 child webview**（不再是
-/// iframe）：Tauri 的 IPC 与 `withGlobalTauri` 脚本按「webview 自身的主 frame」注入，
-/// 所以远程工作台同样能拿到 `window.__TAURI__` —— 安全边界完全依赖这里的
-/// `webview.label()` 校验（child 的 label 是 workbench，会被拒绝）。
+/// 安全：仅接受来自壳页主窗口（label == WINDOW_LABEL）的调用。工作台是**远程来源**
+/// （http://127.0.0.1，含第三方插件 bundle）的顶层原生 child webview：Tauri 对远程
+/// origin 默认拒绝 IPC（invoke key + ACL 双重要求，远程内容须由 capability 显式授权
+/// 才能调用任何命令，见 capabilities/workbench-shortcut.json 里唯一放行的
+/// `core:event:allow-emit`）——所以远程内容本就调不到本命令；这里的 label 校验是
+/// 第二道防线，防止将来给工作台加了别的授权时把 plugin_op 的授权面漏出去
+/// （否则远程内容可诱导安装任意 npm 包并执行其构建脚本）。
 /// **不要**把参数换回 `tauri::WebviewWindow`：add_child 之后主窗的
 /// `is_webview_window()` 恒为 false，会让命令直接失效（详见 main.rs
 /// `ensure_shell_webview` 注释）。
@@ -436,8 +520,14 @@ pub async fn plugin_op(
     if op != "add" && op != "remove" {
         return Err(format!("不支持的插件操作：{op}（仅支持 add / remove）"));
     }
-    if !valid_pkg_name(&pkg) {
-        return Err("包名不合法：支持 npm 包名（@scope/pkg）、Git 源（owner/repo、github:owner/repo、git+ssh://…、git+https://…、https://…）与 tarball URL；不允许空白、shell 特殊字符、以 - 开头的参数或本地路径".to_string());
+    // 本地目录与 npm/Git spec 分流校验：dsh 把参数原样转发 pnpm，绝对路径不受 cwd 影响
+    let ok = if looks_like_local_path(&pkg) {
+        valid_local_path(&pkg)
+    } else {
+        valid_pkg_name(&pkg)
+    };
+    if !ok {
+        return Err("安装目标不合法：支持 npm 包名（@scope/pkg）、Git/tarball 源（owner/repo、github:owner/repo、git+ssh://…、git+https://…、https://…tgz）或本地插件目录的绝对路径（如 D:\\plugins\\my-plugin）；路径不能含引号/通配符等特殊字符，任何形式都不能以 - 开头，也不支持相对路径".to_string());
     }
     // pnpm 可能运行数分钟：移到阻塞线程池执行，避免占用 Tauri 主线程
     // （否则安装期间 App UI / 托盘冻结）。PLUGIN_LOCK 在阻塞线程内获取释放。
@@ -488,6 +578,41 @@ mod tests {
     /// 的 test_dir：避免并发测试互删，且不在临时区留下空目录。
     fn test_dir(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!("plugin-test-{}-{name}", std::process::id()))
+    }
+
+    #[test]
+    fn plugin_source_classification() {
+        // 本地目录安装：pnpm 把绝对路径写进依赖 spec（用户看到 k:/D: 盘符即此形态）
+        let (s, l) = classify_source("my-plugin", r"file:D:\plugins\my-plugin");
+        assert_eq!(s, "local");
+        assert_eq!(l, r"本地 · D:\plugins\my-plugin");
+        let (s, l) = classify_source("my-plugin", "link:/Users/x/plugins/my-plugin");
+        assert_eq!(s, "local");
+        assert_eq!(l, "本地 · /Users/x/plugins/my-plugin");
+        // file:///D:/… 的多余前导斜杠与 verbatim 前缀都要清掉
+        assert_eq!(clean_local_spec("file:///D:/p/x"), "D:/p/x");
+        assert_eq!(clean_local_spec(r"\\?\D:\p\x"), r"D:\p\x");
+        // registry / Git / URL
+        assert_eq!(classify_source("a", "^1.2.0"), ("registry".into(), "npm · ^1.2.0".into()));
+        assert_eq!(classify_source("a", "github:o/r#v1"), ("git".into(), "Git 源".into()));
+        assert_eq!(classify_source("a", "https://x/y.tgz"), ("url".into(), "URL".into()));
+        // 依赖 key 本身是路径的罕见形态：按路径归类
+        let (s, l) = classify_source(r"D:\plugins\my-plugin", "");
+        assert_eq!(s, "local");
+        assert_eq!(l, r"本地 · D:\plugins\my-plugin");
+    }
+
+    #[test]
+    fn local_path_validation() {
+        assert!(looks_like_local_path(r"D:\plugins\my plugin"));
+        assert!(looks_like_local_path("/Users/x/p"));
+        assert!(!looks_like_local_path("D:relative") && !looks_like_local_path("@scope/pkg"));
+        assert!(valid_local_path(r"D:\plugins\my plugin")); // 空格可用（不经 shell）
+        assert!(valid_local_path("/Users/x/p"));
+        assert!(!valid_local_path("-D:\\plugins")); // 防参数混淆
+        assert!(!valid_local_path("relative\\path")); // 不支持相对路径
+        assert!(!valid_local_path(r"D:\plugins\a*b")); // Windows 非法字符
+        assert!(!valid_local_path("D:\\plugins\na"));
     }
 
     #[test]

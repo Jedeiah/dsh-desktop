@@ -32,6 +32,15 @@
     return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   }
 
+  // ---------------- 平台相关文案：macOS 显示 ⌘，其他平台显示 Ctrl+ ----------------
+  // HTML 里的快捷键键帽用 data-modkey="MODK" / "MOD1–4" 标记，运行时把 MOD 替换成
+  // ⌘（mac）或 Ctrl+（Win/Linux），两种平台都能得到习惯写法（⌘K / Ctrl+K）。
+  const IS_MAC = /Mac|iP(hone|ad|od)/i.test(navigator.platform || navigator.userAgent || '');
+  const MODKEY = IS_MAC ? '⌘' : 'Ctrl+';
+  document.querySelectorAll('[data-modkey]').forEach((el) => {
+    el.textContent = (el.getAttribute('data-modkey') || '').replace(/MOD/g, MODKEY);
+  });
+
   // ---------------- Toast（短反馈，2.8s 消失） ----------------
   function toast(msg, kind) {
     const el = document.createElement('div');
@@ -392,6 +401,27 @@
     paletteSel = paletteSel < regionCount - 1 ? paletteSel + 1 : 0;
     renderPalette($('paletteInput').value);
   }
+  // App 级组合键统一入口（MOD+K / MOD+1–4）。两个来源共用：
+  // 1) 壳页自身的 window keydown（焦点在壳页时）；
+  // 2) 工作台 webview 转发来的 shell:shortcut 事件（焦点在工作台时——它是独立
+  //    原生 webview，按键不会冒泡到壳页，由注入脚本 + capability 转发）。
+  function handleAppCombo(key) {
+    if (key === 'k') {
+      if (paletteOpen) cycleRegionSelection();
+      else openPalette();
+      return;
+    }
+    if (['1', '2', '3', '4'].includes(key)) {
+      // 面板开着时先收起，否则面板与抽屉两个浮层叠加、且工作台显隐会打架
+      if (paletteOpen) closePalette();
+      goRegion(REGIONS[Number(key) - 1].id);
+    }
+  }
+  // 工作台转发通道（workbench.rs SHORTCUT_FORWARD_JS → shell:shortcut）
+  T.event.listen('shell:shortcut', (e) => {
+    const k = String(e.payload || '').toLowerCase();
+    if (k === 'k' || ['1', '2', '3', '4'].includes(k)) handleAppCombo(k);
+  }).catch(() => {});
   $('paletteInput').addEventListener('input', function () { paletteSel = 0; renderPalette(this.value); });
   $('paletteInput').addEventListener('keydown', (e) => {
     if (e.key === 'ArrowDown') {
@@ -457,20 +487,14 @@
       navigator.clipboard.writeText(text).then(() => toast('已复制', 'ok')).catch(() => {});
       return;
     }
-    // ⌘K：命令面板 / 面板内循环区域
-    if ((e.metaKey || e.ctrlKey) && (e.key === 'k' || e.key === 'K')) {
-      e.preventDefault();
-      if (paletteOpen) cycleRegionSelection();
-      else openPalette();
-      return;
-    }
-    // ⌘1–⌘4：直达区域
-    if ((e.metaKey || e.ctrlKey) && ['1', '2', '3', '4'].includes(e.key)) {
-      e.preventDefault();
-      // 面板开着时先收起，否则面板与抽屉两个浮层叠加、且工作台显隐会打架
-      if (paletteOpen) closePalette();
-      goRegion(REGIONS[Number(e.key) - 1].id);
-      return;
+    // ⌘K / ⌘1–4（Windows 为 Ctrl+K / Ctrl+1–4）
+    if ((e.metaKey || e.ctrlKey) && !e.altKey) {
+      const k = e.key.toLowerCase();
+      if (k === 'k' || ['1', '2', '3', '4'].includes(k)) {
+        e.preventDefault();
+        handleAppCombo(k);
+        return;
+      }
     }
     // Esc：面板 → 抽屉 → 确认弹窗 逐级关闭
     if (e.key === 'Escape') {
@@ -581,6 +605,9 @@
     setupVerValue = v;
     setupVerLabel.textContent = 'v' + v;
     syncSetupVerDisplay(v);
+    // 从列表选了版本就清空手输框：runSetup 里手输值优先于列表值，留着旧手输值会
+    // 让人以为装的是刚选的那个版本（用户反馈）
+    verManual.value = '';
     if (!silent) closeSetupVerMenu();
   }
   function closeSetupVerMenu() {
@@ -1275,7 +1302,10 @@
 
         const meta = document.createElement('span');
         meta.className = 'row-meta mono';
-        meta.textContent = p.version ? 'v' + p.version : '';
+        // 来源 + 名称：npm 显示版本 spec、Git/URL 显示来源类型、本地插件显示清理后的
+        // 绝对路径（后端 list_installed_plugins 分类；本地路径较长，悬浮看全）
+        meta.textContent = p.source_label || (p.version ? 'v' + p.version : '');
+        if (p.source === 'local') meta.title = p.source_label;
         row.appendChild(meta);
         if (p.installed) {
           const btn = document.createElement('button');

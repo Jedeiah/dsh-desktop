@@ -1,0 +1,10 @@
+{
+  "identifier": "workbench-shortcut",
+  "description": "仅授予工作台（远程 dsh 页面，webview label = workbench）发送 shell:shortcut 事件的权限：工作台是独立原生 webview，壳页收不到它的按键，需要它把 Ctrl/⌘+K、Ctrl/⌘+1–4 转发回壳页。不授予其它任何权限——远程来源的普通命令仍被 Tauri 默认拒绝（远程 origin 必须显式授权），且本 capability 不含 app 命名空间权限，主窗自定义命令的既有行为不变。",
+  "local": false,
+  "remote": {
+    "urls": ["http://127.0.0.1:*", "http://localhost:*"]
+  },
+  "webviews": ["workbench"],
+  "permissions": ["core:event:allow-emit"]
+}

@@ -19,7 +19,7 @@
     <div class="ai-brand">DeepSeek Harness Desktop</div>
     <div class="ai-row"><span>工作台</span><b id="aiUrl">—</b></div>
     <div class="ai-row"><span>dsh</span><b id="aiDsh">—</b></div>
-    <div class="ai-keys"><kbd>⌘K</kbd> 管理面板 · <kbd>⌘1–4</kbd> 切换区域 · <kbd>Esc</kbd> 关闭浮层</div>
+    <div class="ai-keys"><kbd data-modkey="MODK">⌘K</kbd> 管理面板 · <kbd data-modkey="MOD1–4">⌘1–4</kbd> 切换区域 · <kbd>Esc</kbd> 关闭浮层</div>
   </div>
 
   <img class="ambient-mark" src="icon.png" alt="" />
@@ -37,7 +37,7 @@
     <div class="startup-stage">正在启动 dsh 工作台…</div>
     <div class="startup-meta" id="startupMeta"></div>
     <div class="startup-hint">dsh 就绪后自动进入，首次启动约需 10-30 秒</div>
-    <div class="startup-keys">按 <kbd>⌘K</kbd> 可随时打开管理面板</div>
+    <div class="startup-keys">按 <kbd data-modkey="MODK">⌘K</kbd> 可随时打开管理面板</div>
   </div>
 </div>
 
@@ -51,7 +51,7 @@
   <span class="chrome-spacer"></span>
 
   <button class="task-pill" id="taskPill" hidden aria-label="任务中心"></button>
-  <button class="manage-btn" id="btnManage">管理 <kbd>⌘K</kbd></button>
+  <button class="manage-btn" id="btnManage">管理 <kbd data-modkey="MODK">⌘K</kbd></button>
   <button class="icon-btn" id="btnCollapseChrome" title="收起导航栏" aria-label="收起导航栏">
     <svg class="ic" viewBox="0 0 20 20"><path d="M5 12.5l5-5 5 5"/></svg>
   </button>
@@ -119,6 +119,7 @@
           <input class="input mono" id="verInput" type="text" placeholder="输入版本号安装，如 0.1.1-rc.2" autocomplete="off" spellcheck="false" />
           <button class="btn ghost" id="btnInstallVer">安装</button>
         </div>
+        <div class="panel-hint">列表默认只显示最近 5 个版本；如需安装其它版本，直接在上方输入版本号。</div>
       </div>
     </section>
 
@@ -126,9 +127,9 @@
     <section class="drawer-section" data-section="plugins">
       <div class="panel">
         <div class="panel-title">安装插件</div>
-        <div class="panel-hint">支持 npm 包名（@scope/pkg）与 Git/tarball 源（owner/repo、github:owner/repo、git+ssh://…、git+https://…、https://…tgz），可用 #ref、#semver:、#path: 指定版本；操作完成后工作台自动重启</div>
+        <div class="panel-hint">支持 npm 包名（@scope/pkg）、Git/tarball 源（owner/repo、github:owner/repo、git+ssh://…、git+https://…、https://…tgz，可用 #ref、#semver:、#path: 指定版本），以及本地插件目录的绝对路径（如 D:\plugins\my-plugin）；操作完成后工作台自动重启</div>
         <div class="inline-form">
-          <input class="input mono" id="pkgInput" type="text" placeholder="例如 @your-scope/dsh-plugin-demo" spellcheck="false" />
+          <input class="input mono" id="pkgInput" type="text" placeholder="例如 @your-scope/dsh-plugin-demo，或本地插件目录的绝对路径" spellcheck="false" />
           <button class="btn" id="btnInstallPkg">安装</button>
           <button class="btn danger-ghost" id="btnRemovePkg">卸载</button>
         </div>
@@ -257,7 +258,7 @@
             </div>
             <input class="input mono" id="verManual" type="text" placeholder="或输入指定版本号（如 0.1.1-rc.2）" spellcheck="false" />
           </div>
-          <p class="adv-note">更改将应用于本次下载。Registry 源建议保持默认；改动后点「刷新版本」重新获取列表。</p>
+          <p class="adv-note">更改将应用于本次下载。列表默认只显示最近 5 个版本，其它版本请直接在上方版本号输入框输入；Registry 源建议保持默认，改动后点「刷新版本」重新获取列表。</p>
         </div>
       </details>
     </div>

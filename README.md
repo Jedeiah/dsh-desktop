@@ -92,7 +92,7 @@ powershell -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.c
 - **命令面板**：点顶栏「管理」或按 `⌘K`（Windows `Ctrl+K`），可就地搜索并直达区域或执行命令（刷新工作台、在浏览器打开工作台、检查 dsh / App 更新、收起导航栏）。
 - **管理抽屉**：右侧滑出的面板，分 **dsh / 插件 / 关于** 三个分段。
 
-快捷键：`⌘1`–`⌘4` 直达 工作台 / dsh / 插件 / 关于；`Esc` 逐级关闭 确认弹窗 → 命令面板 → 抽屉；单击左上角品牌 = 刷新工作台，双击 = 在系统浏览器打开当前工作台地址。工作台是独立原生 WebView：焦点在工作台内时，macOS 由系统菜单转发 `⌘K`，Windows 用顶栏按钮。
+快捷键：`⌘1`–`⌘4`（Windows `Ctrl+1`–`4`）直达 工作台 / dsh / 插件 / 关于；`⌘K`（Windows `Ctrl+K`）命令面板；`Esc` 逐级关闭 确认弹窗 → 命令面板 → 抽屉；单击左上角品牌 = 刷新工作台，双击 = 在系统浏览器打开当前工作台地址。工作台是独立原生 WebView，按键不会冒泡到壳页：macOS 上 `⌘K` 由系统菜单加速键接管；其余组合键（含 Windows 的 `Ctrl+K` / `Ctrl+1`–`4`）由注入工作台的转发脚本以 `shell:shortcut` 事件送回壳页处理（该事件是工作台唯一被授权的 IPC 能力，见 `capabilities/workbench-shortcut.json`）。
 
 | 操作 | macOS | Windows |
 |---|---|---|
@@ -120,8 +120,8 @@ powershell -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.c
 
 ### 3.5 插件管理（插件页）
 
-- **插件列表**：进入插件页自动读取 `~/.dsh/profiles/web` 已装插件（名称/版本/状态）。
-- **安装**：输入 npm 包名（如 `@your-scope/dsh-plugin-demo`）或 **Git/tarball 源**（`owner/repo`、`github:owner/repo`、`git+ssh://…`、`git+https://…`、`https://…tgz`，可用 `#ref`、`#semver:`、`#path:` 指定版本）→ 输出区**实时滚动**显示 pnpm 进度（下载、依赖解析、构建脚本等）→ 完成后退出码与结果。
+- **插件列表**：进入插件页自动读取 `~/.dsh/profiles/web` 已装插件，每行显示**名称 + 状态 + 来源**（`npm · 版本` / `Git 源` / `URL` / `本地 · 绝对路径`）。
+- **安装**：输入 npm 包名（如 `@your-scope/dsh-plugin-demo`）、**Git/tarball 源**（`owner/repo`、`github:owner/repo`、`git+ssh://…`、`git+https://…`、`https://…tgz`，可用 `#ref`、`#semver:`、`#path:` 指定版本），或**本地插件目录的绝对路径**（如 `D:\plugins\my-plugin`，相对路径不支持）→ 输出区**实时滚动**显示 pnpm 进度（下载、依赖解析、构建脚本等）→ 完成后退出码与结果。
 - **卸载**：插件行内「卸载」按钮 → 弹窗二次确认（危险色「卸载」）→ 确认后执行。
 - 安装/卸载写入 `~/.dsh/profiles/web`（与终端 dsh 完全共用）；**完成后自动重启工作台生效**（无需手动操作）。
 
@@ -258,7 +258,7 @@ resources/
 - **GC**：当前版本与上一版本始终各保留一份（约 300MB × 2，用于回滚）；更旧版本自动清理。
 - **失败安全**：切换前任何失败都不动当前版本；安装中可取消（SIGTERM / taskkill 子进程）。
 
-**插件管理**（`plugin.rs`）：壳页「插件」Tab（`shell.html`），经 `plugin_op`/`plugin_list_cmd` command 读写 `~/.dsh/profiles/web`（`dsh plugin --profile web add|remove <包名>`）：内置 pnpm（`resources/pnpm-bin`，PATH 前置）运行安装，stdout/stderr 逐行 `emit` 实时回显；安装前自动写入 profile 的 `pnpm-workspace.yaml` 门禁配置（`allowBuilds` + `minimumReleaseAge: 0`），`ERR_PNPM_IGNORED_BUILDS` 时解析包名自动补授权重试；卸载后清扫残留空目录。装/卸完成后自动重启工作台。命令仅接受壳页调用（webview label 校验），插件操作全局串行锁保护。工作台是独立原生 WebView 的顶层文档，它同样能拿到 `window.__TAURI__`，因此边界完全依赖 label 校验（工作台 label 不匹配 → 拒绝）。
+**插件管理**（`plugin.rs`）：壳页「插件」Tab（`shell.html`），经 `plugin_op`/`plugin_list_cmd` command 读写 `~/.dsh/profiles/web`（`dsh plugin --profile web add|remove <包名或本地路径>`）：内置 pnpm（`resources/pnpm-bin`，PATH 前置）运行安装，stdout/stderr 逐行 `emit` 实时回显；安装前自动写入 profile 的 `pnpm-workspace.yaml` 门禁配置（`allowBuilds` + `minimumReleaseAge: 0`），`ERR_PNPM_IGNORED_BUILDS` 时解析包名自动补授权重试；卸载后清扫残留空目录。装/卸完成后自动重启工作台。命令仅接受壳页调用：工作台是**远程来源**（`http://127.0.0.1`），Tauri 默认拒绝远程 origin 的 IPC（须显式授权），`plugin_op` 里的 label 校验作为第二道防线。插件操作全局串行锁保护。
 
 **app 数据目录**（卸载时整个删除；macOS 为 `~/Library/Application Support/…`，Windows 为 `%APPDATA%\…`）：
 
