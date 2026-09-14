@@ -18,10 +18,7 @@ APP="/Applications/${APP_NAME}.app"
 # （与 Rust 侧 is_stale_dsh_cmdline 的判定一致）。只匹配 bin.js --profile web 会把
 # 用户终端里手动跑的 dsh（同 profile、装在别处）一起杀掉。
 DSH_CLOSURE_DIR="${HOME}/Library/Application Support/com.dsh-desktop.app/dsh"
-# 限定 `--profile web`：App 恒定以 `--profile web --port 0` 启动闭包（main.rs:915-917），
-# 只认闭包路径 + bin.js + `--profile web`，既命中自己的进程，也不会误伤用户拿本 App 的
-# 闭包手动跑别的 profile 的进程（与 Rust 侧 is_stale_dsh_cmdline 的判定保持一致）。
-DSH_CHILD_PATTERN="${DSH_CLOSURE_DIR}/.*bin\.js --profile web"
+DSH_CHILD_PATTERN="${DSH_CLOSURE_DIR}/.*bin\.js --profile"
 
 # 架构判定：**先看是否处于 Rosetta 翻译**——被翻译的进程 `uname -m` 返回 x86_64，
 # 但机器其实是 Apple Silicon；只看 uname 会把这类终端（例如「用 Rosetta 打开」的
