@@ -1205,7 +1205,9 @@ fn kill_stale_children(app: &AppHandle) {
     {
         let needle = closure_dir.display().to_string().replace('\'', "''");
         let script = format!(
-            "Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {{ $_.ProcessId -ne {self_pid} -and $_.CommandLine -like '*{needle}*' -and ($_.CommandLine -match 'bin\\.js.*--profile' -or ($_.CommandLine -like '*pnpm*' -and $_.CommandLine -like '*--store-dir*' -and $_.CommandLine -like '*deepseek-ai/dsh*')) }} | ForEach-Object {{ taskkill /PID $_.ProcessId /T /F 2>$null | Out-Null }}"
+            // 闭包路径用 [regex]::Escape 精确匹配，不用 -like：路径含 [ ] 时 -like 会把它
+            // 当字符类，过滤恒不成立（漏杀）。
+            "Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {{ $_.ProcessId -ne {self_pid} -and $_.CommandLine -match [regex]::Escape('{needle}') -and ($_.CommandLine -match 'bin\\.js.*--profile' -or ($_.CommandLine -like '*pnpm*' -and $_.CommandLine -like '*--store-dir*' -and $_.CommandLine -like '*deepseek-ai/dsh*')) }} | ForEach-Object {{ taskkill /PID $_.ProcessId /T /F 2>$null | Out-Null }}"
         );
         let _ = no_console(Command::new("powershell"))
             .args(["-NoProfile", "-NonInteractive", "-Command", &script])

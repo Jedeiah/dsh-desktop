@@ -26,8 +26,9 @@
     ; 从系统"已安装的应用"卸载时确认页会出现，但该勾选框同样不影响本钩子——数据清理
     ; 始终发生（app 数据视为可再生成，见 uninstall_teardown）。若将来要尊重勾选，
     ; 需在此把状态作为参数传给 sidecar。
-    ; 结束运行实例 + 清理用户数据。nsExec::Exec 同步等待 sidecar 结束，
-    ; 但失败（退出码 / 超时）不中断卸载：用 ExecWait 拿退出码后忽略。
+    ; 结束运行实例 + 清理用户数据。ExecWait 同步等待 sidecar 结束并取退出码，
+    ; 失败（非 0）不中断卸载、直接继续删 $INSTDIR。注意：ExecWait **没有超时**——
+    ; sidecar 若挂住，卸载器会一起等下去（正常路径是它自己清完数据就退出）。
     ; ${MAINBINARYNAME} 在本处可用（installer.nsi:52 已定义；宏在 Section
     ; Uninstall 处展开时符号已就绪），指向本应用主程序。
     ExecWait '"$INSTDIR\${MAINBINARYNAME}.exe" --self-uninstall-full' $0

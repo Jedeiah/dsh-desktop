@@ -60,4 +60,21 @@ for c in changed:
     print("  changed:", c)
 if not changed:
     print("  (无变化——代码已是该版本)")
+
+# 后置一致性断言：5 处版本源必须真的等于 v。任一处模式没匹配上（源码被格式化/重排）
+# 以前会静默"成功"——CI 依 tag 重新 bump 后，CARGO_PKG_VERSION 与产物名/tauri.conf
+# 就会错位，App 自检永远提示有新版。宁可在这里失败。
+checks = {
+    "apps/desktop/src-tauri/Cargo.toml": rf'^version = "{v}"$',
+    "apps/desktop/src-tauri/Cargo.lock": rf'name = "dsh-desktop"\nversion = "{v}"',
+    "apps/desktop/src-tauri/tauri.conf.json": rf'"version": "{v}"',
+    "apps/desktop/ui/shell.html": rf'\?v={v}',
+    "apps/desktop/ui/modal.html": rf'\?v={v}',
+}
+missing = [f for f, pat in checks.items()
+           if not re.search(pat, pathlib.Path(f).read_text(encoding="utf-8"), flags=re.M)]
+if missing:
+    print("bump-version: 以下文件未同步到 " + v + "：" + ", ".join(missing), file=sys.stderr)
+    sys.exit(1)
+print("  verified: 5 处版本源已全部为", v)
 PY

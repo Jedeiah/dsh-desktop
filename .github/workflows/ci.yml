@@ -52,3 +52,19 @@ jobs:
         run: cd apps/desktop/src-tauri && cargo check
       - name: Cargo test
         run: cd apps/desktop/src-tauri && cargo test
+
+  scripts-syntax:
+    name: 安装/工具脚本语法
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      # 这些脚本从不参与构建，语法错误只会在用户机器上炸——这里做最低成本的解析检查
+      - name: bash -n（install.sh / prepare-resources.sh / bump-version.sh）
+        run: for f in scripts/*.sh; do echo "checking $f"; bash -n "$f"; done
+      - name: PowerShell 解析（install.ps1 / prepare-resources.ps1）
+        shell: pwsh
+        run: |
+          foreach ($f in 'scripts/install.ps1','scripts/prepare-resources.ps1') {
+            Write-Host "checking $f"
+            $null = [ScriptBlock]::Create((Get-Content -Raw $f))
+          }

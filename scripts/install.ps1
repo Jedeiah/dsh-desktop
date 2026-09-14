@@ -9,15 +9,22 @@
 #   - 下载 NSIS 安装器 → 静默安装 → 自动启动
 #   - 任何退出路径都清理临时文件
 $ErrorActionPreference = "Stop"
+# 关掉进度条渲染：Windows PowerShell 5.1 下 Invoke-WebRequest 的进度 UI 会显著拖慢
+# 大文件下载（31MB 的 setup.exe 容易撞上硬超时）。
+$ProgressPreference = 'SilentlyContinue'
 
 $Repo = "Jedeiah/dsh-desktop"
 $ExeName = "dsh-desktop.exe"
-# App 自己 dsh 子进程的命令行特征：必须是本 App 的闭包路径
-# (%LOCALAPPDATA%\com.dsh-desktop.app\dsh) 下的 bin.js --profile web。
-# 只匹配 bin.js --profile web 会把**用户自己在终端里跑的 dsh**（同 profile、装在别处）
-# 一起杀掉——与 Rust 侧 kill_stale_children 的判定保持一致。
-$DshClosureDir = Join-Path $env:LOCALAPPDATA "com.dsh-desktop.app\dsh"
-$DshChildPattern = "*bin.js*--profile*"
+# App 自己 dsh 子进程的特征：闭包路径必须落在本 App 的 app-data 下。
+# Windows 的 app-data 是 **%APPDATA%（Roaming）**\<id>（等于 Rust 侧
+# tauri app_data_dir()/dirs::data_dir() 的语义），闭包在 <app-data>\dsh；
+# 不是 %LOCALAPPDATA%（那里放的是 WebView2 数据）——旧写法用 LOCALAPPDATA 会让
+# 这段过滤恒不命中、升级前的子进程清理静默失效。
+# 另外只匹配 bin.js --profile web 会误杀用户终端里手动跑的 dsh。
+$DshClosureDirs = @(
+    (Join-Path $env:APPDATA "com.dsh-desktop.app\dsh"),
+    (Join-Path $env:LOCALAPPDATA "com.dsh-desktop.app\dsh")
+) | Where-Object { $_ }
 
 # --- 解析最新版本（走 github.com 跳转，绕开 api.github.com） ----------------
 Write-Host "==> 查询最新版本（$Repo）..."
@@ -55,7 +62,15 @@ try {
     }
     # 精确清掉 App 自己的 dsh 子进程（不匹配用户手动跑的 dsh）
     Get-CimInstance Win32_Process -Filter "Name = 'node.exe'" -ErrorAction SilentlyContinue |
-        Where-Object { $_.CommandLine -like $DshChildPattern -and $_.CommandLine -like "*$DshClosureDir*" } |
+        Where-Object {
+            $cl = $_.CommandLine
+            if (-not $cl -or $cl -notmatch 'bin\.js' -or $cl -notmatch '--profile') { return $false }
+            # 用 Contains 而不是 -like：路径里的 [ ] 会被 -like 当字符类，导致恒不匹配
+            foreach ($d in $DshClosureDirs) {
+                if ($d -and $cl.ToLower().Contains($d.ToLower())) { return $true }
+            }
+            return $false
+        } |
         ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
 
     # --- 下载安装器 ------------------------------------------------------
@@ -70,11 +85,17 @@ try {
     # 只取哈希、不比文件名（文件里记的是 CI 侧路径）。
     Write-Host "==> 校验下载完整性..."
     $Expect = $null
+    $SumFile = Join-Path $Tmp "setup.exe.sha256"
     try {
-        $SumText = (Invoke-WebRequest -Uri "$SetupUrl.sha256" -UseBasicParsing -TimeoutSec 30).Content
-        $Expect = ($SumText -split "\s+")[0].Trim().ToLower()
+        # 落盘再读：PowerShell 7 下 Invoke-WebRequest 的 .Content 对非文本 MIME
+        # （.sha256 是 application/octet-stream）是空串，直接解析会得到空哈希 → 校验必失败。
+        Invoke-WebRequest -Uri "$SetupUrl.sha256" -OutFile $SumFile -UseBasicParsing -TimeoutSec 30
+        $Expect = ((Get-Content -LiteralPath $SumFile -Raw) -split "\s+")[0].Trim().ToLower()
     } catch {
         throw "无法获取校验和（$SetupUrl.sha256）：$_"
+    }
+    if ($Expect -notmatch '^[0-9a-f]{64}$') {
+        throw "校验和格式异常（$SumFile）：$Expect"
     }
     $Actual = (Get-FileHash -LiteralPath $SetupPath -Algorithm SHA256).Hash.ToLower()
     if ($Expect -ne $Actual) {

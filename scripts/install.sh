@@ -14,11 +14,20 @@ set -euo pipefail
 REPO="Jedeiah/dsh-desktop"
 APP_NAME="DeepSeek Harness Desktop"
 APP="/Applications/${APP_NAME}.app"
-# App 自己子进程的特征串（区别于用户终端里手动跑的 dsh：App 用内置 node
-# 运行 app-data 闭包的 bin.js --profile web；终端 dsh 的命令行不含该特征）
-DSH_CHILD_PATTERN="node_modules/@deepseek-ai/dsh/lib/bin.js --profile web"
+# 只杀「本 App 自己的」dsh 子进程：命令行的闭包路径必须落在本 App 的 app-data 下
+# （与 Rust 侧 is_stale_dsh_cmdline 的判定一致）。只匹配 bin.js --profile web 会把
+# 用户终端里手动跑的 dsh（同 profile、装在别处）一起杀掉。
+DSH_CLOSURE_DIR="${HOME}/Library/Application Support/com.dsh-desktop.app/dsh"
+DSH_CHILD_PATTERN="${DSH_CLOSURE_DIR}/.*bin\.js --profile"
 
-case "$(uname -m)" in
+# 架构判定：**先看是否处于 Rosetta 翻译**——被翻译的进程 `uname -m` 返回 x86_64，
+# 但机器其实是 Apple Silicon；只看 uname 会把这类终端（例如「用 Rosetta 打开」的
+# iTerm）里的 M 系列用户误判成 Intel 而拒装。
+if [ "$(sysctl -n sysctl.proc_translated 2>/dev/null || echo 0)" = "1" ] \
+   || [ "$(sysctl -n hw.optional.arm64 2>/dev/null || echo 0)" = "1" ]; then
+  ARCH_SUFFIX="aarch64"
+else
+  case "$(uname -m)" in
   arm64)  ARCH_SUFFIX="aarch64" ;;
   x86_64)
     # CI 只构建 Apple Silicon 产物（macOS runner = macos-14/arm64），没有 x86_64 DMG：
@@ -28,7 +37,8 @@ case "$(uname -m)" in
     echo "   https://github.com/${REPO}#开发" >&2
     exit 1 ;;
   *) echo "!! 不支持的架构: $(uname -m)" >&2; exit 1 ;;
-esac
+  esac
+fi
 
 echo "==> 查询最新版本（${REPO}）..."
 # 走 github.com 的 /releases/latest 跳转拿最新 tag（不依赖 api.github.com，
@@ -72,13 +82,14 @@ trap 'hdiutil detach "$MOUNT_PT" >/dev/null 2>&1 || true; rm -rf "$TMP_DIR"' EXI
 TMP_DMG="${TMP_DIR}/DSh-${TAG}.dmg"
 
 echo "==> 下载 DMG..."
-curl -fL --max-time 600 --progress-bar -o "$TMP_DMG" "$DMG_URL"
+curl -fL --retry 3 --retry-delay 2 --retry-all-errors --connect-timeout 15 \
+  --max-time 1800 --progress-bar -o "$TMP_DMG" "$DMG_URL"
 
 # 校验和：release 为每个产物同时发布 <asset>.sha256（App 内自动更新也校验它）。
 # 一键脚本不校验就等于把"整条安装链的最后一环"交给网络——静默装到损坏/被替换的包。
 # 只用校验和文件里的哈希（不比文件名：文件里记的是 CI 侧的路径）。
 echo "==> 校验下载完整性..."
-EXPECT="$(curl -fsL --connect-timeout 10 --max-time 30 "${DMG_URL}.sha256" 2>/dev/null \
+EXPECT="$(curl -fsL --retry 2 --connect-timeout 10 --max-time 30 "${DMG_URL}.sha256" 2>/dev/null \
   | awk '{print $1}' | tr -d '[:space:]' | head -c 64 || true)"
 if [ -z "$EXPECT" ]; then
   echo "!! 无法获取校验和（${DMG_URL}.sha256）" >&2
