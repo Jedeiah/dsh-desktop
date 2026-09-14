@@ -1,302 +1,475 @@
-# DeepSeek Harness Desktop 桌面端（DSh Desktop）
+<h1 align="center">DeepSeek Harness Desktop</h1>
 
 <p align="center">
-  <img src="apps/desktop/src-tauri/icons/icon-rounded-256.png" alt="DeepSeek Harness Desktop 图标" width="128">
+  <img src="apps/desktop/src-tauri/icons/icon-rounded-256.png" alt="DeepSeek Harness Desktop" width="120">
 </p>
 
-一个 **macOS / Windows 桌面 App**：双击即用，把官方 DeepSeek Harness（`dsh web`）装进一个桌面 App 里。App 是**瘦壳**——不内置 dsh，首次运行自动安装；带 dsh 版本管理、App 内更新、插件管理、托盘与干净卸载。
+<p align="center">
+  <b>把官方 DeepSeek Harness（dsh web）装进一个桌面 App</b><br>
+  双击即用，零环境依赖，工作台与配置和终端 dsh 完全共用。
+</p>
 
-> **零环境依赖**：不需要安装 Node.js、npm、bun、dsh，也不需要任何开发环境或命令行知识——App 自带运行时，dsh 由 App 引导安装并管理。装完即用，卸载即净（配置/会话保留与否由你选）。
+<p align="center">
+  <a href="https://github.com/Jedeiah/dsh-desktop/releases/latest"><img src="https://img.shields.io/github/v/release/Jedeiah/dsh-desktop?label=release&color=3d5af0" alt="Release"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/Jedeiah/dsh-desktop?color=3d5af0" alt="License"></a>
+  <img src="https://img.shields.io/badge/platform-macOS%20arm64%20%7C%20Windows%20x64-3d5af0" alt="Platform">
+  <a href="https://tauri.app"><img src="https://img.shields.io/badge/built%20with-Tauri%202-24c8db" alt="Tauri"></a>
+</p>
 
 ---
 
-## 1. 项目介绍
+## 目录
 
-**它是什么**：一个**壳**（thin shell）——只内置 Node 运行时 + npm + pnpm（安装包约 50MB），**不内置 dsh 闭包**。首次运行自动把官方 `@deepseek-ai/dsh` 从 npm registry 安装到 App 数据目录，之后在窗口里运行的就是**官方 dsh 工作台**，和你在终端跑 `dsh web` 完全一样。壳只做四件事：
+- [这是什么](#这是什么)
+- [亮点](#亮点)
+- [平台支持](#平台支持)
+- [安装](#安装)
+- [首次启动](#首次启动)
+- [界面与操作](#界面与操作)
+- [功能详解](#功能详解)
+  - [dsh 版本管理](#dsh-版本管理)
+  - [插件管理](#插件管理)
+  - [App 自身更新](#app-自身更新)
+  - [托盘、窗口与崩溃自愈](#托盘窗口与崩溃自愈)
+  - [卸载](#卸载)
+- [数据、隐私与安全](#数据隐私与安全)
+- [故障排查](#故障排查)
+- [常见问题](#常见问题)
+- [技术架构](#技术架构)
+- [开发与构建](#开发与构建)
+- [发版流程](#发版流程)
+- [目录结构](#目录结构)
+- [已知限制与路线](#已知限制与路线)
+- [贡献与致谢](#贡献与致谢)
+- [License](#license)
 
-1. **免终端启动** dsh web（首次运行自动安装）
+---
+
+## 这是什么
+
+**DeepSeek Harness Desktop 是官方 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（`dsh`）的桌面外壳。** 它把 `dsh web` 从终端搬进一个原生窗口：窗口里运行的就是**官方 dsh 工作台本体**，和你在终端执行 `dsh web` 看到的是同一套界面、同一份数据。
+
+它**不是**二次开发，也**不是**插件集合：不修改 dsh、不注入任何代码、不改变它的行为。壳只负责四件事——
+
+1. **免终端启动** `dsh web`（首次运行自动安装 dsh）
 2. **dsh 生命周期管理**：安装、更新、指定版本安装、回滚
-3. **App 自身更新**：检查 → 一键下载安装
-4. **插件管理**：展示已装插件、安装/卸载（壳对 dsh「万物皆插件」哲学唯一的服务面）
+3. **App 自身更新**：检查 GitHub Releases → 下载校验 → 一键安装
+4. **插件管理**：列出已装插件、安装 / 卸载（对 dsh「万物皆插件」的唯一服务面）
 
-**它不是**：不是二次开发、不加任何插件、不改官方行为。保持"壳"的定位，是为了**最大自由度**：
-- 官方怎么配你就怎么配（`~/.dsh` 配置/会话/凭据与终端 dsh **完全共用**）
-- dsh 内部行为（profile、agent、插件生态）全部留给 dsh 自己，壳不掺和
-- 想装插件，直接走官方 dsh 的机制即可（壳页提供列表与装/卸入口）
+### 为什么是「瘦壳」
 
-**关键特性**：
-| 特性 | 说明 |
+App **不内置 dsh**，只内置 Node 运行时 + npm + pnpm（macOS 安装包 53MB，Windows 安装器 29MB）；首次启动时用内置 pnpm 把官方 `@deepseek-ai/dsh` 从 npm registry 装到 App 数据目录。
+
+这样换来三件事：
+
+- **随时跟上上游**：dsh 预览期迭代很快，瘦壳不需要为每次 dsh 发版重新打包发布 App。
+- **版本可管理**：能装指定版本、能回滚，当前版本与上一版本各留一份。
+- **零偏差**：跑的就是官方包，`~/.dsh` 配置/会话/凭据与终端 dsh 完全共用——终端里建过的会话，打开 App 就能看到；反过来也一样。
+
+---
+
+## 亮点
+
+| 亮点 | 说明 |
 |---|---|
-| 跨平台原生 App | macOS：菜单栏托盘 / Dock；Windows：系统托盘 / 任务栏，符合各平台使用习惯 |
-| **零环境依赖** | **不需要 Node / npm / bun / dsh 或任何开发环境**——运行时内置，dsh 自动安装（默认最新版，可指定版本） |
-| 瘦壳、首次自动装 dsh | 不内置 dsh 闭包（安装包约 50MB）；首次运行引导安装，**不依赖系统 bun / npm / node** |
-| dsh 版本管理 | 管理抽屉 dsh 分段查看当前版本与最近 5 个已发布版本：一键更新到最新、输入版本号安装（下载前校验存在性）、安装 / 切换 / 回滚；registry 源可配 |
-| App 内更新 | 关于页检查 GitHub Releases 新版 → 下载（校验）→ 自动安装 → 重启新版本 |
-| 插件管理 | 插件页列出已装插件（`~/.dsh/profiles/web`），安装/卸载后自动重启工作台生效 |
-| 干净卸载 | 两档：保留 `~/.dsh` / 连会话凭据一起删；Windows 走"唯一卸载链"彻底清理 |
-
-> 平台差异：`~/.dsh`（配置/会话/凭据）在 macOS 是 `~/.dsh`，在 Windows 是 `%USERPROFILE%\.dsh`，与终端 dsh 完全共用。
-
----
-
-## 2. 亮点
-
-- **电脑上无需安装任何环境**：不需要装 Node、npm、bun、Python、Rust 或任何运行时——Node/npm/pnpm 都内置在 App 里，dsh 由内置 pnpm 自动安装（秒级），删掉系统里的开发环境也不影响它运行。
-- **零偏差**：壳不注入任何东西，跑的就是官方 dsh，`~/.dsh` 无缝复用，随时可回到终端使用同一份数据。
-- **dsh 版本随心换**：预览期上游迭代极快（`latest` 标签管理不可靠）——支持指定版本安装与回滚；当前版本与上一版本各保留一份，失败不影响当前可用版本。
-- **标准 Mac 体验**：关窗口隐藏进托盘、Cmd+Q 连带结束 dsh 无孤儿、崩溃自动重启（退避 5 次后提示日志路径）。
-- **干净利落**：单实例（不会开双托盘）、卸载一步到位（含 WebView 缓存与 Dock 最近使用；Windows 自系统「设置/右键」触发同样彻底卸载）。
+| **零环境依赖** | 不需要 Node、npm、bun、Python 或任何开发环境——运行时全部内置，dsh 由 App 自动安装。删掉电脑上的开发环境也不影响它运行 |
+| **零偏差** | 不注入、不魔改，跑官方 dsh；`~/.dsh` 与终端完全共用，随时可回到终端继续 |
+| **双击即用** | 原生窗口 + 原生托盘，无终端、无端口参数、无「先 cd 到哪个目录」 |
+| **dsh 版本随心换** | 一键更新到最新；输入版本号安装（下载前先校验存在性）；已装版本列表按状态给出 安装 / 切换 / 回滚 |
+| **插件管理** | 内置 pnpm，列表 / 安装 / 卸载 / 实时输出；与终端共用 `profiles/web`，装完自动重启工作台生效 |
+| **App 内更新** | 关于页检查新版 → 下载（SHA-256 校验）→ 安装 → 自动重启到新版本 |
+| **干净的卸载** | 两档卸载：保留 `~/.dsh`（便于重装）或连会话凭据一起删；macOS 移入废纸篓、Windows 走系统卸载链；只清理以本 App bundle id 命名的精确路径 |
+| **标准桌面体验** | 关窗口收进托盘、单实例（不会开双托盘）、Dock / 托盘召回、崩溃自动重启、系统通知 |
+| **键鼠齐全** | 命令面板（`⌘K` / `Ctrl+K`）、`⌘1`–`⌘4` / `Ctrl+1`–`4` 直达区域、`Esc` 逐级关闭；焦点在工作台里也能用（按键由工作台转发回壳页） |
 
 ---
 
-## 3. 使用手册
+## 平台支持
 
-### 3.1 安装
+| 平台 | 状态 | 产物 | 说明 |
+|---|---|---|---|
+| macOS（Apple Silicon / arm64） | ✅ 支持 | `*.dmg`、`*.zip` | 要求 macOS 12.0+ |
+| Windows（x64） | ✅ 支持 | `*-setup.exe`、`*.zip` | Windows 10 / 11，需 WebView2 运行时（系统自带；缺失时安装器会联网获取） |
+| macOS（Intel / x86_64） | ⚠️ 暂无产物 | — | CI 目前只构建 arm64。Intel 机请从源码构建，或等待后续支持 |
+| Linux | ❌ 未支持 | — | 未测试过，欢迎贡献 |
 
-**macOS 一键安装 / 升级（推荐，自动追最新版）：**
+> 便携版：Windows 也可下载 `.zip` 解压后直接双击 `dsh-desktop.exe`（同样内置运行时，无需安装）。
+
+---
+
+## 安装
+
+### 一键安装（推荐，自动跟随最新正式版）
+
+**macOS：**
+
 ```bash
 curl -sSL https://raw.githubusercontent.com/Jedeiah/dsh-desktop/main/scripts/install.sh | bash
 ```
-> 通过 GitHub 跳转自动解析最新正式版；curl 下载不带隔离标记，装完直接可用、无"损坏"提示；已运行会自动退出并覆盖安装。
 
-**Windows 一键安装 / 升级（推荐，PowerShell）：**
+**Windows（PowerShell）：**
+
 ```powershell
 powershell -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/Jedeiah/dsh-desktop/main/scripts/install.ps1 | iex"
 ```
-> 自动解析最新正式版，退出已运行实例后下载安装器静默安装并启动。要求 Windows 10/11（自带 WebView2 运行时）。
 
-**macOS 手动安装：**
-1. 双击 **DeepSeek Harness Desktop_<版本>_aarch64.dmg**，把 **DeepSeek Harness Desktop.app** 拖进 **应用程序**。
-2. 首次打开：**右键 → 打开**（未签名，需确认一次），之后正常双击即可。
-3. 若提示"已损坏，无法打开"（Chrome 下载的未签名 App 常见）：`xattr -dr com.apple.quarantine "/Applications/DeepSeek Harness Desktop.app"`
+两个脚本都会：解析最新正式版 → 退出正在运行的实例 → 下载 → **校验 SHA-256** → 安装 → 启动。
 
-**Windows 手动安装：**
-- 下载 Release 里的 `DeepSeek.Harness.Desktop_<版本>_x64-setup.exe` 双击安装（无需管理员权限，装到当前用户）。
-- 或下载 `DeepSeek-Harness-Desktop-Windows-x64.zip` 解压后双击 `dsh-desktop.exe` 直接运行（便携版，同样内置 node + npm + pnpm）。
+### 手动安装
 
-### 3.2 首次使用
+**macOS**
 
-首次启动（检测到尚未安装 dsh）会打开**引导页**（不启动 dsh 进程）：
+1. 下载 `DeepSeek.Harness.Desktop_<版本>_aarch64.dmg`；
+2. 打开 DMG，把 **DeepSeek Harness Desktop.app** 拖进「应用程序」；
+3. 首次打开请**右键 → 打开**（应用未签名，需确认一次），之后正常双击即可；
+4. 若提示「已损坏，无法打开」（浏览器下载未签名 App 的常见现象）：
 
-1. 默认**安装最新版（latest）**，点「安装」开始：内置 pnpm 下载安装（通常约 30 秒）→ 双重自检 → 原子切换 → 自动进入工作台。
-2. 可展开**高级选项**选择 Registry 源与**指定版本**（版本列表来自 registry，按 semver 倒序）。
-3. 安装中可随时**取消**（不影响任何数据）；失败/断网时显示错误与**重试**按钮，提示检查网络。
-4. 安装完成后自动启动 dsh web → 窗口显示工作台（即 dsh web UI）。
+```bash
+xattr -dr com.apple.quarantine "/Applications/DeepSeek Harness Desktop.app"
+```
 
-会话/凭据与终端 dsh 共用同一份数据目录——macOS 为 `~/.dsh`，Windows 为 `%USERPROFILE%\.dsh`——你在终端建过的会话，这里直接能看到。
+**Windows**
 
-### 3.3 日常操作
+- 下载 `DeepSeek.Harness.Desktop_<版本>_x64-setup.exe` 双击安装（免管理员，装到当前用户 `%LOCALAPPDATA%\DeepSeek Harness Desktop`）；
+- 或下载 `DeepSeek-Harness-Desktop-Windows-x64.zip` 解压后直接运行 `dsh-desktop.exe`（便携版）。
 
-壳页是「满屏工作台 + 36px 可折叠顶栏」。管理入口有两个：
+> 每个产物都附带 `<产物名>.sha256`，可用 `shasum -a 256 -c`（macOS）或 `Get-FileHash -Algorithm SHA256`（Windows）自行校验。
 
-- **命令面板**：点顶栏「管理」或按 `⌘K`（Windows `Ctrl+K`），可就地搜索并直达区域或执行命令（刷新工作台、在浏览器打开工作台、检查 dsh / App 更新、收起导航栏）。
-- **管理抽屉**：右侧滑出的面板，分 **dsh / 插件 / 关于** 三个分段。
+---
 
-快捷键：`⌘1`–`⌘4`（Windows `Ctrl+1`–`4`）直达 工作台 / dsh / 插件 / 关于；`⌘K`（Windows `Ctrl+K`）命令面板；`Esc` 逐级关闭 确认弹窗 → 命令面板 → 抽屉；单击左上角品牌 = 刷新工作台，双击 = 在系统浏览器打开当前工作台地址。工作台是独立原生 WebView，按键不会冒泡到壳页：macOS 上 `⌘K` 由系统菜单加速键接管；其余组合键（含 Windows 的 `Ctrl+K` / `Ctrl+1`–`4`）由注入工作台的转发脚本以 `shell:shortcut` 事件送回壳页处理（该事件是工作台唯一被授权的 IPC 能力，见 `capabilities/workbench-shortcut.json`）。
+## 首次启动
+
+首次启动检测到尚未安装 dsh 时，会显示**引导页**（此时不启动 dsh 进程）：
+
+1. 默认安装 **latest**，点「安装」：内置 pnpm 下载安装（视网络，通常半分钟到几分钟）→ 双重自检 → 原子切换 → 自动进入工作台；
+2. 展开「高级选项」可改 **Registry 源**（默认官方 npmjs，国内可换 `https://registry.npmmirror.com`）与**指定版本**（列表来自 registry，按 semver 倒序）；
+3. 安装过程可**随时取消**（不影响任何数据）；失败会给出错误与**重试**；
+4. 装完自动启动 dsh web，窗口里显示工作台。
+
+之后每次启动都是秒进工作台（无需再安装）。
+
+---
+
+## 界面与操作
+
+壳页是「满屏工作台 + 一条可折叠顶栏」，所有管理能力都收在**命令面板**与**管理抽屉**里：
+
+<p align="center">
+  <img src="docs/images/shell-drawer.png" alt="壳页界面：顶栏 + 右侧管理抽屉（左侧为 dsh 工作台区域）" width="820">
+  <br>
+  <sub>顶栏与管理抽屉（图中左侧为工作台区域，实际运行时显示 dsh 工作台）</sub>
+</p>
+
+<!-- 实机截图：用 ⌘⇧4 / Win+Shift+S 截「工作台 + 抽屉」与「命令面板」各一张，
+     存为 docs/images/workbench.png 与 docs/images/palette.png，再把下面两行取消注释即可。
+<p align="center">
+  <img src="docs/images/workbench.png" alt="工作台" width="820">
+  <img src="docs/images/palette.png" alt="命令面板" width="410">
+</p>
+-->
+
+- **顶栏**：左侧「工作台」（单击刷新工作台，双击在系统浏览器打开当前地址）；右侧「管理」与「收起导航栏」。
+- **命令面板**：点「管理」或 `⌘K` / `Ctrl+K`，可就地搜索并执行——切到工作台 / dsh / 插件 / 关于，刷新工作台，在浏览器打开，检查 dsh 更新，检查应用更新，展开 / 收起导航栏。
+- **管理抽屉**：右侧滑出，分 **dsh / 插件 / 关于** 三段；左边缘可拖动调整宽度（双击复位）。抽屉打开时工作台会暂时让位，收起后自动归位。
+- **折叠导航栏**：把顶栏收到一条 8px 把手，工作台向上扩展；点顶部把手或按 `⌘K` →「展开导航栏」恢复。
+
+### 快捷键速查
 
 | 操作 | macOS | Windows |
 |---|---|---|
-| 显示/隐藏主窗口 | 左键点托盘图标，或点 Dock 图标 | 双击/单击托盘图标，或点任务栏图标 |
-| 关闭窗口 | 隐藏到托盘 | 隐藏到托盘（App 与 dsh 继续后台运行） |
-| 窗口位置 | 主窗隐藏创建、首次显示即居中（已可见时不再重定位，避免启动"闪一下"）；自绘弹窗相对主窗中心显示（无系统标题栏按钮，✕/Esc 关闭） | 同左（弹窗在多显示器下自动避让到工作区） |
-| 打开外链 | 工作台内点击外链（https 等）自动在系统浏览器打开 | 同左 |
-| 退出 | `Cmd+Q` 或托盘 *退出* | 托盘 *退出*（连带结束 dsh，无残留） |
-| 崩溃自愈 | dsh 意外退出自动重启（1s→2s→…→15s 退避）；连续 5 次后停止并弹窗提示日志路径 | 同左 |
-| dsh 版本管理 | 管理抽屉 · *dsh* 分段（详见 3.4） | 同左 |
-| 插件管理 | 管理抽屉 · *插件* 分段（详见 3.5） | 同左 |
-| App 更新 | 管理抽屉 · *关于* 分段（详见 3.6） | 同左 |
-| 卸载 | 管理抽屉 · *关于* 分段（详见 3.7） | 同左 |
+| 命令面板 | `⌘K` | `Ctrl+K` |
+| 直达区域 | `⌘1` / `⌘2` / `⌘3` / `⌘4` | `Ctrl+1` / `2` / `3` / `4` |
+| 逐级关闭浮层 | `Esc`（确认弹窗 → 命令面板 → 抽屉） | 同左 |
+| 面板内选择 | `↑` `↓` 移动，`Enter` 执行 | 同左 |
+| 刷新工作台 | 单击顶栏「工作台」 | 同左 |
+| 在浏览器打开工作台 | 双击顶栏「工作台」 | 同左 |
+| 退出应用 | `⌘Q` 或托盘 *退出* | 托盘 *退出* |
 
-> 管理功能全部集中在主窗的抽屉与命令面板里，托盘仅保留 **显示主窗口 / 退出** 两项（左键点托盘图标即召回主窗口；退出会连带结束后台 dsh）。
+> 工作台是独立的原生 WebView，按键不会冒泡到壳页。因此在工作台里按键时，由注入脚本把组合键转发回壳页处理（`shell:shortcut` 事件），所以**焦点在 dsh 里也能用这些快捷键**。
 
-### 3.4 dsh 版本管理（dsh 页）
+### 托盘、窗口与崩溃自愈
 
-- **当前版本**：显示正在运行的 dsh 版本；启动时静默检查 registry `latest`，有新版时在 dsh 页提示（**不自动安装**）。
-- **更新到最新**：一键安装 `latest` → 自检 → 原子切换 → 工作台自动重启为新版。
-- **指定版本安装**：版本列表展示**最近 5 个**已发布版本（semver 倒序），每行按状态给出 安装 / 切换 / 回滚，点击后弹窗二次确认再执行；也可**输入版本号**安装（下载前先校验版本存在，不存在即提示）。
-- **回滚**：列表对「低于当前版本的已安装最高版本」给出独立的**回滚**按钮，确认后回退（当前/上一版本始终各保留一份）。
-- **Registry 源**：可配置（默认官方 npmjs；国内可换 `https://registry.npmmirror.com`），写入 `settings.json`。
-- 任何安装/更新失败都不影响当前可用版本（tmp 清理、版本标记不动）。
-
-### 3.5 插件管理（插件页）
-
-- **插件列表**：进入插件页自动读取 `~/.dsh/profiles/web` 已装插件，每行显示**名称 + 状态 + 来源**（`npm · 版本` / `Git 源` / `URL` / `本地 · 绝对路径`）。
-- **安装**：输入 npm 包名（如 `@your-scope/dsh-plugin-demo`）、**Git/tarball 源**（`owner/repo`、`github:owner/repo`、`git+ssh://…`、`git+https://…`、`https://…tgz`，可用 `#ref`、`#semver:`、`#path:` 指定版本），或**本地插件目录的绝对路径**（如 `D:\plugins\my-plugin`，相对路径不支持）→ 输出区**实时滚动**显示 pnpm 进度（下载、依赖解析、构建脚本等）→ 完成后退出码与结果。
-- **卸载**：插件行内「卸载」按钮 → 弹窗二次确认（危险色「卸载」）→ 确认后执行。
-- 安装/卸载写入 `~/.dsh/profiles/web`（与终端 dsh 完全共用）；**完成后自动重启工作台生效**（无需手动操作）。
-
-**内置 pnpm，零环境依赖**：App 打包 pnpm 运行库 + 启动器，安装/卸载不需要你装 Node/pnpm。自动处理 pnpm 11 门禁（构建脚本授权 `allowBuilds`、新包发布年龄 `minimumReleaseAge: 0`），遇到被忽略的构建脚本会解析包名自动补授权重试。卸载后自动清扫残留空目录。仅限壳页调用，工作台页面无法触发。
-
-### 3.6 App 更新（关于页）
-
-- 管理抽屉 · **关于** 分段点 **检查更新**（检查 `github.com/Jedeiah/dsh-desktop/releases/latest`，失败静默提示）。
-- 有新版 → 点 **下载并安装**：下载安装包到临时目录（校验大小）→ macOS 挂载 DMG 复制到 `/Applications`（弹系统授权）→ 自动重启新版本；Windows 静默运行 NSIS 安装器（`/S /R`）→ 安装器结束后台实例 → 由安装器拉起新版。
-- **macOS x86_64 兜底**：CI 仅构建 arm64 产物，x86_64 无安装包 → 点 **在浏览器打开下载页** 手动下载安装。
-- 下载/安装失败不影响当前版本，可重试或走手动下载。
-
-### 3.7 卸载
-
-管理抽屉 · **关于** 分段的 *卸载* 区（macOS/Windows 一致，中文两选项）：
-
-| 按钮 | 效果 |
-|---|---|
-| 仅卸载应用 | 卸载，保留 `~/.dsh` 配置与数据（推荐，便于将来重装） |
-| 卸载并删除 ~/.dsh | 卸载，连会话/凭据一起删（不可恢复） |
-
-卸载会：结束 dsh 子进程 → 删除应用数据、WebView 缓存、cookie 存储与偏好（macOS 的偏好域另经 `defaults delete` 清掉，避免 cfprefsd 把缓存写回磁盘）→ 把 App 移入废纸篓 / 回收站（可恢复）→ 退出。Windows 上走「**唯一卸载链**」：本 App 只先删 `~/.dsh`（选了「卸载并删除 ~/.dsh」时），随后**以静默方式（`/S`，不再二次弹确认）**唤起系统卸载器 `uninstall.exe` 删除程序文件；应用数据与 WebView 缓存的清理由 `uninstall.exe` 的卸载钩子回调本 App 的 sidecar 完成（先结束运行中的 dsh 进程树释放文件锁，再清数据）。因此**从「设置 → 应用」或开始菜单右键触发的卸载一样是彻底卸载**。便携版（解压即用、没有 `uninstall.exe`）没有系统卸载器可委托，改由本 App 自行清理数据，程序文件删除所在文件夹即可。个别被占用的数据目录会自动重试，仍失败会提示重启电脑后清理，卸载本身不被阻塞。清理范围只限「以本 App bundle id 命名」的精确路径，不会触碰系统或其它 App 的数据（有单测守护该不变量）。
-
-### 3.8 故障排查
-
-- dsh 启动失败 / 连续崩溃（5 次）时，App 会弹出自绘弹窗并给出日志位置：macOS 为 `~/Library/Application Support/com.dsh-desktop.app/logs`，Windows 为 `%APPDATA%\com.dsh-desktop.app\logs`（`launcher.log` + `dsh.log`）。
-- 常见问题：
-  - **macOS 首次打不开** → 右键 → 打开（未签名）。
-  - **Windows 白屏/黑窗** → 确认系统装有 WebView2 运行时（Win10/11 自带；老系统需安装 [WebView2 Runtime](https://developer.microsoft.com/en-us/microsoft-edge/webview2/)）。
-  - **首次引导装不上 dsh** → 检查网络/registry 源（可换 npmmirror），点重试；断网时引导页会明确提示。
+| 行为 | macOS | Windows |
+|---|---|---|
+| 关闭窗口 | 隐藏到托盘（App 与 dsh 继续后台运行） | 同左（任务栏按钮随之消失） |
+| 召回窗口 | 左键点托盘图标，或点 Dock 图标 | 左键点托盘图标，或**再次启动 App**（开始菜单 / 桌面快捷方式） |
+| 托盘菜单 | 显示主窗口 / 退出 | 同左（悬停图标显示应用名） |
+| 退出 | `⌘Q` 或托盘 *退出*：连带结束 dsh，无孤儿进程 | 托盘 *退出*：同左 |
+| 崩溃自愈 | dsh 意外退出自动重启（指数退避，2s 起、上限 15s）；连续 5 次后停止并弹窗给出日志路径 | 同左 |
+| 单实例 | 重复启动只会召回已有窗口，不会开第二个实例或第二个托盘图标 | 同左 |
 
 ---
 
-## 4. 技术细节（构建 / 架构）
+## 功能详解
 
-> 这一节给想自己折腾的人看。日常使用不需要。
+### dsh 版本管理
 
-### 4.1 构建与运行
+管理抽屉 · **dsh** 分段。
+
+- **当前版本**：正在运行的 dsh 版本；启动时静默检查 registry 的 `latest`，有新版会在 dsh 段提示（**不自动安装**）。
+- **更新到最新**：安装 `latest` → 自检 → 原子切换 → 工作台自动重启到新版。
+- **指定版本**：列表展示最近 5 个已发布版本（semver 倒序），每行按当前状态给出 **安装 / 切换 / 回滚**，点击后二次确认；也可直接**输入版本号**安装（下载前先校验该版本存在，不存在立即提示，不会白下几百 MB）。
+- **回滚**：对「低于当前版本中已安装的最高版本」给出独立回滚按钮。
+- **Registry 源**：写入 `settings.json`，可随时切换并在列表刷新后生效。
+- **失败安全**：任何安装/更新失败都不影响当前可用版本；安装中可取消；`current` 标记原子切换（先移开旧目录再 rename，失败自动恢复）。
+
+### 插件管理
+
+管理抽屉 · **插件** 分段。
+
+- **列表**：读取 `~/.dsh/profiles/web` 已装插件（与终端 dsh 完全共用），每行显示**名称 · 状态 · 来源**（`npm · 版本` / `Git 源` / `URL` / `本地 · 绝对路径`）。
+- **安装**：支持 npm 包名、Git / tarball 源（`owner/repo`、`github:owner/repo`、`git+ssh://…`、`git+https://…`、`https://…tgz`，可用 `#ref` / `#semver:` / `#path:` 指定版本），以及**本地插件目录的绝对路径**（如 `D:\plugins\my-plugin`）。
+- **卸载**：行内「卸载」→ 二次确认（危险色）→ 执行。
+- **实时输出**：安装/卸载过程滚动显示 pnpm 输出与退出码。
+- **装完自动重启工作台生效**，无需手动操作。
+
+内置 pnpm 已处理 pnpm 11 的门禁：写入 `allowBuilds` 授权构建脚本、`minimumReleaseAge: 0`；遇到未授权的构建脚本会解析包名自动补授权重试；卸载后自动清扫残留空目录。插件命令**只接受壳页调用**——工作台页面是远程来源（`http://127.0.0.1`），Tauri 默认拒绝其 IPC，命令内另有 label 校验作为第二道防线。
+
+### App 自身更新
+
+管理抽屉 · **关于** 分段 → **检查更新**（查询 GitHub Releases 最新正式版）。
+
+有新版时点 **下载并安装**：下载安装包到临时目录并**校验 SHA-256**（Release 同时发布了 `<产物名>.sha256`）→ macOS 挂载 DMG 复制到 `/Applications`（无写权限时弹系统授权）→ 自动重启到新版本；Windows 静默运行 NSIS 安装器（`/S /R`，由安装器在装完后拉起新版）。安装包在完成后立即删除，异常残留由下次启动清扫（1 小时 TTL）。
+
+macOS Intel 机器没有对应产物，检查更新会提示走 **在浏览器打开下载页** 手动安装。
+
+### 卸载
+
+管理抽屉 · **关于** 分段最下方，两档（macOS / Windows 一致）：
+
+| 选项 | 效果 |
+|---|---|
+| **仅卸载应用** | 卸载 App，保留 `~/.dsh`（推荐：会话/凭据/配置仍在，将来重装即用） |
+| **卸载并删除 ~/.dsh** | 一并删除会话、凭据、配置（不可恢复） |
+
+卸载会依次：结束 dsh 子进程 → 清理应用数据、WebView 缓存、工作台认证 cookie、偏好（macOS 另经 `defaults delete` 清偏好域，避免 cfprefsd 把缓存写回磁盘）→ macOS 移入废纸篓（可恢复）/ Windows 唤起系统卸载器 → 退出。
+
+清理范围**只限以本 App bundle id 命名的精确路径**，不会触碰系统或其它应用的数据——该不变量由单元测试守护（所有目标必须绝对路径、末段必须含 App id、共享父目录一律拒绝）。Windows 从「设置 → 应用」或开始菜单右键触发的卸载走同一条链，因此同样彻底；便携版没有系统卸载器，改由自身清理数据，程序文件删除所在文件夹即可。
+
+---
+
+## 数据、隐私与安全
+
+**数据都在本地，App 不收集、不上传任何内容。**
+
+| 内容 | macOS | Windows |
+|---|---|---|
+| dsh 配置 / 会话 / 凭据 | `~/.dsh` | `%USERPROFILE%\.dsh` |
+| App 设置 / 日志 / dsh 闭包 | `~/Library/Application Support/com.dsh-desktop.app/` | `%APPDATA%\com.dsh-desktop.app\` |
+| WebView 缓存 | `~/Library/Caches/com.dsh-desktop.app/` | `%LOCALAPPDATA%\com.dsh-desktop.app\` |
+| 工作台认证 cookie | `~/Library/HTTPStorages/com.dsh-desktop.app.binarycookies` | WebView2 数据目录内 |
+| 偏好 | `~/Library/Preferences/com.dsh-desktop.app.plist` | WebView2 数据目录内 |
+
+- **只绑 loopback**：dsh 强制监听 `127.0.0.1`，端口由系统随机分配（`--port 0`），不对外暴露。
+- **日志脱敏**：工作台 URL 里的 `token=` 以及 URL 里的 userinfo 凭据（`https://user:pass@…`）在写入日志前都会被替换为 `***`。
+- **IPC 最小授权**：工作台是远程来源，Tauri 默认拒绝它的全部 IPC；唯一授予它的是「把快捷键转发回壳页」的事件发送权限（`capabilities/workbench-shortcut.json`），壳页另只授予「监听事件」（`capabilities/shell-events.json`）。管理类命令只有壳页能调用。
+- **安装可信**：dsh 由 npm 安装（校验 `dist.integrity` sha512），切换前做双重自检（`--version` + `--profile web --dump-default-config`）；App 更新校验 SHA-256 与产物大小，不符即失败并清理。
+- **CSP**：壳页为最小策略（`default-src 'self'`，仅放行连接 `127.0.0.1`）；工作台是独立原生 WebView 的顶层文档，不受壳页 CSP 约束。
+
+---
+
+## 故障排查
+
+日志位置（打包态）：
+
+- macOS：`~/Library/Application Support/com.dsh-desktop.app/logs/`（`launcher.log` + `dsh.log` + `install.log`）
+- Windows：`%APPDATA%\com.dsh-desktop.app\logs\`
+
+| 现象 | 处理 |
+|---|---|
+| macOS 首次打开提示无法验证开发者 | 右键 → 打开（未签名应用） |
+| macOS 提示「已损坏，无法打开」 | `xattr -dr com.apple.quarantine "/Applications/DeepSeek Harness Desktop.app"` |
+| Windows 提示「未知发布者」 | 应用未签名，SmartScreen 里选择「仍要运行」 |
+| Windows 白屏 / 启动异常 | 确认系统有 WebView2 运行时（Win10/11 自带；老系统需安装 [WebView2 Runtime](https://developer.microsoft.com/en-us/microsoft-edge/webview2/)） |
+| 首次引导装不上 dsh | 检查网络；在高级选项把 Registry 源换成 `https://registry.npmmirror.com` 后重试 |
+| 工作台空白 | 重启 App（会自动检查端口与登录态）；仍空白请把 `logs/launcher.log` 贴到 issue |
+| dsh 连续崩溃 5 次 | 应用会弹窗并给出日志路径，**其中 `dsh.log` 记录了 dsh 的异常输出** |
+| 关掉窗口后找不到应用 | 关窗口 = 收进托盘：点托盘图标，或（Windows）重新启动一次 App |
+| 想彻底重来 | 删除 App（macOS 拖进废纸篓 / Windows 走卸载），再删 `~/.dsh` 与上表的 App 数据目录 |
+
+---
+
+## 常见问题
+
+**会和终端里装的 dsh 冲突吗？**
+不会。App 管理的是自己数据目录下的 dsh 闭包，与全局安装互不干扰；而配置、会话、凭据（`~/.dsh`）是**共用**的——这正是「零偏差」的意思。
+
+**需要装 Node / npm / pnpm 吗？**
+不需要。都内置在 App 里（Node + npm + pnpm 的 JS 发行版 + 启动器）。系统里没有开发环境也能跑。
+
+**为什么首次启动要装几百 MB？**
+装的是官方 dsh 闭包（约 300MB，含 Node 侧全部依赖）。这就是「不打包进安装包」的代价：安装包小（53MB / 29MB）、dsh 可独立升级回滚。
+
+**dsh 有新版需要我手动更新吗？**
+App 启动时会静默检查并在 dsh 段提示，但**不会自动安装**——是否更新、更新到哪个版本由你决定。
+
+**更新 dsh 会丢会话吗？**
+不会。会话在 `~/.dsh`，与版本无关；闭包升级只是切换 `current` 指向的版本目录。
+
+**能同时开两个吗？**
+不能，也不需要——单实例：重复启动只会召回已有窗口。
+
+**应用未签名会有风险吗？**
+未签名意味着首次打开需要你手动确认（这也是它完全免费、不需证书的原因）。代码、构建流程、产物都在本仓库，可自行审阅与构建。
+
+**会不会误删我的东西？**
+卸载只清理以 App bundle id 命名的精确路径，且所有目标必须是通过校验的绝对路径；`~/.dsh` 仅在明确选择「卸载并删除 ~/.dsh」时才删除。
+
+---
+
+## 技术架构
+
+> 下面几节给想自己折腾或贡献代码的人。日常使用不需要读。
+
+**进程模型**：App 是单个原生进程（Rust + Tauri 2），它托管一个 dsh 子进程——
+
+```
+DeepSeek Harness Desktop (Rust/Tauri 2)
+├── 主窗（壳页 WebView）            # HTML/JS 壳：顶栏 / 命令面板 / 管理抽屉 / 引导页
+├── dsh 工作台                      # 原生 child webview（AddChild），预渲染后移入窗口
+│                                 # 工作台可见时壳页被裁到只剩顶栏——两层不重叠，避免光标闪烁
+└── dsh 子进程                      # 内置 node 运行 <app-data>/dsh/v<版本>/…/bin.js --profile web --port 0
+                                    # stdout 回传就绪 URL；退出回收；崩溃重启
+```
+
+壳页与工作台之间的分工是刻意设计的：工作台是**原生视图**（永远画在 HTML 之上），所以「打开抽屉/命令面板」时会显式把工作台移出窗口，收起后再移回；顶栏折叠则是原生化几何动画（按 CSS `cubic-bezier` 采样逐帧下发边界）。
+
+**环境一致性（macOS）**：App 由 Finder/launchd 启动，继承的是最小环境。启动 dsh 前会捕获一次用户登录交互 shell 的环境（PATH / LANG 等，含 fnm、Homebrew、bun 注入的路径）并合并进子进程——因此工作台里执行命令的环境与你的终端一致。捕获失败则静默沿用原环境。
+
+**dsh 闭包管理**（`dsh.rs`）：`<app-data>/dsh/` 下用纯文本 `current` 标记（Windows 无软链权限也能工作）+ `v<版本>/` 目录 + `npm-cache/`（不污染 `~/.npm`）。安装流程：装到 `v<新版本>-<pid>.tmp` → 双重自检 → 写 VERSION → 发布为 `v<新版本>`（旧目录先移开、失败恢复）→ 原子切换 `current` → 清理 tmp → 重启工作台。GC 始终保留当前版本与上一版本（用于回滚）。
+
+**壳页资源**：`apps/desktop/ui/` 是零构建链的静态资产（`theme.css` 设计系统 + `shell.html/js` + `modal.html/js`），经 `tauri://localhost` 加载，不引入打包器。
+
+---
+
+## 开发与构建
+
+**前置**：Rust 工具链；打包需要 `cargo install tauri-cli --version "^2"`。
 
 **macOS：**
-```bash
-# 前置：Rust 工具链 + tauri-cli（仅打包需要）
-cargo install tauri-cli --version "^2"
 
-# 准备内置资源（node + npm + pnpm；瘦壳不含 dsh 闭包）
+```bash
+# 准备内置资源（node + npm + pnpm 的 JS 发行版 + 启动器）
 scripts/prepare-resources.sh
-#   NODE_SRC=<node二进制>  默认取 fnm 安装的 node v24；npm 随 node 目录分发
-#   pnpm 由脚本临时安装（pnpm@^11 JS 发行版 + shim）后拷入 resources/pnpm-bin
 
 # 开发运行（终端可见 dsh 日志）
 cd apps/desktop/src-tauri && cargo run
+# 或使用 tauri-cli 的热重载开发模式
+cd apps/desktop && cargo tauri dev
 
-# 发布构建（产出 .app + DMG）
-cargo tauri build
-#   产物：target/release/bundle/macos/DeepSeek Harness Desktop.app
-#        target/release/bundle/dmg/DeepSeek Harness Desktop_<版本>_aarch64.dmg
+# 发布构建（.app + DMG）
+cd apps/desktop/src-tauri && cargo tauri build
 ```
 
-**Windows**（需在 Windows 机器或 Windows CI 上构建）：
+**Windows（PowerShell）：**
+
 ```powershell
-# 前置：Rust 工具链（VS Build Tools）+ tauri-cli
-cargo install tauri-cli --locked
-
-# 准备内置资源（node.exe + npm + pnpm）
 .\scripts\prepare-resources.ps1 -NodeSrc (Get-Command node).Source
-
-# 发布构建（产出 NSIS 安装器；加 --bundles msi 得到 MSI）
-cd apps/desktop/src-tauri
+cd apps\desktop\src-tauri
+cargo tauri dev
 cargo tauri build --bundles nsis
-#   产物：target/release/bundle/nsis/DeepSeek Harness Desktop_<版本>_x64-setup.exe
-#        （+ target/release/dsh-desktop.exe 与 resources/ 即为便携版）
 ```
 
-> 首次编译较慢（Tauri 依赖树）。打包态日志落 `<app-data>/logs/`，dev 模式直接输出到终端。
+> 首次编译较慢（Tauri 依赖树）。打包态日志落 `<app-data>/logs/`，dev 模式直接输出到终端。内置资源（node / npm / pnpm-bin）不入库，由上面的脚本生成。
 
-**资源来源**：Node 从 fnm 安装（macOS v24.14.0 arm64；Windows 用官方 x64 node.exe）拷贝；npm 随 node 安装目录分发；pnpm 用 `pnpm@^11` 的 JS 发行版（bin + dist + 自建 shim，比 SEA 二进制省约 130MB）；图标为 `icons/icon.png`（RGBA 1024）+ `icon.icns`（macOS）+ `icon.ico`（Windows）。**不再打包 dsh 闭包与 LAN 资源**——dsh 由 App 首次运行/更新时经内置 npm 装入 app 数据目录。
+**质量保障**：`cargo clippy --all-targets` 需零告警，`cargo test` 覆盖几何计算、版本比较与排序、来源分类、本地路径校验、卸载目标边界、日志脱敏、发布 tag 白名单等关键不变量；发版前另过一遍 [`docs/regression-checklist.md`](docs/regression-checklist.md)（含 Windows 实机项）。
 
-### 4.2 目录结构
+**CLI 自检钩子**（无 GUI，便于自动化；macOS 需从 `.app` 包内运行）：
 
-```
-dsh-desktop/
-├── README.md                    # 本文档
-├── scripts/
-│   ├── prepare-resources.sh     # macOS：打包 node + npm + pnpm（+ 图标）
-│   ├── prepare-resources.ps1    # Windows：同名 PowerShell 版本
-│   ├── install.sh               # macOS 一键安装
-│   └── install.ps1              # Windows 一键安装
-├── docs/
-│   ├── regression-checklist.md  # 手工回归清单（发版前过一遍）
-│   └── superpowers/specs/…      # 设计文档（瘦壳重设计 v0.3）
-└── apps/desktop/
-    ├── ui/                      # 内置资产页（tauri://localhost，零构建链）
-    │   ├── theme.css            # 共享设计系统（颜色/圆角/字体/按钮/弹窗 token）
-    │   ├── shell.html/.js       # 壳页（主窗）：36px 顶栏 + 命令面板 + 管理抽屉（dsh/插件/关于）+ 首次引导浮层
-    │   ├── modal.html/.js       # 自绘弹窗（替代 rfd 系统对话框：启动失败/崩溃/更新确认）
-    │   └── icon.png             # 壳页图标
-    └── src-tauri/
-        ├── Cargo.toml           # tauri2(tray-icon,image-png,macos-private-api,unstable) + serde + serde_json + ureq + dirs（macOS: objc；unix: libc；windows: trash）
-        ├── tauri.conf.json      # identifier / bundle.resources / CSP / withGlobalTauri / nsis(installerHooks) / dmg
-        ├── installer-hooks.nsh  # NSIS 卸载钩子：PREUNINSTALL 调 --self-uninstall-full（完全卸载）
-        ├── icons/               # icon.png(RGBA 1024) + icon.icns(macOS) + icon.ico(Windows)
-        ├── resources/           # 内置 node + npm + pnpm-bin（只读基线，gitignore）
-        └── src/
-            ├── main.rs          # 启动器：路径/设置、spawn/boot、崩溃自愈、托盘、单实例、卸载、CLI hooks
-            ├── dsh.rs           # 闭包管理：首次安装/版本安装/切换/回滚/GC/取消（从 update.rs 演化）
-            ├── registry.rs      # npm registry 查询：latest、版本列表（可配源）、semver 比较
-            ├── plugin.rs        # 插件管理：列表读取 + 安装/卸载（内置 pnpm + 门禁处理）
-            └── appupdate.rs     # App 更新：GitHub Releases 检查 + 下载 + 安装
-```
-
-### 4.3 架构
-
-**进程模型**：App 单个进程（Rust/Tauri），作为壳拉起一个 dsh web 子进程（内置 node 运行 `<app-data>/dsh/v<版本>/node_modules/@deepseek-ai/dsh/lib/bin.js --profile web --port 0`），由 Rust 托管（stdout 解析就绪 URL、退出回收、崩溃重启、退出时连带结束）。dsh 的会话/凭据在 `~/.dsh`，闭包本体归 App 管理——与终端全局安装互不干扰。
-
-**环境一致性（macOS）**：App 由 Finder/launchd 启动，继承的是系统最小环境（PATH 只有系统目录）。启动 dsh 前会自动捕获一次用户登录交互 shell 的环境（PATH/LANG 等，含 fnm / Homebrew / bun 注入的路径），合并进 dsh 子进程——app 工作台里执行命令的环境与电脑终端一致。捕获超时或失败时静默沿用原环境，不影响启动；修改 shell 配置文件后重启 App 生效。
-
-**内置资源（只读基线）**：
-
-macOS（`DSh.app/Contents/Resources/resources/`）、Windows（`<exe 旁>/resources/`）：
-
-```
-resources/
-├── node/
-│   ├── bin/node       # macOS：内置 Node arm64
-│   └── node.exe       # Windows：内置 Node x64
-├── npm/               # 内置 npm（dsh 安装/更新用）
-└── pnpm-bin/          # 内置 pnpm（JS 发行版 + shim，插件管理用）
-```
-
-**dsh 闭包管理与更新机制**（`dsh.rs`，通用版本管理）：
-
-- 闭包装在 app 数据目录 `<app-data>/dsh/`：`current`（纯文本版本标记文件，Windows 无软链权限也能工作）+ `v<版本>/`（该版本完整闭包 + VERSION 标记）+ `npm-cache/`（npm 缓存，不泄漏到 `~/.npm`）。
-- 每次安装：内置 npm 装入 `v<新版本>-tmp` → **双重自检**（`--version` + `--profile web --dump-default-config` 组合）→ 写 VERSION 标记 → 发布为 `v<新版本>` → **原子切换** `current` 标记（旧目录先移开再 rename，失败恢复）→ 清理 tmp → 重启工作台。
-- **GC**：当前版本与上一版本始终各保留一份（约 300MB × 2，用于回滚）；更旧版本自动清理。
-- **失败安全**：切换前任何失败都不动当前版本；安装中可取消（SIGTERM / taskkill 子进程）。
-
-**插件管理**（`plugin.rs`）：壳页「插件」Tab（`shell.html`），经 `plugin_op`/`plugin_list_cmd` command 读写 `~/.dsh/profiles/web`（`dsh plugin --profile web add|remove <包名或本地路径>`）：内置 pnpm（`resources/pnpm-bin`，PATH 前置）运行安装，stdout/stderr 逐行 `emit` 实时回显；安装前自动写入 profile 的 `pnpm-workspace.yaml` 门禁配置（`allowBuilds` + `minimumReleaseAge: 0`），`ERR_PNPM_IGNORED_BUILDS` 时解析包名自动补授权重试；卸载后清扫残留空目录。装/卸完成后自动重启工作台。命令仅接受壳页调用：工作台是**远程来源**（`http://127.0.0.1`），Tauri 默认拒绝远程 origin 的 IPC（须显式授权），`plugin_op` 里的 label 校验作为第二道防线。插件操作全局串行锁保护。
-
-**app 数据目录**（卸载时整个删除；macOS 为 `~/Library/Application Support/…`，Windows 为 `%APPDATA%\…`）：
-
-```
-/…/com.dsh-desktop.app/
-├── settings.json       # 偏好（见下）
-├── logs/               # launcher.log + dsh.log（打包态）
-└── dsh/                # 闭包管理（current 标记 + v<版本>/ 闭包 + npm-cache）
-```
-
-**settings.json 字段**：
-
-| 字段 | 类型 | 说明 |
-|---|---|---|
-| `registry` | string(URL) | npm registry 换源，如 `https://registry.npmmirror.com`；缺省官方 npmjs |
-
-**CLI 测试钩子**（无 GUI，用于自检/自动化；macOS 需从 .app 包内运行）：
-
-```
+```bash
 dsh-desktop --self-update-check            # UP_TO_DATE / UPDATE_AVAILABLE
-dsh-desktop --self-apply-update <ver>      # 安装+自检+切换 → APPLIED / APPLY_ERROR
+dsh-desktop --self-apply-update <ver>      # 安装 + 自检 + 切换 → APPLIED / APPLY_ERROR
 dsh-desktop --self-uninstall-test          # 卸载 teardown（删数据，不删自身）
-dsh-desktop --self-uninstall-full [--wipe] # 完全卸载 sidecar（结束实例+子进程、清数据；供 NSIS 钩子调用，不删程序文件）
-dsh-desktop --self-trash-test              # 把自身移入废纸篓/回收站（打包态运行）
+dsh-desktop --self-uninstall-full [--wipe] # 完全卸载 sidecar（结束实例与子进程、清数据；供 NSIS 钩子调用）
+dsh-desktop --self-trash-test              # 把自身移入废纸篓 / 回收站
 ```
-
-### 4.4 安全与边界
-
-- **只绑 loopback**：dsh 强制 `127.0.0.1`（`--host 0.0.0.0` 被 dsh 自身拒绝）。
-- **端口无冲突**：`--port 0` 随机分配，由 stdout 回传。
-- **数据本地**：凭据/会话在 `~/.dsh`（Windows 为 `%USERPROFILE%\.dsh`），App 不额外落盘敏感数据；日志本地（`<app-data>/logs/`，其中工作台地址的 token 已脱敏），不上传。
-- **安装可信**：dsh 安装走 npm（校验 `dist.integrity` sha512）；切换前双重自检，失败不动当前版本。App 更新校验下载大小与 Release asset 一致，不符即失败清理。
-- **WebView CSP**：最小策略（`default-src 'self'` + 允许连 127.0.0.1，未放行 `frame-src`）；只约束内置资产页——工作台是独立原生 WebView 的顶层文档，不受壳页 CSP 约束。
-- **并发**：单实例；安装/更新期间串行锁，避免重复操作。
-- **已知限制**：App 未签名（个人使用）——macOS 首次打开需右键→打开；Windows SmartScreen 可能提示"未知发布者"，点"仍要运行"即可。如需分发可后续补签名/公证。
 
 ---
 
-## 5. License
+## 发版流程
+
+1. **本地 bump 版本号并提交**（版本号唯一入口，会同步 `tauri.conf.json` / `Cargo.toml` / UI 资源查询串）：
+
+   ```bash
+   scripts/bump-version.sh 0.4.3
+   git commit -am "chore: 版本号统一 0.4.3"
+   ```
+
+2. **打 tag 并推送**，触发 release 工作流（`macOS arm64` + `Windows x64` 两平台构建，产出 DMG / NSIS / 便携 zip，并为每个产物生成 `.sha256`）：
+
+   ```bash
+   git tag v0.4.3 && git push origin main --tags
+   ```
+
+3. 工作流会创建 GitHub Release 并上传全部产物；App 内「检查更新」与两个一键安装脚本都从这里取包。
+
+> 注意：CI 只做**构建与上传**，不回写仓库里的版本号——所以第 1 步的手工 bump 提交不能省，否则仓库 HEAD 的版本号会落后于已发布版本。
+
+---
+
+## 目录结构
+
+```
+dsh-desktop/
+├── apps/desktop/
+│   ├── ui/                          # 壳页静态资产（零构建链）
+│   │   ├── shell.html / shell.js    # 主窗壳页：顶栏 + 命令面板 + 管理抽屉 + 首次引导
+│   │   ├── modal.html / modal.js    # 自绘确认弹窗（启动失败 / 崩溃 / 危险操作）
+│   │   └── theme.css                # 设计系统（token / 组件 / 动效）
+│   └── src-tauri/
+│       ├── src/
+│       │   ├── main.rs              # 启动器：窗口与托盘、单实例、崩溃自愈、卸载、CLI 钩子
+│       │   ├── workbench.rs         # 工作台：原生 child webview 几何 / 折叠动画 / 就绪与认证
+│       │   ├── dsh.rs               # dsh 闭包管理：安装 / 切换 / 回滚 / GC / 取消
+│       │   ├── registry.rs          # npm registry 查询与版本比较
+│       │   ├── plugin.rs            # 插件列表与安装 / 卸载（内置 pnpm）
+│       │   └── appupdate.rs         # App 更新：检查 / 下载（SHA-256）/ 安装 / 清扫
+│       ├── capabilities/            # Tauri 2 ACL：工作台只可发快捷键事件；壳页只可监听事件
+│       ├── installer-hooks.nsh      # NSIS 卸载钩子（完全卸载 sidecar）
+│       ├── resources/               # 内置 node + npm + pnpm-bin（脚本生成，不入库）
+│       └── tauri.conf.json
+├── scripts/
+│   ├── install.sh / install.ps1          # 一键安装 / 升级
+│   ├── prepare-resources.sh / .ps1       # 生成内置运行时
+│   └── bump-version.sh                   # 版本号唯一入口
+├── docs/
+│   ├── regression-checklist.md           # 发版前手工回归清单
+│   └── superpowers/                      # 设计与实现文档
+├── CHANGELOG.md
+└── README.md
+```
+
+---
+
+## 已知限制与路线
+
+**已知限制**
+
+- **未签名 / 未公证**：macOS 首次打开需右键确认，Windows 可能出现 SmartScreen 提示。需要证书才能消除，欢迎有条件的贡献者接入。
+- **macOS 仅 arm64**：CI 目前不产出 Intel 产物（可自行从源码构建）。
+- **WebView2 依赖**：Windows 需要 WebView2 运行时（Win10/11 自带）；安装器默认联网获取，离线环境需预装。
+- **dsh 预览期接口可能变化**：壳依赖 dsh 的 `--profile web`、`--port 0` 与 stdout 就绪行；上游若调整，壳需要跟进。
+
+**路线（无承诺，按需推进）**
+
+- 代码签名与公证（macOS notarization / Windows 代码签名）
+- macOS Intel 与 Linux 构建
+- 多 profile 切换（当前固定 `web`）
+- 日志轮转与「一键导出诊断包」
+
+---
+
+## 贡献与致谢
+
+欢迎 issue 与 PR——尤其是**平台实测反馈**（Windows 行为与 macOS 差异、WebView2 环境问题）和文档修订。
+
+- 提交前请确保 `cargo clippy --all-targets` 零告警、`cargo test` 通过、`node --check apps/desktop/ui/*.js` 通过；涉及交互的改动请对照 [`docs/regression-checklist.md`](docs/regression-checklist.md)。
+- 讨论设计或实现思路时，`docs/superpowers/` 下有本项目的设计与实现文档可参考。
+
+致谢 [Tauri](https://tauri.app)（桌面外壳）、[DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（工作台本体）与 [pnpm](https://pnpm.io)（闭包与插件安装）。
+
+---
+
+## License
 
 [MIT](LICENSE)，与上游 [deepseek-harness](https://github.com/deepseek-ai/deepseek-harness) 一致。
