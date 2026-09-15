@@ -1,6 +1,11 @@
 <h1 align="center">DeepSeek Harness Desktop</h1>
 
 <p align="center">
+  <b>dsh 的版本，由你决定。</b><br>
+  <sub>可安装任意已发布版本、随时切换、回滚到上一版 · 上游发新版<b>不必等 App 发版</b> · 与终端 dsh <b>共用同一份 <code>~/.dsh</code></b>（会话、凭据、插件都是同一套）</sub>
+</p>
+
+<p align="center">
   <a href="https://github.com/Jedeiah/dsh-desktop/releases/latest"><img src="https://img.shields.io/github/v/release/Jedeiah/dsh-desktop?label=release&color=3d5af0" alt="Release"></a>
   <a href="LICENSE"><img src="https://img.shields.io/github/license/Jedeiah/dsh-desktop?color=3d5af0" alt="License"></a>
   <img src="https://img.shields.io/badge/platform-macOS%20arm64%20%7C%20Windows%20x64-3d5af0" alt="Platform">
@@ -12,9 +17,12 @@
 </p>
 
 <p align="center">
-  <sub>把官方 <b>DeepSeek Harness</b>（dsh web）装进一个桌面 App：<b>零环境依赖</b>、双击即用，<br>
-  工作台与配置和终端 dsh <b>完全共用</b>。</sub>
+  <sub>双击即用，不需要 Node / npm / dsh 或任何开发环境——运行时内置，dsh 按需安装。</sub>
 </p>
+
+> **上游也有一个官方桌面端**（Electron 实现、把 dsh 运行时打包进 App、截至目前未公开发布）。
+> 两条路的取舍不同：官方版把 shell 与 dsh 绑成**一个签名整体**；我们是**瘦壳**，把 dsh 交给你管。
+> 具体差别见 [与官方桌面端的关系](#与官方桌面端的关系)。
 
 ---
 
