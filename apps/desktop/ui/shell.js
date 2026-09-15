@@ -1305,6 +1305,8 @@
   // setup_state_cmd 进度轮询 → 完成 Toast / 失败 Toast。首次安装（引导浮层
   // 显示中）时同步引导进度态（旧 updateDsh syncSetup 语义）。
   async function applyVersion(ver, btn, op) {
+    // App 更新进行中：dsh 的装/切/回滚会与更新后的重启抢状态，直接拒绝
+    if (appUpdating) { toast('应用正在更新，请稍候再操作', 'err'); return; }
     const opCn = op === 'rollback' ? '回滚' : op === 'switch' ? '切换' : op === 'update' ? '更新' : '安装';
     const doing = op === 'rollback' ? '回滚中…' : op === 'switch' ? '切换中…' : op === 'update' ? '更新中…' : '安装中…';
     // 记下原按钮文案：结束后回写它而不是 opCn —— 抽屉「更新到最新」按钮的文案是
@@ -1683,7 +1685,67 @@
     }
   }
 
+  // ---------------- App 更新进行中的 UI 状态锁 ----------------
+  // 规则：App 更新一旦开始，**一切会改动 App 或 dsh 状态的按钮**都禁用（检查更新 / 下载 /
+  // 卸载两档 / dsh 分段的安装·切换·回滚·更新）；只读与逃生动作保留（在浏览器打开下载页、
+  // 仓库链接、切分段、关抽屉）——更新结束时本 App 会退出并由新版接管，期间任何"写状态"的
+  // 操作都可能被拦腰打断（dsh 装到一半留 tmp、卸载与更新互相拆台）。正确性另有后端并发门兜底。
+  let appUpdating = false;
+  let appUpdateLockedEls = [];
+  function appUpdateLockTargets() {
+    return [
+      btnCheckAppEl,
+      btnDownloadAppEl,
+      $('btnUninstallKeep'),
+      $('btnUninstallWipe'),
+      ...document.querySelectorAll('[data-section="dsh"] button'),
+    ].filter(Boolean);
+  }
+  function setAppUpdating(v) {
+    appUpdating = !!v;
+    const prog = $('appProgress'), txt = $('appProgressText'), fill = $('appProgressFill');
+    if (appUpdating) {
+      appUpdateLockedEls = appUpdateLockTargets().map((el) => ({ el, was: el.disabled }));
+      appUpdateLockedEls.forEach(({ el }) => { el.disabled = true; });
+      if (prog) { prog.hidden = false; }
+      if (fill) { fill.style.width = '0%'; }
+      if (txt) { txt.hidden = false; txt.textContent = '准备下载…'; }
+    } else {
+      // 逐个恢复"锁之前的禁用状态"（否则会把本该禁用的按钮放出来，例如已是最新时的下载按钮）
+      appUpdateLockedEls.forEach(({ el, was }) => { el.disabled = was; });
+      appUpdateLockedEls = [];
+      if (prog) prog.hidden = true;
+      if (txt) { txt.hidden = true; txt.textContent = ''; }
+    }
+  }
+  // 下载/校验进度（Rust 只在整数百分比变化时发一次）
+  T.event.listen('app:update-progress', (e) => {
+    const p = (e && e.payload) || {};
+    const prog = $('appProgress'), fill = $('appProgressFill'), txt = $('appProgressText');
+    if (!txt) return;
+    const mb = (b) => (Number(b) / 1048576).toFixed(1) + 'MB';
+    if (p.phase === 'install') {
+      if (prog) prog.hidden = true;
+      txt.textContent = '正在校验并安装…完成前请勿关闭应用（随后会自动重启）';
+      setAppStatus('正在校验并安装…', 'run');
+      return;
+    }
+    const total = typeof p.total === 'number' && p.total > 0 ? p.total : null;
+    if (total) {
+      const pct = Math.min(100, Math.round((Number(p.downloaded) / total) * 100));
+      if (prog) prog.hidden = false;
+      if (fill) fill.style.width = pct + '%';
+      txt.textContent = '正在下载更新… ' + pct + '%（' + mb(p.downloaded) + ' / ' + mb(total) + '）';
+      setAppStatus('正在下载更新… ' + pct + '%', 'run');
+    } else {
+      if (prog) prog.hidden = true;
+      txt.textContent = '正在下载更新… 已下载 ' + mb(p.downloaded);
+      setAppStatus('正在下载更新…', 'run');
+    }
+  }).catch(() => {});
+
   async function checkApp() {
+    if (appUpdating) return; // 更新进行中：按钮已禁用，这里再兜一层
     const btn = btnCheckAppEl;
     btn.disabled = true;
     btn.textContent = '检查中…';
@@ -1710,7 +1772,8 @@
   }
   btnCheckAppEl.addEventListener('click', checkApp);
   btnDownloadAppEl.addEventListener('click', async () => {
-    btnDownloadAppEl.disabled = true;
+    if (appUpdating) return; // 双保险：按钮此时已禁用
+    setAppUpdating(true);
     setAppStatus('正在下载并安装更新…安装完成后应用将自动重启');
     const tid = 'app-update';
     taskStart(tid, '下载应用更新');
@@ -1720,6 +1783,7 @@
       // 成功即退出当前实例（安装器/新版负责启动）；任务态到此为止
       taskFinish(tid, 'ok', '更新包已就绪，重启后生效');
     } catch (e) {
+      setAppUpdating(false);
       taskFinish(tid, 'err', (e && e.message) || String(e));
       setAppStatus('更新失败：' + ((e && e.message) || e), 'err');
       btnDownloadAppEl.disabled = !appLatest;
@@ -1739,6 +1803,7 @@
   const btnUninstallWipe = $('btnUninstallWipe');
   const uninstallStatus = $('uninstallStatus');
   $('btnToggleUninstall').addEventListener('click', function () {
+    if (appUpdating) { toast('应用正在更新，请稍候再操作', 'err'); return; }
     const zone = $('uninstallZone');
     const open = zone.hidden;
     zone.hidden = !open;

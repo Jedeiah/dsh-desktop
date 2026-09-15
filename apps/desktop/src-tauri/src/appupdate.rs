@@ -1,7 +1,13 @@
 //! App 自身更新：GitHub Releases 检查 + 下载安装（macOS DMG / Windows NSIS）。
 //! 失败安全：下载/安装任何一步失败都不影响当前运行版本。
 
-use std::io::Read;
+use std::io::{Read, Write};
+use tauri::Emitter; // Tauri 2：emit 定义在 Emitter trait 上
+use std::sync::atomic::{AtomicBool, Ordering};
+
+/// App 更新任务是否在进行中（下载/校验/安装）。
+/// UI 侧会禁用相关按钮，但正确性靠这里：并发调用会下载两份安装包、拉起两次安装器。
+static UPDATING: AtomicBool = AtomicBool::new(false);
 use std::path::Path;
 use std::time::Duration;
 
@@ -90,7 +96,7 @@ fn expected_sha256(url: &str) -> Result<String, String> {
 /// 杜绝静默截断)。大文件下载用 30 分钟总超时——ureq 的 timeout 覆盖整个请求，
 /// 数十秒的默认值必然中断数百 MB 的安装包下载。
 /// 下载完成后比对 release 提供的 SHA-256（安全加固），不符则删除并失败。
-pub fn download_installer(url: &str, dest: &Path) -> Result<u64, String> {
+pub fn download_installer(url: &str, dest: &Path, app: &tauri::AppHandle) -> Result<u64, String> {
     let resp = ureq::get(url)
         .timeout(Duration::from_secs(1800))
         .call()
@@ -100,13 +106,42 @@ pub fn download_installer(url: &str, dest: &Path) -> Result<u64, String> {
         .and_then(|s| s.parse::<u64>().ok());
     let mut reader = resp.into_reader().take(2 << 30);
     let mut f = std::fs::File::create(dest).map_err(|e| format!("创建临时文件失败: {e}"))?;
-    let n = std::io::copy(&mut reader, &mut f).map_err(|e| format!("写入失败: {e}"))?;
+    // 手动分块拷贝（原 std::io::copy 无法统计进度）：统计字节数 → 只在**整数百分比
+    // 变化**时向壳页发一次进度事件（每 64KB 发一次会把 IPC 打满）。
+    let mut buf = vec![0u8; 64 * 1024];
+    let mut n: u64 = 0;
+    let mut last_pct: i64 = -1;
+    loop {
+        let read = reader.read(&mut buf).map_err(|e| format!("读取失败: {e}"))?;
+        if read == 0 {
+            break;
+        }
+        f.write_all(&buf[..read]).map_err(|e| format!("写入失败: {e}"))?;
+        n += read as u64;
+        let pct = match expected {
+            Some(t) if t > 0 => (n.saturating_mul(100) / t) as i64,
+            _ => -1, // 服务端没给长度：百分比未知，壳页按"不确定"展示
+        };
+        if pct != last_pct {
+            last_pct = pct;
+            let _ = app.emit(
+                "app:update-progress",
+                serde_json::json!({ "phase": "download", "downloaded": n, "total": expected }),
+            );
+        }
+    }
+    drop(f);
     if let Some(exp) = expected {
         if n != exp {
             let _ = std::fs::remove_file(dest);
             return Err(format!("下载不完整: 期望 {exp} 字节, 实际 {n}"));
         }
     }
+    // 进入校验/安装阶段：没有可用的百分比，告知壳页切成"不确定"文案
+    let _ = app.emit(
+        "app:update-progress",
+        serde_json::json!({ "phase": "install", "downloaded": n, "total": expected }),
+    );
     // SHA-256 校验（发布流程生成 `<asset>.sha256`）
     let got = sha256_of_file(dest).map_err(|e| format!("计算安装包 SHA-256 失败: {e}"))?;
     let want = expected_sha256(url)?;
@@ -141,7 +176,17 @@ pub async fn app_update_cmd(
     webview: tauri::Webview,
 ) -> Result<(), String> {
     crate::ensure_shell_webview(&webview)?;
-    let ver = latest_app_version()?;
+    // 并发门：第二次调用直接拒绝（否则会下载两份安装包、拉起两次安装器）
+    if UPDATING.swap(true, Ordering::SeqCst) {
+        return Err("已有更新任务在进行中，请稍候".to_string());
+    }
+    let ver = match latest_app_version() {
+        Ok(v) => v,
+        Err(e) => {
+            UPDATING.store(false, Ordering::SeqCst);
+            return Err(e);
+        }
+    };
     let url = asset_url(&ver).ok_or_else(|| "当前平台暂不支持自动安装".to_string())?;
     // 文件名显式拼装，**不要**用 Path::with_extension：它会把 "0.4.2" 的 ".2" 当扩展名
     // 替换掉，生成 dsh-desktop-update-0.4.dmg（版本号被截断，且 0.4.2 / 0.4.3 会撞名）。
@@ -155,9 +200,10 @@ pub async fn app_update_cmd(
     let _ = std::fs::remove_file(&installer); // 清掉同版本的历史残留
 
     let cleanup = installer.clone();
+    let app2 = app.clone();
     let result = tauri::async_runtime::spawn_blocking(move || {
         let dest = installer.clone();
-        download_installer(&url, &dest)?;
+        download_installer(&url, &dest, &app2)?;
         #[cfg(target_os = "macos")]
         install_macos(&installer)?;
         #[cfg(target_os = "windows")]
@@ -173,6 +219,10 @@ pub async fn app_update_cmd(
     // Windows 走不到这里（/S 安装器在安装开始就杀掉本进程，见 install_windows 注释），
     // 那种情况由下次启动的 sweep_stale_installers 兜底。
     let _ = std::fs::remove_file(&cleanup);
+    // 失败要放开并发门（成功路径会 app.exit 退出本进程，无需复位）
+    if result.is_err() {
+        UPDATING.store(false, Ordering::SeqCst);
+    }
     result?;
 
     // 安装成功 → 退出当前实例（安装器/新版会负责启动）
