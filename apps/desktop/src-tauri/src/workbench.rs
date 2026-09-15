@@ -137,6 +137,12 @@ static COLLAPSED: AtomicBool = AtomicBool::new(false);
 /// child webview「页面加载完成自动显示」必须绕过它——否则 dsh 崩溃自愈
 /// 换端口重导航完成后会把工作台从抽屉/面板下面顶出来。
 static SUPPRESSED: AtomicBool = AtomicBool::new(false);
+
+/// 工作台当前是否被壳页要求隐藏（= 有浮层占用工作区：抽屉/命令面板，或已关到后台）。
+/// 供 main 的 restart_dsh / reveal 判断「现在能不能把原生工作台移回窗口内、能不能关浮层」。
+pub(crate) fn is_suppressed() -> bool {
+    SUPPRESSED.load(Ordering::SeqCst)
+}
 /// 工作台是否已完成首次加载（workbench:ready 已发生；供壳页轮询兜底）。
 static READY: AtomicBool = AtomicBool::new(false);
 /// 降级模式（路径 C：独立窗口）。add_child 成功 = false。

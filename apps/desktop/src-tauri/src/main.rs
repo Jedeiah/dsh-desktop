@@ -1416,6 +1416,10 @@ pub(crate) fn reveal_main_window(app: &AppHandle, url: Option<&str>) {
         let _ = w.emit("dsh:url", u);
     }
     let visible = w.is_visible().unwrap_or(false);
+    // 「窗口本来是隐藏的」= 真正的召回（托盘/Dock/二次启动/开机首显）；窗口本来就
+    // 可见的 reveal（dsh 重启后就绪、崩溃自愈完成）不应该关掉用户正开着的浮层、
+    // 也不应该把原生工作台移进来盖住它（用户实测：插件装卸后「隔几秒又跳回工作台」）。
+    let was_hidden = !visible;
     if !visible {
         let _ = w.center();
         let _ = w.show();
@@ -1439,8 +1443,14 @@ pub(crate) fn reveal_main_window(app: &AppHandle, url: Option<&str>) {
     // 移回窗口内，而原生视图盖在所有 HTML 之上——浮层若还开着就被压到下面，
     // 用户看到的是「工作台上残留一个输入框和按钮」（实测反馈）。浮层已由
     // 关到后台时的 __onHideToTray 收过一轮，这里是托盘/Dock 召回等其它入口的兜底。
-    let _ = w.eval("window.__onMainReveal && window.__onMainReveal()");
-    crate::workbench::show_child(app);
+    // 仅真正的召回才：收浮层 + 把工作台移回窗口。工作台此时该不该显示由
+    // apply_bounds_on_main 按 SUPPRESSED 决定——浮层开着（SUPPRESSED=true）时它
+    // 保持屏幕外，用户收起浮层后 show_workbench_cmd 再移入。窗口本来可见时这里
+    // 什么都不做，避免把用户正开着的抽屉/面板关掉。
+    if was_hidden {
+        let _ = w.eval("window.__onMainReveal && window.__onMainReveal()");
+        crate::workbench::show_child(app);
+    }
 }
 
 /// Open a URL in the system default browser.
@@ -1587,9 +1597,18 @@ pub(crate) fn restart_dsh(app: &AppHandle) {
     // 「App 不见了」）。
     // 这里改为：复位隐藏态 + 刷新壳页（等价于原先 close 想要的「壳页重置」效果），
     // 窗口留在屏幕上，新工作台就绪后照常移入。
-    crate::workbench::show_child(app);
-    if let Some(w) = main_window(app) {
-        let _ = w.eval("location.reload()");
+    // 浮层占用工作区时（抽屉/命令面板打开——插件装卸、版本更新都是从这里发起的）
+    // **不要**把工作台移回窗口内、也不要整页刷新壳页：
+    //   · 工作台是原生视图，移回窗口会立刻盖住抽屉（用户实测「装完抖一下跳回工作台」）；
+    //   · 壳页 location.reload() 会把插件输出面板、分段状态、日志全部清掉。
+    // 等用户收起浮层时走 closeDrawer → maybeShowWorkbench → show_workbench_cmd →
+    // show_child，工作台会带着新代码归位（新 dsh 就绪时已经按新 URL 重导航、并在
+    // 屏幕外预渲染好）。窗口从后台被召回（__onMainReveal）仍由 reveal 路径处理。
+    if !crate::workbench::is_suppressed() {
+        crate::workbench::show_child(app);
+        if let Some(w) = main_window(app) {
+            let _ = w.eval("location.reload()");
+        }
     }
     let handle = app.clone();
     std::thread::spawn(move || boot(handle));

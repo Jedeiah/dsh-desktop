@@ -587,7 +587,10 @@ body.chrome-collapsed .drawer { top: 0; }
   transition: background var(--dur) var(--ease);
 }
 .list-row:hover { background: var(--surface-2); }
-.list-row .grow { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; }
+/* 名称列不再抢占剩余空间：否则「名称」与「来源（类型/位置）」之间会被拉出一大段空白
+   （用户实测「类型与位置两列中间的间距太宽」）。按钮改用 margin-left:auto 靠右。 */
+.list-row .grow { flex: 0 1 auto; min-width: 0; display: flex; align-items: center; gap: 8px; }
+.list-row > .btn { margin-left: auto; }
 .row-title { font-size: var(--fs-body); font-weight: 600; color: var(--fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .row-meta {
   font-size: var(--fs-aux); color: var(--fg-subtle);

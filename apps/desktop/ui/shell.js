@@ -1104,7 +1104,11 @@
   const verInputEl = $('verInput');
   const btnInstallVerEl = $('btnInstallVer');
   const btnRegistryEl = $('btnRegistry');
-  let dshLatestVer = null; // 后端查询到的最新版本（与元素 id dshLatest 区分）
+  let dshLatestVer = null; // 后端查询到的 latest（npm dist-tag；可能落后于已发布版本）
+  // 「最新」以 **registry 版本列表里的 semver 最大值** 为准，而不是 dist-tag：实测上游
+  // dist-tags.latest = 0.1.5-rc.1 而最新已发布版本是 0.1.5-rc.2 —— 用 dist-tag 会导致
+  // 列表首行没有「最新」徽标、甚至提示「发现新版本」把用户往旧版本上带（降级）。
+  let dshNewestVer = null;
   let currentRegistry = 'https://registry.npmmirror.com'; // 最近一次保存/读取的 Registry 源
 
   function setDshStatus(text, kind) {
@@ -1122,26 +1126,32 @@
       // st: { current, latest, versions, installing, installed }
       const current = st.current || '未安装';
       dshLatestVer = st.latest || null;
+      // 版本列表里的最大版本（不假定后端顺序，自己按 cmpVer 取最大；列表为空时回退 dist-tag）
+      const versions = st.versions || [];
+      const newest = versions.reduce((m, v) => (!m || cmpVer(v, m) > 0 ? v : m), null);
+      dshNewestVer = newest || dshLatestVer;
       dshCurrentEl.textContent = current;
       // 未安装时不要显示「当前」徽标（否则出现「未安装 + 当前」自相矛盾）
       const curBadge = $('dshCurrentBadge');
       if (curBadge) curBadge.hidden = !st.current || st.current === '未安装';
 
-      const hasUpdate = !!dshLatestVer && dshLatestVer !== current && current !== '未安装';
+      // 用 semver 比较而不是「字符串不等」：dist-tag 落后时不能把旧版本当成「新版本」
+      const hasUpdate = !!dshNewestVer && current !== '未安装' && cmpVer(dshNewestVer, current) > 0;
       dshUpdateBanner.hidden = !hasUpdate;
-      if (hasUpdate) dshLatestEl.textContent = 'v' + dshLatestVer;
+      if (hasUpdate) dshLatestEl.textContent = 'v' + dshNewestVer;
       btnUpdateDshEl.disabled = !!st.installing;
       btnCheckDshEl.disabled = !!st.installing;
       btnCheckDshEl.textContent = st.installing ? '安装中…' : '检查更新';
 
-      renderVersions(st.versions || [], current, dshLatestVer, !!st.installing, st.installed || []);
+      // 第 3 个参数是「哪一行打『最新』徽标」——传 semver 最大值（不是 dist-tag）
+      renderVersions(versions, current, dshNewestVer, !!st.installing, st.installed || []);
 
       if (st.installing) {
         setDshStatus('正在安装新版本…安装完成后工作台自动重启', 'run');
       } else if (hasUpdate) {
-        setDshStatus('发现新版本 v' + dshLatestVer + '，可更新', 'acc');
-      } else if (!dshLatestVer) {
-        // LATEST_DSH 为启动时一次查询的缓存；空 = 离线或检查失败，如实提示
+        setDshStatus('发现新版本 v' + dshNewestVer + '，可更新', 'acc');
+      } else if (!dshNewestVer) {
+        // 版本列表为空（离线或检查失败）时无法判断，如实提示
         setDshStatus('暂无法确认最新版本（离线或启动时检查失败）', 'warn');
       } else {
         setDshStatus('已是最新版本', 'ok');
@@ -1367,8 +1377,8 @@
   function checkDsh() { refreshDsh(); }
   btnCheckDshEl.addEventListener('click', checkDsh);
   btnUpdateDshEl.addEventListener('click', () => {
-    if (!dshLatestVer) return;
-    const v = dshLatestVer;
+    if (!dshNewestVer) return;
+    const v = dshNewestVer; // 装「版本列表里的最大值」，别装可能落后的 dist-tag
     openModal({
       title: '更新到最新',
       message: '将把 dsh 运行时更新到 v' + v + '，更新过程中工作台会重启。',
