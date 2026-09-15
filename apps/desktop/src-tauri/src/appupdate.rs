@@ -2,14 +2,15 @@
 //! 失败安全：下载/安装任何一步失败都不影响当前运行版本。
 
 use std::io::{Read, Write};
-use tauri::Emitter; // Tauri 2：emit 定义在 Emitter trait 上
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
+
+use tauri::Emitter; // Tauri 2：emit 定义在 Emitter trait 上
 
 /// App 更新任务是否在进行中（下载/校验/安装）。
 /// UI 侧会禁用相关按钮，但正确性靠这里：并发调用会下载两份安装包、拉起两次安装器。
 static UPDATING: AtomicBool = AtomicBool::new(false);
-use std::path::Path;
-use std::time::Duration;
 
 const REPO: &str = "Jedeiah/dsh-desktop";
 
@@ -110,7 +111,10 @@ pub fn download_installer(url: &str, dest: &Path, app: &tauri::AppHandle) -> Res
     // 变化**时向壳页发一次进度事件（每 64KB 发一次会把 IPC 打满）。
     let mut buf = vec![0u8; 64 * 1024];
     let mut n: u64 = 0;
-    let mut last_pct: i64 = -1;
+    // 初值取 i64::MIN：否则"无 Content-Length（pct 恒为 -1）"时首条事件就不发，
+    // 壳页会一直停在「准备下载…」。
+    let mut last_pct: i64 = i64::MIN;
+    let mut last_emit: u64 = 0;
     loop {
         let read = reader.read(&mut buf).map_err(|e| format!("读取失败: {e}"))?;
         if read == 0 {
@@ -122,8 +126,10 @@ pub fn download_installer(url: &str, dest: &Path, app: &tauri::AppHandle) -> Res
             Some(t) if t > 0 => (n.saturating_mul(100) / t) as i64,
             _ => -1, // 服务端没给长度：百分比未知，壳页按"不确定"展示
         };
-        if pct != last_pct {
+        // 有总长：按整数百分比变化发；没有总长：每 4MB 发一次（否则整段下载只有一条事件）
+        if pct != last_pct || n - last_emit >= 4 * 1024 * 1024 {
             last_pct = pct;
+            last_emit = n;
             let _ = app.emit(
                 "app:update-progress",
                 serde_json::json!({ "phase": "download", "downloaded": n, "total": expected }),
@@ -176,17 +182,9 @@ pub async fn app_update_cmd(
     webview: tauri::Webview,
 ) -> Result<(), String> {
     crate::ensure_shell_webview(&webview)?;
-    // 并发门：第二次调用直接拒绝（否则会下载两份安装包、拉起两次安装器）
-    if UPDATING.swap(true, Ordering::SeqCst) {
-        return Err("已有更新任务在进行中，请稍候".to_string());
-    }
-    let ver = match latest_app_version() {
-        Ok(v) => v,
-        Err(e) => {
-            UPDATING.store(false, Ordering::SeqCst);
-            return Err(e);
-        }
-    };
+    // 先做所有可能失败的校验（版本查询 / 平台产物 / 文件名拼装）：这些失败不必占用并发门，
+    // 门一旦置位就只允许从下面那个唯一出口复位，避免"卡在更新中"的永久锁定。
+    let ver = latest_app_version()?;
     let url = asset_url(&ver).ok_or_else(|| "当前平台暂不支持自动安装".to_string())?;
     // 文件名显式拼装，**不要**用 Path::with_extension：它会把 "0.4.2" 的 ".2" 当扩展名
     // 替换掉，生成 dsh-desktop-update-0.4.dmg（版本号被截断，且 0.4.2 / 0.4.3 会撞名）。
@@ -199,6 +197,10 @@ pub async fn app_update_cmd(
     };
     let _ = std::fs::remove_file(&installer); // 清掉同版本的历史残留
 
+    // 并发门：第二次调用直接拒绝（否则会下载两份安装包、拉起两次安装器）
+    if UPDATING.swap(true, Ordering::SeqCst) {
+        return Err("已有更新任务在进行中，请稍候".to_string());
+    }
     let cleanup = installer.clone();
     let app2 = app.clone();
     let result = tauri::async_runtime::spawn_blocking(move || {
@@ -211,7 +213,10 @@ pub async fn app_update_cmd(
         Ok::<(), String>(())
     })
     .await
-    .map_err(|e| format!("更新线程异常：{e}"))?;
+    // 线程 panic（JoinError）与安装/下载失败并入同一条出口——**不能用 `?` 提前返回**，
+    // 否则并发门不复位，UI 会永久停在"更新中"（点不了检查更新，只能重启 App）。
+    .map_err(|e| format!("更新线程异常：{e}"))
+    .and_then(|r| r);
 
     // 安装包用完即删（成功失败都删）：否则每次更新都把整个包留在临时区
     // （macOS DMG ≈54MB、Windows setup.exe ≈30MB；用户实测残留 dsh-desktop-update-0.4.dmg）。
@@ -219,10 +224,9 @@ pub async fn app_update_cmd(
     // Windows 走不到这里（/S 安装器在安装开始就杀掉本进程，见 install_windows 注释），
     // 那种情况由下次启动的 sweep_stale_installers 兜底。
     let _ = std::fs::remove_file(&cleanup);
-    // 失败要放开并发门（成功路径会 app.exit 退出本进程，无需复位）
-    if result.is_err() {
-        UPDATING.store(false, Ordering::SeqCst);
-    }
+    // 唯一出口：无论成败都放开并发门（成功路径紧随其后 app.exit(0) 退出本进程；
+    // Windows 上安装器会杀掉本进程，同样无需复位）
+    UPDATING.store(false, Ordering::SeqCst);
     result?;
 
     // 安装成功 → 退出当前实例（安装器/新版会负责启动）
