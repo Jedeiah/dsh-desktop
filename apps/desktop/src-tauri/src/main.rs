@@ -954,6 +954,11 @@ struct SetupState {
 /// 防止并发触发安装（防重复安装；取消/失败/成功都会复位）。
 static SETUP_BUSY: AtomicBool = AtomicBool::new(false);
 
+/// 安装/更新 dsh 是否进行中（供重启命令避让：安装期间重启会撞上 pnpm 与 tmp 目录）。
+pub(crate) fn setup_busy() -> bool {
+    SETUP_BUSY.load(Ordering::SeqCst)
+}
+
 /// 卸载链进行中标志：ExitRequested 时 prevent_exit，防 teardown 被打断。
 static UNINSTALLING: AtomicBool = AtomicBool::new(false);
 

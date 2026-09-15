@@ -656,6 +656,11 @@
   const modalEl = $('modal');
   let modalAccept = null;
   function openModal(opts) {
+    // 确认弹窗是壳页内的整幅浮层（#modal，fixed inset:0），而原生工作台永远盖在 HTML 之上：
+    // 从命令面板触发时，runPaletteItem 会先 closePalette() → maybeShowWorkbench() 把工作台
+    // 移回窗口并把壳页裁到 36pt（顶栏），弹窗就只剩那一条、看不见也点不到（实测定位）。
+    // 因此弹窗和抽屉/命令面板一样是「占用工作区」的浮层：打开时让位，关闭时再归位。
+    invoke('hide_workbench_cmd').catch(() => {});
     $('modalTitle').textContent = opts.title || '确认操作';
     $('modalMsg').textContent = opts.message || '';
     $('modalIcon').className = 'modal-icon' + (opts.danger ? ' danger' : '');
@@ -667,7 +672,13 @@
     modalEl.hidden = false;
     $('modalOk').focus({ preventScroll: true });
   }
-  function closeModal() { modalEl.hidden = true; modalAccept = null; }
+  function closeModal(restoreWorkbench = true) {
+    modalEl.hidden = true;
+    modalAccept = null;
+    // 与抽屉/命令面板同规：浮层收起后恢复工作台（受守卫——抽屉/面板仍占用时不动作，
+    // 所以「从抽屉里弹确认」这条路径依然安静）。
+    if (restoreWorkbench) maybeShowWorkbench();
+  }
   $('modalNo').addEventListener('click', closeModal);
   $('modalClose').addEventListener('click', closeModal);
   modalEl.addEventListener('click', (e) => { if (e.target === modalEl) closeModal(); });
@@ -1124,7 +1135,8 @@
   const btnRegistryEl = $('btnRegistry');
   let dshLatestVer = null; // 后端查询到的 latest（npm dist-tag；可能落后于已发布版本）
   // 「最新」以 **registry 版本列表里的 semver 最大值** 为准，而不是 dist-tag：实测上游
-  // dist-tags.latest = 0.1.5-rc.1 而最新已发布版本是 0.1.5-rc.2 —— 用 dist-tag 会导致
+  // dist-tags.latest 落后于最新已发布版本（如 latest=0.1.5-rc.1 而列表已有 0.1.6-alpha.1）
+  // —— 用 dist-tag 会导致
   // 列表首行没有「最新」徽标、甚至提示「发现新版本」把用户往旧版本上带（降级）。
   let dshNewestVer = null;
   let currentRegistry = 'https://registry.npmmirror.com'; // 最近一次保存/读取的 Registry 源
@@ -1146,7 +1158,12 @@
       dshLatestVer = st.latest || null;
       // 版本列表里的最大版本（不假定后端顺序，自己按 cmpVer 取最大；列表为空时回退 dist-tag）
       const versions = st.versions || [];
-      const newest = versions.reduce((m, v) => (!m || cmpVer(v, m) > 0 ? v : m), null);
+      // registry 源的版本键未经过后端校验（自定义源可能含 "0.1" 这类非法键），
+      // 取最大前先按宽松 semver 过滤——否则可能选出后端会拒绝安装的版本。
+      const SEMVERISH = /^\d+\.\d+\.\d+(-[0-9A-Za-z.]+)?$/;
+      const newest = versions
+        .filter((v) => SEMVERISH.test(String(v)))
+        .reduce((m, v) => (!m || cmpVer(v, m) > 0 ? v : m), null);
       dshNewestVer = newest || dshLatestVer;
       dshCurrentEl.textContent = current;
       // 未安装时不要显示「当前」徽标（否则出现「未安装 + 当前」自相矛盾）
@@ -1168,6 +1185,8 @@
         setDshStatus('正在安装新版本…安装完成后工作台自动重启', 'run');
       } else if (hasUpdate) {
         setDshStatus('发现新版本 v' + dshNewestVer + '，可更新', 'acc');
+      } else if (current === '未安装') {
+        setDshStatus('尚未安装 dsh，可安装 v' + dshNewestVer + '（或指定版本）', 'acc');
       } else if (!dshNewestVer) {
         // 版本列表为空（离线或检查失败）时无法判断，如实提示
         setDshStatus('暂无法确认最新版本（离线或启动时检查失败）', 'warn');

@@ -678,6 +678,11 @@ pub fn hide_workbench_cmd(app: AppHandle) {
 #[tauri::command]
 pub fn dsh_restart_cmd(app: AppHandle, webview: tauri::Webview) -> Result<(), String> {
     crate::ensure_shell_webview(&webview)?;
+    // 安装/更新进行中时拒绝：此刻重启会杀掉正在跑的 pnpm、并让 v<ver>-tmp 留在半成品状态
+    // （后端安装流程有 SETUP_BUSY 门，重启命令此前没有，是新增入口带来的窗口）。
+    if crate::setup_busy() {
+        return Err("正在安装/更新 dsh，请稍后再试".to_string());
+    }
     crate::restart_dsh(&app);
     Ok(())
 }
