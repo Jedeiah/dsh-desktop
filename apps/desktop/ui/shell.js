@@ -317,6 +317,7 @@
         message: '将结束当前 dsh 进程并重新启动：正在运行的任务会中断，工作台会重新加载（端口会变）。',
         okLabel: '重启', danger: false,
         onAccept: () => {
+          if (appUpdating) { toast('应用正在更新，请稍候再操作', 'err'); return; }
           invoke('dsh_restart_cmd')
             .then(() => toast('dsh 已重启', 'ok'))
             .catch((e) => toast('重启失败：' + ((e && e.message) || e), 'err'));
@@ -1174,12 +1175,14 @@
       const hasUpdate = !!dshNewestVer && current !== '未安装' && cmpVer(dshNewestVer, current) > 0;
       dshUpdateBanner.hidden = !hasUpdate;
       if (hasUpdate) dshLatestEl.textContent = 'v' + dshNewestVer;
-      btnUpdateDshEl.disabled = !!st.installing;
-      btnCheckDshEl.disabled = !!st.installing;
+      // 「安装中」或「App 更新中」都要禁用——refreshDsh 会在切分段时重渲染，
+      // 若只按 st.installing 判断，更新期间切到 dsh 分段会把刚锁上的按钮放出来。
+      btnUpdateDshEl.disabled = !!st.installing || appUpdating;
+      btnCheckDshEl.disabled = !!st.installing || appUpdating;
       btnCheckDshEl.textContent = st.installing ? '安装中…' : '检查更新';
 
       // 第 3 个参数是「哪一行打『最新』徽标」——传 semver 最大值（不是 dist-tag）
-      renderVersions(versions, current, dshNewestVer, !!st.installing, st.installed || []);
+      renderVersions(versions, current, dshNewestVer, !!st.installing || appUpdating, st.installed || []);
 
       if (st.installing) {
         setDshStatus('正在安装新版本…安装完成后工作台自动重启', 'run');
@@ -1575,6 +1578,7 @@
           const btn = document.createElement('button');
           btn.className = 'btn danger-ghost sm';
           btn.textContent = '卸载';
+          btn.disabled = appUpdating; // 重渲染出来的按钮也要继承"更新中"的锁定
           // 卸载二次确认改 modal（删除旧「行内 3 秒确认」按钮逻辑）
           btn.addEventListener('click', () => {
             openModal({
@@ -1596,6 +1600,7 @@
 
   // 卸载执行（modal 确认后调用，列表行与输入框旁按钮共用）；执行期间锁全局安装入口
   async function doRemovePlugin(pkg) {
+    if (appUpdating) { toast('应用正在更新，请稍候再操作', 'err'); return; }
     setPluginBusy(true);
     const tid = 'pkg-' + pkg;
     taskStart(tid, '卸载插件');
@@ -1619,6 +1624,7 @@
   }
 
   async function runPlugin() {
+    if (appUpdating) { toast('应用正在更新，请稍候再操作', 'err'); return; }
     const name = pkgInputEl.value.trim();
     if (!name) { toast('请输入包名', 'err'); return; }
     setPluginBusy(true);
@@ -1699,6 +1705,7 @@
       $('btnUninstallKeep'),
       $('btnUninstallWipe'),
       ...document.querySelectorAll('[data-section="dsh"] button'),
+      ...document.querySelectorAll('[data-section="plugins"] button'),
     ].filter(Boolean);
   }
   function setAppUpdating(v) {
@@ -1716,10 +1723,15 @@
       appUpdateLockedEls = [];
       if (prog) prog.hidden = true;
       if (txt) { txt.hidden = true; txt.textContent = ''; }
+      // 锁定期间重渲染出来的版本行按钮是按"更新中"渲染成禁用的，快照恢复管不到它们
+      // （元素是新建的）——解锁后重渲染一次，让它们回到按真实 registry 状态渲染。
+      refreshDsh();
     }
   }
   // 下载/校验进度（Rust 只在整数百分比变化时发一次）
   T.event.listen('app:update-progress', (e) => {
+    // 解锁后迟到的残留事件不得把状态行写回"更新中"（事件与命令返回的到达顺序无保证）
+    if (!appUpdating) return;
     const p = (e && e.payload) || {};
     const prog = $('appProgress'), fill = $('appProgressFill'), txt = $('appProgressText');
     if (!txt) return;
@@ -1733,7 +1745,7 @@
     const total = typeof p.total === 'number' && p.total > 0 ? p.total : null;
     if (total) {
       const pct = Math.min(100, Math.round((Number(p.downloaded) / total) * 100));
-      if (prog) prog.hidden = false;
+      if (prog) { prog.hidden = false; prog.setAttribute('aria-valuenow', String(pct)); }
       if (fill) fill.style.width = pct + '%';
       txt.textContent = '正在下载更新… ' + pct + '%（' + mb(p.downloaded) + ' / ' + mb(total) + '）';
       setAppStatus('正在下载更新… ' + pct + '%', 'run');

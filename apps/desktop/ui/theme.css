@@ -668,6 +668,8 @@ body.chrome-collapsed .drawer { top: 0; }
 .setup-head p { font-size: var(--fs-aux); color: var(--fg-muted); margin-top: 2px; }
 .stage-line { font-size: var(--fs-body); font-weight: 600; color: var(--fg); min-height: 21px; }
 .progress { height: 3px; border-radius: 999px; background: var(--surface-3); overflow: hidden; margin: 12px 0 10px; }
+/* 关于页的更新进度条是"确定百分比"，不要复用引导页的不确定态滑动动画 */
+#appProgressFill { animation: none; }
 .progress-fill {
   height: 100%; width: 35%; border-radius: 999px; background: var(--accent);
   animation: indeterminate 1.5s var(--ease) infinite;
