@@ -2495,6 +2495,7 @@ fn main() {
             workbench::show_workbench_cmd,
             workbench::hide_workbench_cmd,
             workbench::workbench_reload_cmd,
+            workbench::dsh_restart_cmd,
             workbench::workbench_ready_cmd,
             workbench::workbench_set_collapsed_cmd,
         ])

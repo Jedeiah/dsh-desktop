@@ -305,6 +305,24 @@
     { id: 'refresh', label: '刷新工作台', hint: '重新加载 dsh 工作台', icon: ICON.refresh, run: () => invoke('workbench_reload_cmd').catch(() => {}) },
     { id: 'openBrowser', label: '在浏览器打开工作台', hint: '用系统默认浏览器打开当前 dsh 地址', icon: ICON.external, run: () => { invoke('open_workbench_url_cmd').catch(() => {}); } },
     { id: 'checkDsh', label: '检查 dsh 更新', hint: '立即检查 dsh 运行时新版本', icon: ICON.terminal, run: () => { openDrawer('dsh'); checkDsh(); } },
+    // 重启 dsh：结束 dsh 子进程并重新拉起（端口会变、工作台重连）。用在「终端里改过插件/配置」
+    // 之后让 App 里的运行时重新加载；会中断正在运行的任务，故二次确认。
+    {
+      id: 'restartDsh',
+      label: '重启 dsh',
+      hint: '重新拉起 dsh 运行时（在终端改过插件或配置后用）',
+      icon: ICON.refresh,
+      run: () => openModal({
+        title: '重启 dsh',
+        message: '将结束当前 dsh 进程并重新启动：正在运行的任务会中断，工作台会重新加载（端口会变）。',
+        okLabel: '重启', danger: false,
+        onAccept: () => {
+          invoke('dsh_restart_cmd')
+            .then(() => toast('dsh 已重启', 'ok'))
+            .catch((e) => toast('重启失败：' + ((e && e.message) || e), 'err'));
+        },
+      }),
+    },
     { id: 'checkApp', label: '检查应用更新', hint: '检查 DeepSeek Harness Desktop 更新', icon: ICON.info, run: () => { openDrawer('about'); checkApp(); } },
     // label/hint 用 getter：命令面板每次渲染都会取到当前折叠态对应的文案
     // （展开时显示「收起导航栏」，已收起时显示「展开导航栏」），点击即切换。

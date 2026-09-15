@@ -669,6 +669,19 @@ pub fn hide_workbench_cmd(app: AppHandle) {
     hide_child(&app);
 }
 
+/// 手动重启 dsh 运行时（命令面板「重启 dsh」）。
+///
+/// 与插件装卸 / 版本更新走同一条 `crate::restart_dsh`：结束 dsh 子进程 → 清旧的就绪 URL →
+/// boot 重新拉起（`--port 0` 随机端口会变，工作台随之重连）。典型场景：在**终端**里用
+/// `dsh plugin add/remove` 改过插件、或改过 dsh 配置后，让 App 里的运行时重新加载。
+/// 仅接受壳页调用（与 plugin_op 等管理命令一致）。
+#[tauri::command]
+pub fn dsh_restart_cmd(app: AppHandle, webview: tauri::Webview) -> Result<(), String> {
+    crate::ensure_shell_webview(&webview)?;
+    crate::restart_dsh(&app);
+    Ok(())
+}
+
 /// 隐藏工作台（切到管理页 / 主窗关到后台）。实现为「保持尺寸移出屏幕」：
 /// macOS 上 Webview/WebviewWindow 的 hide() 不可靠（实证），而 set_bounds 可靠。
 pub fn hide_child(app: &AppHandle) {
