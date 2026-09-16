@@ -2324,15 +2324,20 @@ fn remove_uninstall_targets(dirs: &[PathBuf], files: &[PathBuf]) -> Vec<String> 
 /// 靠「重启 dsh」自救。这里直接用当前已知的就绪 URL 把 child 重建出来：不重启 dsh，
 /// 也就不会打断正在跑的任务。
 fn restore_after_failed_uninstall(app: &AppHandle) {
-    let app2 = app.clone();
     let url = mlock(&DSH_URL).clone();
-    let _ = app.clone().run_on_main_thread(move || {
-        reveal_main_window(&app2, url.as_deref());
-        if let Some(u) = url.as_deref() {
-            // 同在主线程队列里、排在 reveal 之后：此时主窗一定已经存在
-            crate::workbench::ensure_ready(&app2, u);
-        }
-    });
+    // 两步都要做，但**不能在同一个主线程闭包里做**：`ensure_ready` 内部会清历史 dsh 会话
+    // cookie（`purge_stale_auth_cookies` 走 WebView 的 cookie API、可能阻塞），其注释明确
+    // 要求"必须在主线程之外调用"。这里先往主线程排队重建主窗，然后在**当前线程**直接调
+    // ensure_ready —— 它内部同样往主线程排队建 child，两次投递按 FIFO，所以建 child 时
+    // 主窗一定已经存在。
+    let app2 = app.clone();
+    let url2 = url.clone();
+    let _ = app
+        .clone()
+        .run_on_main_thread(move || reveal_main_window(&app2, url2.as_deref()));
+    if let Some(u) = url.as_deref() {
+        crate::workbench::ensure_ready(app, u);
+    }
 }
 
 /// 卸载失败后的统一收尾：复位「卸载中」标志、系统通知、恢复可用界面，并回错。
