@@ -699,7 +699,10 @@ const UPDATE_ATTEMPT_SETTLE_PRELAUNCH: Duration = Duration::from_secs(60);
 /// 拖到两分钟后才发现。
 fn update_attempt_verdict(mark: &str, current: &str, age: Option<Duration>) -> Option<UpdateAttempt> {
     let target = parse_update_attempt(mark)?;
-    if target == current {
+    // `>=` 而不是 `==`：用户在更新窗口期内自己手动装了**更高**版本时，本次 App 内更新的
+    // 目标已经没意义了，不该再给一条"上次更新到 vX 未生效"的提示（语义没错，但会让人以为
+    // 当前版本有问题）。
+    if crate::registry::cmp_versions(current, &target) != std::cmp::Ordering::Less {
         return Some(UpdateAttempt::Applied);
     }
     let launching = mark.contains("state=launching");
@@ -924,6 +927,11 @@ mod tests {
         // 已到目标版本 → 生效
         assert_eq!(
             update_attempt_verdict(launched, "0.5.3", Some(Duration::from_secs(5))),
+            Some(UpdateAttempt::Applied)
+        );
+        // 当前版本**高于**目标（窗口期内用户自己装了更新版）→ 视为已生效，不误报
+        assert_eq!(
+            update_attempt_verdict("0.5.3\n", "0.5.4", Some(Duration::from_secs(600))),
             Some(UpdateAttempt::Applied)
         );
         // 版本没变但标记很新（用户装完前又双击了旧版）→ 不下结论、保留标记

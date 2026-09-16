@@ -81,4 +81,5 @@ jobs:
           sudo apt-get update -qq && sudo apt-get install -y -qq nsis
           tmp=$(mktemp -d)
           cp apps/desktop/src-tauri/nsis-hooks-check.nsi apps/desktop/src-tauri/installer-hooks.nsh "$tmp"/
-          (cd "$tmp" && makensis -V2 nsis-hooks-check.nsi)
+          # 与真实打包一致：tauri-bundler 调 makensis 时也带这两个字符集参数
+          (cd "$tmp" && makensis -V2 -INPUTCHARSET UTF8 -OUTPUTCHARSET UTF8 nsis-hooks-check.nsi)

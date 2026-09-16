@@ -570,9 +570,9 @@ mod tests {
 
     #[test]
     fn pnpm_bar_lines_are_filtered() {
-        // 实测首装输出：`Packages: +502` 之后是纯 `+` 条形进度（append-only 模式逐行
-        // 输出；冷装 80 个、复用 store 时 60 个）——安装页会把它当阶段文案，
-        // 显示成「一行加号」。
+        // 实测首装输出：`Packages: +N` 之后是纯 `+` 条形进度（append-only 模式逐行输出；
+        // 观测到 60 与 80 两种长度——宽度由 pnpm 按终端列宽决定，与过滤逻辑无关）——
+        // 安装页会把它当阶段文案，显示成「一行加号」。
         assert!(is_pnpm_bar_line(&"+".repeat(60)));
         assert!(is_pnpm_bar_line(&"+".repeat(80)));
         assert!(is_pnpm_bar_line(&"-".repeat(60)));
@@ -694,7 +694,10 @@ mod tests {
             !lines.iter().any(|l| is_pnpm_bar_line(l)),
             "进度行里仍有纯符号条形进度（UI 会显示成「一行加号」）"
         );
-        // 反向确认这次安装确实走到了打印条形进度的阶段（否则断言可能空过）
+        // 反向确认这次安装确实走到了 pnpm 的"包计数"阶段。注意：这只证明走到了该阶段
+        // （同一条 reporter message 里 `Packages: +N` 与条形行相邻输出），**不是**"确实
+        // 产出过条形行"的硬证明——过滤发生在 install_and_verify 内部，测试看不到原始流；
+        // 真正的把关是上面的过滤断言 + is_pnpm_bar_line 的单测。
         assert!(
             lines.iter().any(|l| l.starts_with("Packages: +")),
             "没有看到 Packages: +N 行——安装可能没走 pnpm，断言无效。行：{lines:?}"

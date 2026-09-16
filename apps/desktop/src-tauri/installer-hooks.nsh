@@ -56,7 +56,10 @@
   ; 文件会让它删不掉）、%APPDATA%\<id>（app 数据：dsh 闭包/日志/设置）、
   ; %LOCALAPPDATA%\<id>（WebView2 用户数据与缓存）。后两处由 PREUNINSTALL 的 sidecar 清，
   ; sidecar 没跑成（被安全软件拦下等）时它们会原样留下——正是这个提示要覆盖的情形。
-  ; `${FileExists} "$dir\*.*"` 是 NSIS 自带的目录存在性惯用法（FileFunc.nsh 自身内部就用它）。
+  ; `${FileExists}` 由 LogicLib.nsh 提供（`:339`，宏体是 `IfFileExists` 指令）；用
+  ; `"$dir\*.*"` 判断"目录是否存在"是 NSIS 自带分发包里的惯用法（FileFunc.nsh 内部多处
+  ; 直接用 `IfFileExists` 指令这么写，如 `:329/:453/:546`）。两者都在模板的 include 里
+  ; （installer.nsi:22 MUI2 → 带进 LogicLib；:23 FileFunc），且都早于钩子插入点。
   ${If} ${FileExists} "$INSTDIR\*.*"
   ${OrIf} ${FileExists} "$APPDATA\${BUNDLEID}\*.*"
   ${OrIf} ${FileExists} "$LOCALAPPDATA\${BUNDLEID}\*.*"

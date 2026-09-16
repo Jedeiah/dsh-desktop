@@ -2245,9 +2245,9 @@ fn uninstall_targets(
         dirs.push(lib.join("Caches").join(APP_ID)); // WebView 资源缓存
         dirs.push(lib.join("WebKit").join(APP_ID)); // WebView 存储（LocalStorage/IndexedDB）
         // HTTPStorages 有**两种形态**，都要清：`<id>.binarycookies`（文件，见下方 files）
-        // 与 `<id>/`（目录，内含 httpstorages.sqlite）。本机统计：122 个 App 里 91 个用
-        // 目录形态、13 个用文件形态——只清文件形态会漏（实测：沙箱里造出目录形态后
-        // 卸载不删）。
+        // 与 `<id>/`（目录，内含 httpstorages.sqlite）。本机实测该目录下 91 个目录形态、
+        // 12 个 `.binarycookies` 文件形态——只清文件形态会漏（沙箱实测：造出目录形态后
+        // 卸载不删，加上本项后被清）。
         dirs.push(lib.join("HTTPStorages").join(APP_ID));
         dirs.push(
             lib.join("Saved Application State")
@@ -2476,8 +2476,10 @@ fn trash_self() -> bool {
 /// `publisher().unwrap_or(bundle_id.split('.').nth(1))`（`nsis/mod.rs:269-271`），本项目
 /// 未配 publisher、bundle id 为 `com.dsh-desktop.app` → `dsh-desktop`；
 /// 模板里 `MANUPRODUCTKEY = Software\${MANUFACTURER}\${PRODUCTNAME}`
-/// （`installer.nsi:67-68`，PRODUCTNAME = "DeepSeek Harness Desktop"），安装时写入
-/// `InstallLocation`（:682）。
+/// （`installer.nsi:67-68`，PRODUCTNAME = "DeepSeek Harness Desktop"）：安装时把
+/// `$INSTDIR` 写成该键的**默认值**（`installer.nsi:682`），另有 MUI 语言选择读写的
+/// `Installer Language`（`:164` 的 `MUI_LANGDLL_REGISTRY_KEY`）。`InstallLocation` 是
+/// 另一处——在 `UNINSTKEY`（卸载项）下、由 `:705` 写入，模板删除 ARP 键时一并处理。
 ///
 /// 删除语义对齐模板：产品键直接删；父键**只在没有子键/值时才删**（模板用的是
 /// `DeleteRegKey /ifempty`），避免误删同名厂商键下的其它内容。

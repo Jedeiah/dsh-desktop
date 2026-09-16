@@ -5,7 +5,8 @@
 ; 参与编译，本地改坏语法要等到发版（Windows job 构建 NSIS 安装器）才会炸——那时已经晚了。
 ; 这个脚本把真实钩子放进**最小但等价**的上下文里编译一次：
 ;   · 与模板同样的 include 顺序（MUI2 → FileFunc → 钩子；模板 installer.nsi:22-35），
-;     所以 ${If}/${FileExists} 这些宏在这里的可见性与真实构建一致；
+;     所以 ${If}（LogicLib，由 MUI2 带进）与 ${FileExists}（LogicLib.nsh:339 定义）在这里的
+;     可见性与真实构建一致；
 ;   · 定义模板会给的宏（MAINBINARYNAME / BUNDLEID / MANU* / PRODUCTNAME）；
 ;   · 在 Section Uninstall 里按模板的位置（installer.nsi:779 / 887）插入两个钩子。
 ; 本地跑（需要 makensis）：
@@ -31,7 +32,7 @@ RequestExecutionLevel user
 
 ; include 顺序照抄模板：MUI2（带进 LogicLib）→ FileFunc（${FileExists}）→ 真实钩子
 !include MUI2.nsh
-!include FileFunc.nsh
+!include FileFunc.nsh ; ${FileExists} 其实来自 LogicLib（MUI2 带进），这里照抄模板的 include
 !include "installer-hooks.nsh"
 
 Section "Install"
