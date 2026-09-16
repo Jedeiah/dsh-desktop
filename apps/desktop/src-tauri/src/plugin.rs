@@ -529,6 +529,11 @@ pub async fn plugin_op(
     if op != "add" && op != "remove" {
         return Err(format!("不支持的插件操作：{op}（仅支持 add / remove）"));
     }
+    // App 更新期间拒绝：收尾阶段安装器会覆盖 $INSTDIR，插件操作会拉起内置 node，
+    // 把刚释放的 node.exe 映像锁占回去（详见 appupdate::update_in_progress）
+    if crate::appupdate::update_in_progress() {
+        return Err("应用正在更新，请稍后再试".to_string());
+    }
     // 本地目录与 npm/Git spec 分流校验：dsh 把参数原样转发 pnpm，绝对路径不受 cwd 影响
     let ok = if looks_like_local_path(&pkg) {
         valid_local_path(&pkg)

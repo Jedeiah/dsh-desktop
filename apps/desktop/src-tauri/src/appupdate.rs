@@ -12,6 +12,15 @@ use tauri::Emitter; // Tauri 2：emit 定义在 Emitter trait 上
 /// UI 侧会禁用相关按钮，但正确性靠这里：并发调用会下载两份安装包、拉起两次安装器。
 static UPDATING: AtomicBool = AtomicBool::new(false);
 
+/// 是否有 App 更新任务在进行中——供其它会拉起 node/dsh 的命令做互斥。
+/// 必要性（Windows）：更新收尾阶段安装器正在覆盖 `$INSTDIR` 里的文件，此时任何一次
+/// dsh 重启 / dsh 安装 / 插件操作都会重新拉起 `resources\node\node.exe`，把刚释放的
+/// 映像锁又占回去 → 安装器静默跳过该文件（NSIS 默认 AllowSkipFiles=on）。前端已按钮级
+/// 禁用，这里是后端兜底。
+pub fn update_in_progress() -> bool {
+    UPDATING.load(Ordering::SeqCst)
+}
+
 const REPO: &str = "Jedeiah/dsh-desktop";
 
 pub fn parse_tag_from_effective_url(final_url: &str) -> Option<String> {
@@ -206,8 +215,9 @@ pub async fn app_update_cmd(
     let result = tauri::async_runtime::spawn_blocking(move || {
         let dest = installer.clone();
         download_installer(&url, &dest, &app2)?;
-        // 安装器接手前落标记：Windows 上 /S 安装器会杀掉本进程，能不能装成只能靠
-        // **下次启动**核对（见 note_boot_after_update_attempt）
+        // 交给安装器/助手之前落标记：本进程随后就退出了（Windows 是等助手握手后退出、
+        // macOS 是安装完延迟重启），结果只能靠**下次启动**核对（见
+        // note_boot_after_update_attempt）
         mark_update_attempt(&app2, &ver);
         #[cfg(target_os = "macos")]
         install_macos(&installer)?;
@@ -221,20 +231,21 @@ pub async fn app_update_cmd(
     .map_err(|e| format!("更新线程异常：{e}"))
     .and_then(|r| r);
 
-    // 安装包用完即删（成功失败都删）：否则每次更新都把整个包留在临时区
-    // （macOS DMG ≈54MB、Windows setup.exe ≈30MB；用户实测残留 dsh-desktop-update-0.4.dmg）。
-    // macOS 此刻已 hdiutil detach、重启交给独立延迟进程，删除安全。
-    // Windows 走不到这里（/S 安装器在安装开始就杀掉本进程，见 install_windows 注释），
-    // 那种情况由下次启动的 sweep_stale_installers 兜底。
+    // 安装包用完即删（macOS）：此前每次更新都把整个包留在临时区（DMG ≈54MB；用户实测
+    // 残留 dsh-desktop-update-0.4.dmg）。macOS 此刻已 hdiutil detach、重启交给独立延迟
+    // 进程，删除安全。
+    // **Windows 不在这里删**：安装包要留给更新助手在**本进程退出之后**使用（NSIS 是按需从
+    // 自身文件读压缩数据的，提前删掉有可能让安装中途读不到数据），失败时也要留着重试；
+    // 留给下次启动的 sweep_stale_installers（>1h 才清）兜底。
+    #[cfg(not(target_os = "windows"))]
     let _ = std::fs::remove_file(&cleanup);
-    // 唯一出口：无论成败都放开并发门（成功路径紧随其后 app.exit(0) 退出本进程；
-    // Windows 上安装器会杀掉本进程，同样无需复位）
+    // 唯一出口：无论成败都放开并发门（成功路径紧随其后 app.exit(0) 退出本进程）
     UPDATING.store(false, Ordering::SeqCst);
     if let Err(e) = result {
-        // 走到这里说明本进程还活着 = 安装器没接手（macOS hdiutil/ditto 失败、Windows
-        // 安装器提前退出或被拦下）：结果已知且 UI 已弹出失败原因，撤掉启动标记，
+        // 走到这里说明本进程还活着 = 助手/安装器没能接手（macOS hdiutil/ditto 失败、
+        // Windows 更新助手未就绪）：结果已知且 UI 已弹出失败原因，撤掉启动标记，
         // 免得下次启动再报一次「上次更新未生效」。
-        let _ = std::fs::remove_file(update_attempt_path(&app));
+        clear_update_attempt(&app);
         return Err(e);
     }
 
@@ -243,9 +254,9 @@ pub async fn app_update_cmd(
     Ok(())
 }
 
-/// 启动时清扫更新器遗留的安装包。存在的必要性（Windows）：`/S` 安装器在安装 Section
-/// 开头就 KillProcessCurrentUser，所以「装完即删」的代码根本执行不到，残留只能在
-/// **下一次启动**（新版起来、安装器早已退出）时清掉。
+/// 启动时清扫更新器遗留的安装包。存在的必要性（Windows）：安装包由更新助手在**本进程退出后**
+/// 使用，退出前不能删（安装器是按需从自身文件读压缩数据的，失败时也要留着重试），
+/// 所以在下次启动（那时安装器早已退出）清掉最安全。
 pub fn sweep_stale_installers() {
     let Ok(rd) = std::fs::read_dir(std::env::temp_dir()) else {
         return;
@@ -387,56 +398,172 @@ fn install_macos(dmg: &Path) -> Result<(), String> {
 /// x86_64-pc-windows-msvc` 会在 ring 的 C 依赖处失败（缺 MSVC 头文件），无法作为
 /// 类型检查手段。平台相关的部分收在函数内的 cfg 块里。
 ///
-/// 必须同时传 `/R`（安装完成后由安装器拉起新版）。
+/// 三段事实（均已核对 tauri-bundler 2.9.4 模板与 NSIS 源码，非推测）：
 ///
-/// 只传 `/S` 是不行的：Tauri 的 NSIS 模板在安装 Section 开头就执行
-/// `CheckIfAppIsRunning`，而该宏在静默模式下**不询问、直接
-/// KillProcessCurrentUser**（tauri-bundler 的 nsis/utils.nsh：`IfSilent kill_…`）。
-/// 也就是说 `/S` 一开始就会杀掉「正阻塞在 .status() 上等它结束」的本进程，
-/// 于是本函数之后的任何代码（包括原先那段 powershell 延迟启动）都是死代码，
-/// 表现为「App 内更新后程序消失、不自动重启」。`/R` 让安装器自己在
-/// `.onInstSuccess` 里 RunAsUser 拉起新版（installer.nsi 的 /R 分支）。
+/// 1. `/S` 下安装器只按**主程序名**杀进程（installer.nsi 的 `CheckIfAppIsRunning` →
+///    utils.nsh 的 `KillProcessCurrentUser "${MAINBINARYNAME}.exe"`；nsis-tauri-utils
+///    只按映像名匹配并跳过自身 pid）。→ 本 App 拉起的 dsh 子进程（跑的是
+///    `$INSTDIR\resources\node\node.exe`）与安装用的 pnpm 都不在其中。
+/// 2. **被占用的文件不会让安装中断，而是被静默跳过**：NSIS 默认 `AllowSkipFiles=on`
+///    （build.cpp），打开失败时 MessageBox 类型带 `IDIGNORE<<21`（script.cpp），
+///    静默模式下 `my_MessageBox` 直接返回该默认值（util.c）→ `exec.c` 走
+///    「跳过该文件、`exec_error++`、继续」——**退出码仍是 0**、`.onInstSuccess` 照常执行。
+///    Windows 上「正在运行的映像文件不可写」，所以复制那一刻只要有我们的进程还在跑
+///    （主程序或 dsh 的 node.exe），那个文件就被跳过、旧文件留在原地，而安装器报成功。
+/// 3. `.onInstSuccess` 只在带 `/R` 时用 `RunAsUser` 拉起 `$INSTDIR\${MAINBINARYNAME}.exe`，
+///    且**不检查返回值**（installer.nsi）：旧实例还在时，新进程会被单实例插件转发给
+///    旧实例后自行退出。
 ///
-/// 但 `/S` 只杀**主程序**（KillProcessCurrentUser 按 `${MAINBINARYNAME}.exe` 匹配）：
-/// 本 App 拉起的 dsh 子进程（跑的是 `$INSTDIR\resources\node\node.exe`）以及
-/// 安装 dsh 用的 pnpm 都不在其中。Windows 上「正在运行的映像文件不可写」，安装器
-/// 覆盖 node.exe 时会 ERROR_SHARING_VIOLATION → 安装中断，而此时主程序已被杀，
-/// 用户看到的就是「程序退出后没反应、也没更新」（0.5.x 实测反馈）。
-/// 卸载路径早先踩过同一个坑并已修（installer-hooks.nsh：dsh 子进程占用 $INSTDIR
-/// 程序文件 → NSIS 删文件必然失败且无反馈），这里用同样的解法：**先自己收干净**，
-/// 再让安装器接手。
+/// 这三条能解释 0.5.x 实测的「点更新 → 程序退出后没反应、也没更新」：安装器没能接管
+/// （杀不动/来不及杀）→ 主程序 exe 被静默跳过 → 安装器退出码 0 → 本进程以为成功、
+/// `app.exit(0)` → `/R` 拉起的新进程被单实例插件吞掉 → 桌面上什么都不剩、版本还是旧的。
+/// **具体是哪一环没杀掉没有在实机复现**（用户机器不可用），但结论不依赖它：只要「复制
+/// 文件那一刻还有本应用的进程在跑」就会走到这个结局（机制 2 是模板与 NSIS 源码里已核实的
+/// 确定性行为），所以修复方向是让安装发生在**没有任何本应用进程**的时候。
+///
+/// 因此这里不做「自己 spawn 安装器再退出」那种赌时序的写法（退出时 WebView2 卸载、
+/// 进程回收都要时间，安装器可能正好在那一刻开始复制），而是交给一个**外部助手**：
+/// 助手先写握手文件 → 等本进程消失 → 才静默安装 → 安装器退出后若没有任何实例在跑，
+/// 补一次启动（`/R` 不检查返回值，失败就什么都不剩）。
+/// 本函数只在**等到握手文件之后**才返回，调用方随即 `app.exit(0)`；PowerShell 被策略
+/// 禁用等情况握手文件不会出现，这里直接报错、保住 App（而不是退出后才发现没人接手）。
 #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 fn install_windows(exe: &Path, app: &tauri::AppHandle) -> Result<(), String> {
-    use std::process::Command;
-    crate::logln("[update] 结束 dsh/pnpm 子进程后交给安装器（$INSTDIR 文件锁）");
+    crate::logln("[update] 结束 dsh/pnpm 子进程后交给更新助手（$INSTDIR 文件锁）");
     crate::kill_dsh(); // 本进程的 dsh 树 + 安装中的 pnpm（并标记为主动停止，不再拉起）
     crate::kill_stale_children(app); // 兜底：孤儿 dsh / plugin install 的 node
     // 内核回收进程对象、释放映像锁还有一点延迟：以「能否写打开 node.exe」为准等它落地
-    // （只写打开、不 truncate，不改文件内容）。
+    // （只写打开、不 truncate，不改文件内容）。超时也继续——本进程马上要退出，
+    // 退出后这个锁同样消失；日志留一条线索供事后定位。
     let node_exe = crate::node_bin(&crate::paths_from_app(app).resources);
     if !wait_node_exe_writable(&node_exe, Duration::from_secs(5)) {
-        // 不阻断：可能本就没有内置 node（或路径判定不同），交给安装器自己报错，
-        // 但日志里留一条线索供事后定位。
         crate::logln(&format!(
-            "[update] 等待 node.exe 释放写锁超时（继续安装）：{}",
+            "[update] 等待 node.exe 释放写锁超时（继续交给助手）：{}",
             node_exe.display()
         ));
     }
-    let mut cmd = Command::new(exe);
+    match spawn_update_helper(app, exe) {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            // 助手没起来：本进程还活着，但 dsh 已经被我们收掉了，必须拉回来，
+            // 否则用户停在一个连不上工作台的壳里；标记也撤掉（结果已知，UI 会报）
+            clear_update_attempt(app);
+            crate::respawn_dsh(app);
+            Err(e)
+        }
+    }
+}
+
+/// 更新助手握手文件：助手启动后第一件事就是写它（内容不重要，只看存在性）。
+fn update_helper_marker(app: &tauri::AppHandle) -> std::path::PathBuf {
+    crate::paths_from_app(app).app_data.join("update-helper.txt")
+}
+
+/// PowerShell 单引号字符串字面量（路径可能含空格/单引号）。
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn ps_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "''"))
+}
+
+/// 起一个脱离本进程的更新助手（PowerShell），等它握手后返回。
+///
+/// 助手的顺序很关键：**先握手、再等我们退出、最后才安装**——
+/// 安装器复制文件时安装目录里必须没有任何我们的进程（含正在退出的自己），
+/// 否则被占用的文件会被静默跳过（见 install_windows 的注释 2）。
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn spawn_update_helper(app: &tauri::AppHandle, installer: &Path) -> Result<(), String> {
+    use std::process::Command;
+    // 安装包必须先还在：被安全软件删掉/隔离时给出明确错误，而不是让助手白跑一趟
+    if !installer.is_file() {
+        return Err(format!(
+            "安装包不存在（可能被杀毒软件隔离）：{}",
+            installer.display()
+        ));
+    }
+    let marker = update_helper_marker(app);
+    let _ = std::fs::remove_file(&marker); // 清掉上次残留，否则下面的等待会立刻通过
+    // 「本进程是否已退出」用 **pid** 判定（精确，不依赖进程名）；兜底拉起时的「有没有
+    // 实例在跑」用 exe 文件名判定（新实例是另一个 pid，且名字与安装后的主程序一致）。
+    let self_pid = std::process::id();
+    let proc_name = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.file_stem().map(|s| s.to_string_lossy().to_string()))
+        .unwrap_or_else(|| "dsh-desktop".to_string());
+    // 安装后的主程序路径：与当前 exe 同路径（安装器就地覆盖它）。
+    // 便携版（不是安装器装的）这里会回退到便携副本——助手只在「一个实例都没起来」时
+    // 才用它兜底，不会覆盖 /R 已经拉起的新版。
+    let exe_path = std::env::current_exe().ok();
+    let script = update_helper_script(
+        &marker,
+        self_pid,
+        &proc_name,
+        installer,
+        exe_path.as_deref(),
+    );
+    let mut cmd = Command::new("powershell");
+    // 不加 `-WindowStyle Hidden`：控制台窗口由 no_console（CREATE_NO_WINDOW）负责，
+    // 而该参数在非 Windows 平台/部分 PowerShell 版本上会直接报「未实现」把整次调用
+    // 变成空跑（实测）。
+    cmd.args(["-NoProfile", "-NonInteractive", "-Command", &script]);
     #[cfg(target_os = "windows")]
     {
-        cmd = crate::no_console(cmd); // 避免静默安装期间闪控制台窗口
+        cmd = crate::no_console(cmd); // 不闪控制台窗口
     }
-    let status = cmd.arg("/S").arg("/R").status().map_err(|e| {
-        // 本进程还活着说明安装器没接手：把 dsh 拉回来，别把用户丢在连不上工作台的壳里
-        crate::restart_dsh(app);
-        format!("启动安装器失败: {e}")
-    })?;
-    if !status.success() {
-        crate::restart_dsh(app);
-        return Err(format!("安装器退出码异常: {status}"));
+    cmd.spawn().map_err(|e| format!("启动更新助手失败: {e}"))?;
+    // 等握手（最多 10s）：出现=助手确实在跑，可以放心退出
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        if marker.is_file() {
+            crate::logln("[update] 更新助手已就绪（等本进程退出后静默安装）");
+            return Ok(());
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err(
+                "更新助手未就绪（PowerShell 可能被安全策略禁用），已取消本次更新；可到 Releases 手动下载安装"
+                    .to_string(),
+            );
+        }
+        std::thread::sleep(Duration::from_millis(100));
     }
-    Ok(())
+}
+
+/// 生成更新助手脚本（纯函数：便于单测与人工核对）。
+///
+/// 顺序：**先握手 → 再等本进程消失 → 最后才安装**，安装完若没有任何实例在跑则补启动一次。
+/// 握手放在最前，是为了让 App 确认「助手真的在跑」之后才退出；等待放在中间、安装放在最后，
+/// 则是为了让安装器复制文件时安装目录里一个我们的进程都没有（否则文件会被静默跳过，见
+/// install_windows）。
+/// 「本进程是否已退出」按 `pid` 判（精确）；「有没有实例在跑」按 exe 文件名判（新实例是
+/// 另一个 pid，名字与安装后的主程序一致）。
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn update_helper_script(
+    marker: &Path,
+    self_pid: u32,
+    proc_name: &str,
+    installer: &Path,
+    exe: Option<&Path>,
+) -> String {
+    let relaunch = match exe {
+        // 拿不到自身路径时不写兜底拉起：宁可不拉，也不要拉起一个空路径
+        Some(p) => format!(
+            " if (-not (Get-Process -Name {proc} -ErrorAction SilentlyContinue)) {{ Start-Process -FilePath {exe} }}",
+            proc = ps_quote(proc_name),
+            exe = ps_quote(&p.display().to_string()),
+        ),
+        None => String::new(),
+    };
+    format!(
+        "$ErrorActionPreference='SilentlyContinue'; \
+         Set-Content -Path {marker} -Value 'ready' -Encoding ASCII; \
+         for ($i=0; $i -lt 300; $i++) {{ if (-not (Get-Process -Id {pid} -ErrorAction SilentlyContinue)) {{ break }}; Start-Sleep -Milliseconds 100 }}; \
+         $p = Start-Process -FilePath {installer} -ArgumentList '/S','/R' -PassThru; \
+         if ($p) {{ $p.WaitForExit() }}; \
+         Start-Sleep -Seconds 2;{relaunch}",
+        marker = ps_quote(&marker.display().to_string()),
+        pid = self_pid,
+        installer = ps_quote(&installer.display().to_string()),
+        relaunch = relaunch,
+    )
 }
 
 /// 等 `<resources>/node/node.exe` 变成「可写打开」——这正是安装器覆盖该文件时要做的事。
@@ -460,12 +587,12 @@ fn wait_node_exe_writable(node_exe: &Path, timeout: Duration) -> bool {
     }
 }
 
-/// 更新尝试的落盘标记：交给安装器之前写，**下次启动**核对。
+/// 更新尝试的落盘标记：交给安装器/助手之前写，**下次启动**核对。
 ///
-/// 为什么需要：Windows 上 `/S` 安装器会杀掉本进程（`CheckIfAppIsRunning`），安装到底成没成
-/// 本进程无从知晓——失败时用户只看到「程序退出后就没反应了」，日志里也没有任何一行
-/// （0.5.x 实测反馈）。下次启动读到这个标记，就能明确告诉用户「上次更新到 vX 未生效」
-/// 并给出日志/手动安装路径，而不是让人对着一个消失的窗口猜。
+/// 为什么需要：发起更新的进程随后就退出了（Windows 等助手握手后退出，macOS 装完延迟重启），
+/// 安装到底成没成本进程无从知晓——失败时用户只看到「程序退出后就没反应了」，日志里也没有
+/// 任何一行（0.5.x 实测反馈）。下次启动读到这个标记，就能明确告诉用户「上次更新到 vX
+/// 未生效」并给出日志/手动安装路径，而不是让人对着一个消失的窗口猜。
 fn update_attempt_path(app: &tauri::AppHandle) -> std::path::PathBuf {
     crate::paths_from_app(app).app_data.join("update-attempt.txt")
 }
@@ -481,6 +608,12 @@ fn mark_update_attempt(app: &tauri::AppHandle, ver: &str) {
     }
 }
 
+/// 清掉更新尝试标记：本进程还活着 = 结果已知（失败），由 UI 当场报错，
+/// 不该让下次启动再报一遍。
+fn clear_update_attempt(app: &tauri::AppHandle) {
+    let _ = std::fs::remove_file(update_attempt_path(app));
+}
+
 /// 标记内容 → 目标版本（纯函数便于单测：只认第一行、去空白，空/无内容 → None）。
 fn parse_update_attempt(mark: &str) -> Option<String> {
     let v = mark.lines().next().unwrap_or("").trim().to_string();
@@ -491,28 +624,71 @@ fn parse_update_attempt(mark: &str) -> Option<String> {
     }
 }
 
+/// 标记判定结论（见 update_attempt_verdict）。
+#[derive(Debug, PartialEq, Eq)]
+enum UpdateAttempt {
+    /// 已经是目标版本：上次更新生效了
+    Applied,
+    /// 标记太新：安装可能还在进行（用户关掉后马上又打开的情况），本次不下结论
+    Pending,
+    /// 标记已过等待期而版本仍未变：上次更新没生效
+    Failed,
+}
+
+/// 安装开始后，允许「已经装完但版本还没变」的观察窗口。发起更新的进程在安装前就退出了，
+/// 用户可能立刻又双击图标把**旧**版本拉起来 —— 此时标记才写了十几秒，安装可能正在进行，
+/// 不能报「更新未生效」（假警报）。
+const UPDATE_ATTEMPT_SETTLE: Duration = Duration::from_secs(120);
+
+/// 纯函数便于单测：标记内容 + 当前版本 + 标记年龄 → 结论。
+fn update_attempt_verdict(mark: &str, current: &str, age: Option<Duration>) -> Option<UpdateAttempt> {
+    let target = parse_update_attempt(mark)?;
+    if target == current {
+        return Some(UpdateAttempt::Applied);
+    }
+    // 拿不到年龄（mtime 缺失）时按「已过等待期」处理：宁可如实报一次失败，
+    // 也不要因为读不到时间而永远沉默。
+    if age.map(|d| d < UPDATE_ATTEMPT_SETTLE).unwrap_or(false) {
+        return Some(UpdateAttempt::Pending);
+    }
+    Some(UpdateAttempt::Failed)
+}
+
 /// 启动时核对上次 App 更新是否生效（只报一次，随后清掉标记）。
 pub fn note_boot_after_update_attempt(app: &tauri::AppHandle) {
     let p = update_attempt_path(app);
     let Ok(txt) = std::fs::read_to_string(&p) else {
         return; // 没尝试过更新：绝大多数启动走这里
     };
-    let _ = std::fs::remove_file(&p);
-    let Some(target) = parse_update_attempt(&txt) else {
-        return;
-    };
+    let age = std::fs::metadata(&p)
+        .ok()
+        .and_then(|m| m.modified().ok())
+        .and_then(|t| t.elapsed().ok());
     let cur = env!("CARGO_PKG_VERSION");
-    if target == cur {
-        crate::logln(&format!("[update] 已更新到 v{cur}"));
-        return;
+    match update_attempt_verdict(&txt, cur, age) {
+        None => {
+            let _ = std::fs::remove_file(&p);
+        }
+        Some(UpdateAttempt::Applied) => {
+            let _ = std::fs::remove_file(&p);
+            crate::logln(&format!("[update] 已更新到 v{cur}"));
+        }
+        Some(UpdateAttempt::Pending) => {
+            // **保留**标记：等装完（或彻底失败）后的下一次启动再判定
+            crate::logln("[update] 更新标记很新，安装可能仍在进行；本次不判定");
+        }
+        Some(UpdateAttempt::Failed) => {
+            let _ = std::fs::remove_file(&p);
+            let log = crate::paths_from_app(app).app_data.join("logs/launcher.log");
+            let msg = format!(
+                "上次更新到 {} 未生效（当前仍为 v{cur}）。可能是安装被安全软件拦下或安装包失效；可重试，或到 Releases 手动下载安装。\n日志：{}",
+                parse_update_attempt(&txt).unwrap_or_default(),
+                log.display()
+            );
+            crate::logln(&format!("[update] {msg}"));
+            crate::notify("更新未生效", &msg);
+        }
     }
-    let log = crate::paths_from_app(app).app_data.join("logs/launcher.log");
-    let msg = format!(
-        "上次更新到 v{target} 未生效（当前仍为 v{cur}）。可能是安装目录文件被占用或安装器被安全软件拦下；可重试，或到 Releases 手动下载安装。\n日志：{}",
-        log.display()
-    );
-    crate::logln(&format!("[update] {msg}"));
-    crate::notify("更新未生效", &msg);
 }
 
 #[cfg(test)]
@@ -593,6 +769,64 @@ mod tests {
     }
 
     #[test]
+    fn update_helper_script_shape_and_quoting() {
+        let s = update_helper_script(
+            Path::new(r"C:\Users\a b\AppData\Roaming\com.dsh-desktop.app\update-helper.txt"),
+            4242,
+            "dsh-desktop",
+            Path::new(r"C:\Users\a b\AppData\Local\Temp\dsh-desktop-update-0.5.3.exe"),
+            Some(Path::new(
+                r"C:\Users\a b\AppData\Local\DeepSeek Harness Desktop\dsh-desktop.exe",
+            )),
+        );
+        // 关键顺序：先握手 → 等本进程（pid）退出 → 才安装 → 装完按需补启动
+        let handshake = s.find("Set-Content").expect("握手续写");
+        let wait_app = s.find("Get-Process -Id 4242").expect("按 pid 等待本进程退出");
+        let install = s.find("Start-Process -FilePath 'C:\\Users\\a b\\AppData\\Local\\Temp")
+            .expect("启动安装器");
+        let relaunch = s.find("Get-Process -Name 'dsh-desktop'").expect("兜底拉起判据");
+        assert!(handshake < wait_app && wait_app < install && install < relaunch, "顺序错：{s}");
+        // 静默 + 装完拉起新版
+        assert!(s.contains("-ArgumentList '/S','/R'"), "缺少 /S /R：{s}");
+        // 含空格路径必须是完整单引号字面量（否则 PowerShell 按空格切分）
+        assert!(s.contains("'C:\\Users\\a b\\AppData\\Local\\Temp\\dsh-desktop-update-0.5.3.exe'"));
+        // 拿不到自身路径时不写兜底拉起（宁可不拉，也不拉起空路径）：-Name 只出现在
+        // 兜底拉起那一句里，用它判断该句是否存在
+        let no_exe = update_helper_script(Path::new("C:/m.txt"), 1, "p", Path::new("C:/s.exe"), None);
+        assert!(!no_exe.contains("Get-Process -Name"), "{no_exe}");
+        assert!(no_exe.contains("Get-Process -Id 1"), "{no_exe}");
+        // 单引号转义：路径里的 ' 必须写成 ''
+        let q = update_helper_script(
+            Path::new("C:/tmp/it's here/m.txt"),
+            7,
+            "dsh-desktop",
+            Path::new("C:/tmp/it's here/setup.exe"),
+            Some(Path::new("C:/tmp/it's here/app.exe")),
+        );
+        assert!(q.contains("'C:/tmp/it''s here/setup.exe'"), "未转义单引号：{q}");
+        assert!(ps_quote("a'b") == "'a''b'");
+    }
+
+    /// 把生成的助手脚本写到固定路径，供人工用真实 PowerShell 核对/试跑
+    /// （本机/CI 没有 PowerShell，故默认忽略）：
+    ///   cd apps/desktop/src-tauri && cargo test -- --ignored --nocapture update_helper_script_dump
+    #[test]
+    #[ignore]
+    fn update_helper_script_dump() {
+        let out = std::env::temp_dir().join("dsh-update-helper-script.ps1");
+        let script = update_helper_script(
+            Path::new("C:\\Temp\\helper-marker.txt"),
+            std::process::id(),
+            "dsh-desktop",
+            Path::new("C:\\Temp\\dsh-desktop-update-0.5.3.exe"),
+            Some(Path::new("C:\\App\\dsh-desktop.exe")),
+        );
+        std::fs::write(&out, &script).unwrap();
+        println!("脚本已写入 {}", out.display());
+        println!("{script}");
+    }
+
+    #[test]
     fn update_attempt_mark_parses_first_line() {
         assert_eq!(parse_update_attempt("0.5.3\n").as_deref(), Some("0.5.3"));
         assert_eq!(parse_update_attempt("0.5.3").as_deref(), Some("0.5.3"));
@@ -600,6 +834,32 @@ mod tests {
         assert_eq!(parse_update_attempt("\n0.5.3\n"), None);
         assert_eq!(parse_update_attempt(""), None);
         assert_eq!(parse_update_attempt("   \n"), None);
+    }
+
+    #[test]
+    fn update_attempt_verdict_handles_three_cases() {
+        // 已到目标版本 → 生效
+        assert_eq!(
+            update_attempt_verdict("0.5.3\n", "0.5.3", Some(Duration::from_secs(5))),
+            Some(UpdateAttempt::Applied)
+        );
+        // 版本没变但标记很新（用户装完前又双击了旧版）→ 不下结论、保留标记
+        assert_eq!(
+            update_attempt_verdict("0.5.3\n", "0.5.2", Some(Duration::from_secs(30))),
+            Some(UpdateAttempt::Pending)
+        );
+        // 过了等待期仍未变 → 判定失败
+        assert_eq!(
+            update_attempt_verdict("0.5.3\n", "0.5.2", Some(Duration::from_secs(600))),
+            Some(UpdateAttempt::Failed)
+        );
+        // 拿不到年龄 → 按失败处理（不因读不到时间而永远沉默）
+        assert_eq!(
+            update_attempt_verdict("0.5.3\n", "0.5.2", None),
+            Some(UpdateAttempt::Failed)
+        );
+        // 空/无效标记 → 无结论
+        assert_eq!(update_attempt_verdict("\n", "0.5.2", None), None);
     }
 
     #[test]

@@ -68,3 +68,7 @@ jobs:
             Write-Host "checking $f"
             $null = [ScriptBlock]::Create((Get-Content -Raw $f))
           }
+      # 壳页 JS 不参与构建（只是被打进二进制的静态资源），语法错误一路到用户机器才会暴露：
+      # 整个界面白屏。这里用 node 做一次解析检查（不做风格/lint）。
+      - name: node --check（壳页 UI JS）
+        run: for f in apps/desktop/ui/*.js; do echo "checking $f"; node --check "$f"; done

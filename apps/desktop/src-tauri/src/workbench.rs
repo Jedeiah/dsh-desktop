@@ -683,6 +683,11 @@ pub fn dsh_restart_cmd(app: AppHandle, webview: tauri::Webview) -> Result<(), St
     if crate::setup_busy() {
         return Err("正在安装/更新 dsh，请稍后再试".to_string());
     }
+    // App 更新期间同样拒绝：收尾阶段安装器会覆盖 $INSTDIR，重启会把刚释放的
+    // node.exe 映像锁占回去（详见 appupdate::update_in_progress）
+    if crate::appupdate::update_in_progress() {
+        return Err("应用正在更新，请稍后再试".to_string());
+    }
     crate::restart_dsh(&app);
     Ok(())
 }

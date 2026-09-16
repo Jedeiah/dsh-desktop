@@ -1738,8 +1738,10 @@
     const mb = (b) => (Number(b) / 1048576).toFixed(1) + 'MB';
     if (p.phase === 'install') {
       if (prog) prog.hidden = true;
-      txt.textContent = '正在校验并安装…完成前请勿关闭应用（随后会自动重启）';
-      setAppStatus('正在校验并安装…', 'run');
+      // Windows：应用会**自己先退出**、由更新助手在退出后安装（退出是预期行为，不是崩溃）；
+      // macOS：装完延迟重启。文案要如实说明，避免用户以为要守着窗口。
+      txt.textContent = '正在安装…应用即将自动退出，安装完成后会自动重启';
+      setAppStatus('正在安装…', 'run');
       return;
     }
     const total = typeof p.total === 'number' && p.total > 0 ? p.total : null;
@@ -1793,7 +1795,7 @@
     try {
       await invoke('app_update_cmd');
       // 成功即退出当前实例（安装器/新版负责启动）；任务态到此为止
-      taskFinish(tid, 'ok', '更新包已就绪，重启后生效');
+      taskFinish(tid, 'ok', '更新包已就绪，应用即将退出并安装');
     } catch (e) {
       setAppUpdating(false);
       taskFinish(tid, 'err', (e && e.message) || String(e));

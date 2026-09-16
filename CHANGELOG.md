@@ -1,16 +1,23 @@
 # Changelog
 
-## 0.5.3（未发布）— Windows 更新链路的文件占用 / 静默失败可诊断（2026-09-16）
+## 0.5.3（未发布）— Windows App 内更新改为「更新助手」+ 更新结果可诊断（2026-09-16）
 
 ### 修复
 
-- **Windows 版 App 内更新「程序退出后就没反应、也没更新」**：`/S` 安装器在安装 Section 开头只按主程序名杀进程（`KillProcessCurrentUser`），而本 App 拉起的 dsh 子进程跑的正是安装目录里的 `resources\node\node.exe`——Windows 上「正在运行的映像文件不可写」，安装器覆盖它会 `ERROR_SHARING_VIOLATION` → 安装中断，而主程序此时已被安装器杀掉：既没更新、也没有任何提示。现在交给安装器之前先 `kill_dsh()` + `kill_stale_children()`（结束 dsh / pnpm / 孤儿子进程），并以「能否写打开 node.exe」为准确认映像锁已释放。与卸载路径早已修过的同类问题同源（`installer-hooks.nsh`：dsh 子进程占用 `$INSTDIR` 文件 → NSIS 文件操作必然失败且无反馈）
-- 安装器若没能接手（启动失败 / 退出码异常）现在会把 dsh 重新拉起，用户不会停在一个连不上工作台的壳里
+- **Windows 版 App 内更新「程序退出后就没反应、也没更新」**。三段已核对的机制（tauri-bundler 2.9.4 的 NSIS 模板 + NSIS 源码）：
+  1. `/S` 静默安装器只按**主程序名**杀进程（`CheckIfAppIsRunning` → `KillProcessCurrentUser "${MAINBINARYNAME}.exe"`），而本 App 拉起的 dsh 子进程跑的是安装目录里的 `resources\node\node.exe`，不在其中；Windows 上「正在运行的映像文件不可写」。
+  2. **被占用的文件不会让安装失败，而是被静默跳过**：NSIS 默认 `AllowSkipFiles=on` + 静默默认 `IDIGNORE`（`exec.c` / `util.c`）→ 跳过该文件继续装，**退出码仍是 0**、`.onInstSuccess` 照常执行。
+  3. `/R` 的 `RunAsUser` 拉起新版**不检查返回值**；旧实例还在时，新进程会被单实例插件转发给旧实例后自行退出。
+  合起来即：安装器没杀掉我们 → 主程序 exe 被静默跳过 → 安装器报成功 → 本进程 `app.exit(0)` → `/R` 拉起的新进程被单实例吞掉 → 桌面什么都不剩、版本还是旧的。
+  现在改为**外部更新助手**：先结束 dsh / pnpm / 孤儿子进程（释放 `$INSTDIR` 文件锁）→ 助手写握手文件 → **等本进程退出** → 才静默安装（`/S /R`）→ 装完若一个实例都没起来则补一次启动。本进程只在等到握手后才 `exit`；助手起不来（如 PowerShell 被策略禁用）则当场报错并保住 App。握手/等待/安装的顺序已用真实 PowerShell 逐场景实测（含「进程还在时安装器必须不启动」）
+- 安装器没能接管（助手未就绪）时把 dsh 重新拉起且**不刷新壳页**（`respawn_dsh`，避免把刚弹出的失败提示冲掉）
 - dsh 安装的进度文案不再出现「一行加号」：pnpm 在 `Packages: +N` 之后会输出一条纯 `+` 的条形进度（冷装实测 80 个 `+`），安装页把它当阶段文案逐行显示。现在这类纯符号行在流式回调处即被过滤（真实内容行如 `+ @deepseek-ai/dsh 0.1.5-rc.2` 不受影响）
 
 ### 变更
 
 - App 更新尝试落盘标记（`<app-data>/update-attempt.txt`）：安装器接手前写入，**下次启动**核对——生效记一行日志；未生效则日志 + 系统通知明确提示「上次更新到 vX 未生效」并给出日志路径。此前 Windows 更新失败时进程已被安装器杀掉，用户和日志都拿不到任何线索
+- Windows 更新期间不再删除 `%TEMP%` 里的安装包（安装器可能仍在运行、失败时也要留着重试），由启动时的 `sweep_stale_installers`（>1h）兜底
+- 更新进行中对会拉起 node/dsh 的命令加后端互斥（`dsh_restart_cmd` / `setup_dsh_cmd` / `update_dsh_cmd` / `plugin_op`）：这些操作会重新占住 `resources\node\node.exe` 的映像锁，让安装器静默跳过该文件
 
 ## 0.5.2 — App 更新体验：更新中锁定其它操作 + 下载进度（2026-09-16）
 

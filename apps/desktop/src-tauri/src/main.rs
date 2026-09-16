@@ -983,6 +983,12 @@ async fn setup_dsh_cmd(
     // 防任意串进 npm --registry / ureq URL（安全审查 should-fix）。
     let reg = registry.trim();
     valid_registry_url(reg)?;
+    // App 更新期间拒绝：收尾阶段安装器会覆盖 $INSTDIR，此刻装 dsh 会把刚释放的
+    // node.exe 映像锁占回去（安装器随即静默跳过该文件）；更新完成本进程就退出，操作也会被打断
+    //（详见 appupdate::update_in_progress）
+    if crate::appupdate::update_in_progress() {
+        return Err("应用正在更新，请稍后再试".to_string());
+    }
     if SETUP_BUSY.swap(true, Ordering::SeqCst) {
         return Err("已有一个安装正在进行中".to_string());
     }
@@ -1119,6 +1125,12 @@ async fn update_dsh_cmd(app: AppHandle, webview: tauri::Webview, ver: String) ->
     // M2：入口白名单校验，防止任意字符串（npm 参数注入）进入安装流程
     if !crate::registry::valid_version(&ver) {
         return Err("版本号不合法".to_string());
+    }
+    // App 更新期间拒绝：收尾阶段安装器会覆盖 $INSTDIR，此刻装 dsh 会把刚释放的
+    // node.exe 映像锁占回去（安装器随即静默跳过该文件）；更新完成本进程就退出，操作也会被打断
+    //（详见 appupdate::update_in_progress）
+    if crate::appupdate::update_in_progress() {
+        return Err("应用正在更新，请稍后再试".to_string());
     }
     if SETUP_BUSY.swap(true, Ordering::SeqCst) {
         return Err("已有一个安装正在进行中".to_string());
@@ -1619,6 +1631,21 @@ pub(crate) fn restart_dsh(app: &AppHandle) {
             let _ = w.eval("location.reload()");
         }
     }
+    let handle = app.clone();
+    std::thread::spawn(move || boot(handle));
+}
+
+/// 重新拉起 dsh 运行时，**不动壳页**：不 reload、不强制把工作台移回窗口内。
+///
+/// 与 `restart_dsh` 的区别：那条路径面向「用户显式重启」（菜单/命令面板），刷新壳页是
+/// 期望行为；而 App 更新失败时走它会把刚推送的「更新失败：…」提示、进度条与锁定态
+/// 一起冲掉，用户什么都看不到。工作台摆放仍由 boot → workbench::ensure_ready 负责
+/// （SUPPRESSED 时保持屏幕外，不会踢掉抽屉）。
+/// 调用点只在 Windows 的更新链路（appupdate::install_windows），其它平台放行 dead_code。
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+pub(crate) fn respawn_dsh(app: &AppHandle) {
+    kill_dsh();
+    *mlock(&DSH_URL) = None;
     let handle = app.clone();
     std::thread::spawn(move || boot(handle));
 }
