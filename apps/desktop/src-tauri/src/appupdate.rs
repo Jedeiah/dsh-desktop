@@ -210,6 +210,10 @@ pub async fn app_update_cmd(
     if UPDATING.swap(true, Ordering::SeqCst) {
         return Err("已有更新任务在进行中，请稍候".to_string());
     }
+    // 安装包路径的副本：**只有 macOS 分支会用它**（装完即删）；Windows 分支不删（要留给
+    // 更新助手在退出后使用），所以这个绑定也必须跟着 cfg——否则 Windows 上 clippy
+    // `-D warnings` 会报 unused variable（本机 macOS 编译看不到，CI 的 windows job 才会炸）。
+    #[cfg(not(target_os = "windows"))]
     let cleanup = installer.clone();
     let app2 = app.clone();
     let result = tauri::async_runtime::spawn_blocking(move || {

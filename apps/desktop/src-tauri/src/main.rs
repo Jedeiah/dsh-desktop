@@ -2556,7 +2556,7 @@ Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {{
 fn kill_other_app_instances_no_powershell(self_pid: u32) {
     let exe_name = std::env::current_exe()
         .ok()
-        .map(|p| strip_verbatim(p))
+        .map(strip_verbatim)
         .and_then(|p| p.file_name().map(|s| s.to_string_lossy().to_string()))
         .unwrap_or_else(|| "dsh-desktop.exe".to_string());
     let out = no_console(Command::new("tasklist"))
