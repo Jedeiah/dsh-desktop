@@ -1148,6 +1148,8 @@ async fn update_dsh_cmd(app: AppHandle, webview: tauri::Webview, ver: String) ->
 
 
 /// 启动时清理「上一次运行残留的子进程」：dsh 服务进程 与 安装用的 pnpm。
+/// 也被 App 自更新使用（Windows 安装器接手前必须先把这些子进程收掉，见
+/// appupdate::install_windows）。
 ///
 /// 为什么需要（实测复现）：dsh 是独立进程，App 被强杀（崩溃 / 强退 / dev 工具重启）时
 /// 它不会跟着退出。残留进程占住 `~/.dsh/profiles/web` 的 profile 锁，本次启动的 dsh
@@ -1155,7 +1157,7 @@ async fn update_dsh_cmd(app: AppHandle, webview: tauri::Webview, ver: String) ->
 /// 单实例插件保证同一时刻只有一个 App，所以此刻任何「命令行命中本 App app-data 路径」
 /// 且形如「dsh 服务进程」或「安装 dsh 的 pnpm」的进程必然是残留。只按本 App 的 app-data
 /// 路径匹配，**不会误伤**用户终端里自己跑的那份 dsh / pnpm（不在此路径下）。
-fn kill_stale_children(app: &AppHandle) {
+pub(crate) fn kill_stale_children(app: &AppHandle) {
     let closure_dir = paths_from_app(app).app_data.join("dsh");
     let self_pid = std::process::id();
     #[cfg(unix)]
@@ -1245,6 +1247,8 @@ fn is_stale_dsh_cmdline(cmdline: &str, closure_dir: &std::path::Path) -> bool {
 pub(crate) fn boot(app: AppHandle) {
     // 先清掉上一次运行残留的 dsh 进程：它们占着 profile 锁，会让本次启动的 dsh 秒退
     kill_stale_children(&app);
+    // 上次 App 更新是否生效：Windows 安装器会杀掉本进程，只有这里能给出结论
+    crate::appupdate::note_boot_after_update_attempt(&app);
     // thin shell: no bundled closure — first run must install dsh first
     let p = paths_from_app(&app);
     if crate::dsh::current_closure(&p).is_none() {

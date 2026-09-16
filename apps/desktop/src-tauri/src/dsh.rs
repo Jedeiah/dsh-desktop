@@ -122,6 +122,14 @@ fn install_log(msg: &str) {
     }
 }
 
+/// pnpm 的条形进度行：`Packages: +502` 之后跟的那条纯 `+` 串（移除依赖时是 `-`）。
+/// 安装页把每行当作**阶段文案**直接显示，这行会让用户看到「一行加号」。
+/// 只认「长度 ≥ 2 且全部是 + / -」：`+ @deepseek-ai/dsh 0.1.5-rc.2` 这类真实输出含其它
+/// 字符，不会被误伤。
+fn is_pnpm_bar_line(line: &str) -> bool {
+    line.len() >= 2 && line.chars().all(|c| c == '+' || c == '-')
+}
+
 /// Cancel a running install (kill the npm child; install_version then fails,
 /// cleans tmp, and the caller can retry). Best-effort per platform.
 pub fn cancel_install() {
@@ -308,7 +316,7 @@ fn install_and_verify(
                     while let Some(i) = lines.find('\n') {
                         let line = lines[..i].trim().to_string();
                         lines.drain(..=i);
-                        if !line.is_empty() {
+                        if !line.is_empty() && !is_pnpm_bar_line(&line) {
                             progress(&line);
                         }
                     }
@@ -551,6 +559,24 @@ mod tests {
     }
 
     #[test]
+    fn pnpm_bar_lines_are_filtered() {
+        // 实测首装输出：`Packages: +502` 之后是纯 `+` 条形进度（append-only 模式逐行
+        // 输出；冷装 80 个、复用 store 时 60 个）——安装页会把它当阶段文案，
+        // 显示成「一行加号」。
+        assert!(is_pnpm_bar_line(&"+".repeat(60)));
+        assert!(is_pnpm_bar_line(&"+".repeat(80)));
+        assert!(is_pnpm_bar_line(&"-".repeat(60)));
+        assert!(is_pnpm_bar_line("++"));
+        // 真实内容行/单字符/空串一律保留
+        assert!(!is_pnpm_bar_line("+ @deepseek-ai/dsh 0.1.5-rc.2"));
+        assert!(!is_pnpm_bar_line("Packages: +502"));
+        assert!(!is_pnpm_bar_line("Progress: resolved 564, reused 489, downloaded 0, added 0"));
+        assert!(!is_pnpm_bar_line("Done in 7.3s using pnpm v11.22.0"));
+        assert!(!is_pnpm_bar_line("+"));
+        assert!(!is_pnpm_bar_line(""));
+    }
+
+    #[test]
     fn closure_version_reads_marker_then_package_json() {
         let root = test_dir("closure_version");
         let _ = std::fs::remove_dir_all(&root);
@@ -616,5 +642,54 @@ mod tests {
         std::fs::remove_dir_all(ver_dir.join("node_modules")).unwrap(); // 无 node_modules → None
         assert!(current_closure(&p).is_none());
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 手动端到端（**需要网络**，会走一次真实 pnpm 安装，约 300MB）：断言推给 UI 的
+    /// 进度行里没有 pnpm 的纯符号条形进度（用户反馈的「一行加号」）。
+    /// 默认不跑（CI 无网/耗时）；手动运行：
+    ///   cd apps/desktop/src-tauri && cargo test -- --ignored --nocapture setup_install_stream
+    /// 全程只写临时目录，不碰用户 ~/.dsh 与 App 真实 app-data。
+    #[test]
+    #[ignore]
+    fn setup_install_stream_has_no_bar_lines() {
+        let root = test_dir("e2e_install_stream");
+        let _ = std::fs::remove_dir_all(&root);
+        let app_data = root.join("app-data");
+        std::fs::create_dir_all(&app_data).unwrap();
+        let resources = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources");
+        let pnpm = resources
+            .join("pnpm-bin")
+            .join(crate::plugin::bundled_pnpm_file_name());
+        if !pnpm.is_file() {
+            eprintln!("跳过：resources 未就绪（先跑 scripts/prepare-resources.sh）");
+            return;
+        }
+        let p = crate::Paths {
+            resources,
+            app_data,
+        };
+        let seen: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+        let res = install_version(
+            &p,
+            "0.1.5-rc.1",
+            "https://registry.npmmirror.com",
+            &|m: &str| seen.lock().unwrap().push(m.to_string()),
+        );
+        let lines = seen.into_inner().unwrap();
+        println!("进度行 {} 条", lines.len());
+        for l in lines.iter().filter(|l| is_pnpm_bar_line(l)) {
+            println!("  [本应被过滤] {l}");
+        }
+        assert!(
+            !lines.iter().any(|l| is_pnpm_bar_line(l)),
+            "进度行里仍有纯符号条形进度（UI 会显示成「一行加号」）"
+        );
+        // 反向确认这次安装确实走到了打印条形进度的阶段（否则断言可能空过）
+        assert!(
+            lines.iter().any(|l| l.starts_with("Packages: +")),
+            "没有看到 Packages: +N 行——安装可能没走 pnpm，断言无效。行：{lines:?}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+        res.unwrap();
     }
 }

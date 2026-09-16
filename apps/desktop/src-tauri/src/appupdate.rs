@@ -206,10 +206,13 @@ pub async fn app_update_cmd(
     let result = tauri::async_runtime::spawn_blocking(move || {
         let dest = installer.clone();
         download_installer(&url, &dest, &app2)?;
+        // 安装器接手前落标记：Windows 上 /S 安装器会杀掉本进程，能不能装成只能靠
+        // **下次启动**核对（见 note_boot_after_update_attempt）
+        mark_update_attempt(&app2, &ver);
         #[cfg(target_os = "macos")]
         install_macos(&installer)?;
         #[cfg(target_os = "windows")]
-        install_windows(&installer)?;
+        install_windows(&installer, &app2)?;
         Ok::<(), String>(())
     })
     .await
@@ -227,7 +230,13 @@ pub async fn app_update_cmd(
     // 唯一出口：无论成败都放开并发门（成功路径紧随其后 app.exit(0) 退出本进程；
     // Windows 上安装器会杀掉本进程，同样无需复位）
     UPDATING.store(false, Ordering::SeqCst);
-    result?;
+    if let Err(e) = result {
+        // 走到这里说明本进程还活着 = 安装器没接手（macOS hdiutil/ditto 失败、Windows
+        // 安装器提前退出或被拦下）：结果已知且 UI 已弹出失败原因，撤掉启动标记，
+        // 免得下次启动再报一次「上次更新未生效」。
+        let _ = std::fs::remove_file(update_attempt_path(&app));
+        return Err(e);
+    }
 
     // 安装成功 → 退出当前实例（安装器/新版会负责启动）
     app.exit(0);
@@ -371,27 +380,139 @@ fn install_macos(dmg: &Path) -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(target_os = "windows")]
-fn install_windows(exe: &Path) -> Result<(), String> {
+/// Windows NSIS 安装器：静默安装 + 装完自己拉起新版。
+///
+/// **函数体在所有平台都参与编译**（只有调用点是 `cfg(windows)`），这样 Windows 专属的
+/// 更新链路在 macOS 上也能被编译器检查到——本机 `cargo check --target
+/// x86_64-pc-windows-msvc` 会在 ring 的 C 依赖处失败（缺 MSVC 头文件），无法作为
+/// 类型检查手段。平台相关的部分收在函数内的 cfg 块里。
+///
+/// 必须同时传 `/R`（安装完成后由安装器拉起新版）。
+///
+/// 只传 `/S` 是不行的：Tauri 的 NSIS 模板在安装 Section 开头就执行
+/// `CheckIfAppIsRunning`，而该宏在静默模式下**不询问、直接
+/// KillProcessCurrentUser**（tauri-bundler 的 nsis/utils.nsh：`IfSilent kill_…`）。
+/// 也就是说 `/S` 一开始就会杀掉「正阻塞在 .status() 上等它结束」的本进程，
+/// 于是本函数之后的任何代码（包括原先那段 powershell 延迟启动）都是死代码，
+/// 表现为「App 内更新后程序消失、不自动重启」。`/R` 让安装器自己在
+/// `.onInstSuccess` 里 RunAsUser 拉起新版（installer.nsi 的 /R 分支）。
+///
+/// 但 `/S` 只杀**主程序**（KillProcessCurrentUser 按 `${MAINBINARYNAME}.exe` 匹配）：
+/// 本 App 拉起的 dsh 子进程（跑的是 `$INSTDIR\resources\node\node.exe`）以及
+/// 安装 dsh 用的 pnpm 都不在其中。Windows 上「正在运行的映像文件不可写」，安装器
+/// 覆盖 node.exe 时会 ERROR_SHARING_VIOLATION → 安装中断，而此时主程序已被杀，
+/// 用户看到的就是「程序退出后没反应、也没更新」（0.5.x 实测反馈）。
+/// 卸载路径早先踩过同一个坑并已修（installer-hooks.nsh：dsh 子进程占用 $INSTDIR
+/// 程序文件 → NSIS 删文件必然失败且无反馈），这里用同样的解法：**先自己收干净**，
+/// 再让安装器接手。
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn install_windows(exe: &Path, app: &tauri::AppHandle) -> Result<(), String> {
     use std::process::Command;
-    // 必须同时传 `/R`（安装完成后由安装器拉起新版）。
-    //
-    // 只传 `/S` 是不行的：Tauri 的 NSIS 模板在安装 Section 开头就执行
-    // `CheckIfAppIsRunning`，而该宏在静默模式下**不询问、直接
-    // KillProcessCurrentUser**（tauri-bundler 的 nsis/utils.nsh：`IfSilent kill_…`）。
-    // 也就是说 `/S` 一开始就会杀掉「正阻塞在 .status() 上等它结束」的本进程，
-    // 于是本函数之后的任何代码（包括原先那段 powershell 延迟启动）都是死代码，
-    // 表现为「App 内更新后程序消失、不自动重启」。`/R` 让安装器自己在
-    // `.onInstSuccess` 里 RunAsUser 拉起新版（installer.nsi 的 /R 分支）。
-    let status = crate::no_console(Command::new(exe))
-        .arg("/S")
-        .arg("/R")
-        .status()
-        .map_err(|e| format!("启动安装器失败: {e}"))?;
+    crate::logln("[update] 结束 dsh/pnpm 子进程后交给安装器（$INSTDIR 文件锁）");
+    crate::kill_dsh(); // 本进程的 dsh 树 + 安装中的 pnpm（并标记为主动停止，不再拉起）
+    crate::kill_stale_children(app); // 兜底：孤儿 dsh / plugin install 的 node
+    // 内核回收进程对象、释放映像锁还有一点延迟：以「能否写打开 node.exe」为准等它落地
+    // （只写打开、不 truncate，不改文件内容）。
+    let node_exe = crate::node_bin(&crate::paths_from_app(app).resources);
+    if !wait_node_exe_writable(&node_exe, Duration::from_secs(5)) {
+        // 不阻断：可能本就没有内置 node（或路径判定不同），交给安装器自己报错，
+        // 但日志里留一条线索供事后定位。
+        crate::logln(&format!(
+            "[update] 等待 node.exe 释放写锁超时（继续安装）：{}",
+            node_exe.display()
+        ));
+    }
+    let mut cmd = Command::new(exe);
+    #[cfg(target_os = "windows")]
+    {
+        cmd = crate::no_console(cmd); // 避免静默安装期间闪控制台窗口
+    }
+    let status = cmd.arg("/S").arg("/R").status().map_err(|e| {
+        // 本进程还活着说明安装器没接手：把 dsh 拉回来，别把用户丢在连不上工作台的壳里
+        crate::restart_dsh(app);
+        format!("启动安装器失败: {e}")
+    })?;
     if !status.success() {
+        crate::restart_dsh(app);
         return Err(format!("安装器退出码异常: {status}"));
     }
     Ok(())
+}
+
+/// 等 `<resources>/node/node.exe` 变成「可写打开」——这正是安装器覆盖该文件时要做的事。
+/// 用于 install_windows：kill_dsh/kill_stale_children 之后映像锁不是立刻释放的，
+/// 抢先让安装器开始复制就会撞上 ERROR_SHARING_VIOLATION。超时返回 false（由调用方决定
+/// 是否继续）。
+/// 平台无关（纯 std::fs）+ 本机可单测；只有 Windows 的安装路径调用它，
+/// 故其它平台放行 dead_code 提示（仓库既有惯例）。
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn wait_node_exe_writable(node_exe: &Path, timeout: Duration) -> bool {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        // 只写打开、不 truncate、不 create：纯粹探测「现在能不能写」，不改文件内容。
+        if std::fs::OpenOptions::new().write(true).open(node_exe).is_ok() {
+            return true;
+        }
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// 更新尝试的落盘标记：交给安装器之前写，**下次启动**核对。
+///
+/// 为什么需要：Windows 上 `/S` 安装器会杀掉本进程（`CheckIfAppIsRunning`），安装到底成没成
+/// 本进程无从知晓——失败时用户只看到「程序退出后就没反应了」，日志里也没有任何一行
+/// （0.5.x 实测反馈）。下次启动读到这个标记，就能明确告诉用户「上次更新到 vX 未生效」
+/// 并给出日志/手动安装路径，而不是让人对着一个消失的窗口猜。
+fn update_attempt_path(app: &tauri::AppHandle) -> std::path::PathBuf {
+    crate::paths_from_app(app).app_data.join("update-attempt.txt")
+}
+
+/// 记录「本次启动正在尝试更新到 ver」（安装器接手前调用）。
+fn mark_update_attempt(app: &tauri::AppHandle, ver: &str) {
+    let p = update_attempt_path(app);
+    if let Some(dir) = p.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    if let Err(e) = std::fs::write(&p, format!("{ver}\n")) {
+        crate::logln(&format!("[update] 写更新标记失败: {e}"));
+    }
+}
+
+/// 标记内容 → 目标版本（纯函数便于单测：只认第一行、去空白，空/无内容 → None）。
+fn parse_update_attempt(mark: &str) -> Option<String> {
+    let v = mark.lines().next().unwrap_or("").trim().to_string();
+    if v.is_empty() {
+        None
+    } else {
+        Some(v)
+    }
+}
+
+/// 启动时核对上次 App 更新是否生效（只报一次，随后清掉标记）。
+pub fn note_boot_after_update_attempt(app: &tauri::AppHandle) {
+    let p = update_attempt_path(app);
+    let Ok(txt) = std::fs::read_to_string(&p) else {
+        return; // 没尝试过更新：绝大多数启动走这里
+    };
+    let _ = std::fs::remove_file(&p);
+    let Some(target) = parse_update_attempt(&txt) else {
+        return;
+    };
+    let cur = env!("CARGO_PKG_VERSION");
+    if target == cur {
+        crate::logln(&format!("[update] 已更新到 v{cur}"));
+        return;
+    }
+    let log = crate::paths_from_app(app).app_data.join("logs/launcher.log");
+    let msg = format!(
+        "上次更新到 v{target} 未生效（当前仍为 v{cur}）。可能是安装目录文件被占用或安装器被安全软件拦下；可重试，或到 Releases 手动下载安装。\n日志：{}",
+        log.display()
+    );
+    crate::logln(&format!("[update] {msg}"));
+    crate::notify("更新未生效", &msg);
 }
 
 #[cfg(test)]
@@ -469,6 +590,34 @@ mod tests {
         // 无挂载点（attach 失败/无卷）→ None
         assert_eq!(parse_mount_point("<plist><dict></dict></plist>"), None);
         assert_eq!(parse_mount_point(""), None);
+    }
+
+    #[test]
+    fn update_attempt_mark_parses_first_line() {
+        assert_eq!(parse_update_attempt("0.5.3\n").as_deref(), Some("0.5.3"));
+        assert_eq!(parse_update_attempt("0.5.3").as_deref(), Some("0.5.3"));
+        assert_eq!(parse_update_attempt("  0.5.3-rc.1  \n噪声\n").as_deref(), Some("0.5.3-rc.1"));
+        assert_eq!(parse_update_attempt("\n0.5.3\n"), None);
+        assert_eq!(parse_update_attempt(""), None);
+        assert_eq!(parse_update_attempt("   \n"), None);
+    }
+
+    #[test]
+    fn node_exe_write_probe_reports_and_times_out() {
+        let dir = std::env::temp_dir().join(format!("dsh-update-probe-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("node.exe");
+        std::fs::write(&f, b"stub").unwrap();
+        // 可写 → 立刻 true，且**不改动内容**（探测只写打开、不 truncate）
+        assert!(wait_node_exe_writable(&f, Duration::from_millis(200)));
+        assert_eq!(std::fs::read(&f).unwrap(), b"stub");
+        // 打不开（不存在的路径）→ 等满超时后 false
+        let missing = dir.join("no-such-dir").join("node.exe");
+        let t0 = std::time::Instant::now();
+        assert!(!wait_node_exe_writable(&missing, Duration::from_millis(250)));
+        assert!(t0.elapsed() >= Duration::from_millis(250));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
