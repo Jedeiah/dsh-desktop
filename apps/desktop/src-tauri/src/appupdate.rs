@@ -258,17 +258,28 @@ pub async fn app_update_cmd(
 /// 使用，退出前不能删（安装器是按需从自身文件读压缩数据的，失败时也要留着重试），
 /// 所以在下次启动（那时安装器早已退出）清掉最安全。
 pub fn sweep_stale_installers() {
+    sweep_update_packages(false);
+}
+
+/// 清理临时区里本 App 的更新包。
+/// `force = false`：启动时的常规清扫——只清超过 TTL 的，绝不碰正在下载的那个；
+/// `force = true`：卸载时用——此刻不存在进行中的下载（卸载按钮在更新期间被禁用），
+/// 用户已经明确要卸载，留着几十 MB 安装包就是残留。
+pub fn sweep_update_packages(force: bool) {
     let Ok(rd) = std::fs::read_dir(std::env::temp_dir()) else {
         return;
     };
     for e in rd.flatten() {
         let name = e.file_name().to_string_lossy().to_string();
+        if !is_update_package(&name) {
+            continue;
+        }
         let age = e
             .metadata()
             .ok()
             .and_then(|m| m.modified().ok())
             .and_then(|t| t.elapsed().ok());
-        if is_stale_installer(&name, age) {
+        if force || is_stale_installer(&name, age) {
             crate::logln(&format!("[update] 清理遗留安装包: {}", e.path().display()));
             let _ = std::fs::remove_file(e.path());
         }
@@ -279,10 +290,18 @@ pub fn sweep_stale_installers() {
 /// 绝不会被误删——这是"下一次启动清扫"能安全落地的关键）。
 const STALE_INSTALLER_AGE: Duration = Duration::from_secs(3600);
 
+/// 更新包文件名前缀（`dsh-desktop-update-<ver>.dmg|.exe`）。
+const UPDATE_PACKAGE_PREFIX: &str = "dsh-desktop-update-";
+
+/// 是否属于「本 App 的更新包」——纯函数便于测试与复用（卸载清扫按名字即可）。
+/// 只认固定前缀，不做通配匹配，因此不会波及临时区其它文件。
+pub fn is_update_package(name: &str) -> bool {
+    name.starts_with(UPDATE_PACKAGE_PREFIX)
+}
+
 /// 是否属于「本 App 的、已过期的更新包」——纯函数便于测试。
-/// 只认固定前缀 `dsh-desktop-update-`，不做通配匹配，因此不会波及临时区其它文件。
 fn is_stale_installer(name: &str, age: Option<Duration>) -> bool {
-    name.starts_with("dsh-desktop-update-")
+    name.starts_with(UPDATE_PACKAGE_PREFIX)
         && age.map(|d| d > STALE_INSTALLER_AGE).unwrap_or(false)
 }
 
@@ -952,5 +971,11 @@ mod tests {
         // 非本 App 文件一律不碰（临时区还有别的程序的文件）
         assert!(!is_stale_installer("other-app.dmg", old));
         assert!(!is_stale_installer("DSH-notes.txt", old));
+        // 卸载时的强制清扫按名字判（不看年龄）；判定本身仍只认前缀
+        assert!(is_update_package("dsh-desktop-update-0.5.3.exe"));
+        assert!(is_update_package("dsh-desktop-update-0.5.3.dmg"));
+        assert!(!is_update_package("other-app.dmg"));
+        assert!(!is_update_package("dsh-desktop-update")); // 没有 `-` 之后的版本段 → 不认
+        assert!(!is_update_package("my-dsh-desktop-update-1.exe")); // 前缀必须从头匹配
     }
 }

@@ -21,6 +21,13 @@
 - 更新进行中对会拉起 node/dsh 的命令加后端互斥（`dsh_restart_cmd` / `setup_dsh_cmd` / `update_dsh_cmd` / `plugin_op`，以及插件操作与 dsh 安装完成后的内部自动重启）：这些操作会重新占住 `resources\node\node.exe` 的映像锁，让安装器静默跳过该文件
 - 修正 `kill_dsh` 的「主动停止」标志：仅在确有子进程被结束时置位（此前重复调用会把下一次真实崩溃误判为主动停止，令其不自愈、不计数）
 
+### 卸载
+
+- **macOS 补清 `~/Library/HTTPStorages/<bundle-id>/`（目录形态）**：此前只删 `<bundle-id>.binarycookies`（文件形态），而现代 macOS 上目录形态（内含 `httpstorages.sqlite`）更常见——本机 122 个 App 里 91 个用目录形态。沙箱实测：修前目录形态残留、修后被清
+- **卸载时清掉临时区的更新包**：`dsh-desktop-update-*.dmg|.exe`（几十 MB）此前只在 App 运行期间的启动清扫里按 1 小时 TTL 处理，卸载后就永远留下了。现在卸载流程按名字强制清（此刻不存在进行中的下载），实测只删本 App 前缀、同目录其它文件不动
+- **Windows：安装版但系统卸载器起不来时不再冒充便携版**：此前只要 `uninstall.exe` 没能启动（安全软件拦下/权限）就走便携版分支——删除用户数据、并提示"便携版需手动删除文件夹"，而程序文件其实还在。现在保持"什么都没动"的可用状态，弹「卸载未完成：无法启动系统卸载器…」并可重试
+- `installer-hooks.nsh` 注释与实现对齐：本 App 并没有开机自启功能，`Run` 键删除是幂等兜底；补上现代 Windows 上真正需要清理的 `%LOCALAPPDATA%\<id>`（WebView2）与 `%APPDATA%\<id>`（app 数据）
+
 ## 0.5.2 — App 更新体验：更新中锁定其它操作 + 下载进度（2026-09-16）
 
 ### 新增

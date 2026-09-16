@@ -7,7 +7,8 @@
 ; 解决的问题（用户反馈"右键→卸载 无反应 / uninstall.exe 不齐全"）：
 ;   - App 常驻托盘、主窗隐藏：从系统卸载时 dsh-desktop.exe 与其 node/dsh/lan 子进程
 ;     仍在运行，占用 $INSTDIR 程序文件与 WebView2 数据 → NSIS 删文件必然失败且无反馈。
-;   - 默认 NSIS 卸载器不清理 %LOCALAPPDATA%\<id>、WebView2 缓存、登录自启。
+;   - 默认 NSIS 卸载器不清理 %LOCALAPPDATA%\<id>（WebView2 用户数据）与 %APPDATA%\<id>
+;     （app 数据：dsh 闭包 / 日志 / 设置）。
 ;
 ; 方案：PREUNINSTALL 先调用本应用卸载 sidecar `--self-uninstall-full`：
 ;   - 结束其它运行实例（进程树杀）→ 释放文件锁；
@@ -37,7 +38,8 @@
 !macroend
 
 ; POSTUNINSTALL：兜底清扫（可选）。当前默认卸载器已删除开始菜单快捷方式与
-; Uninstall 注册表项；此处额外清理可能残留的登录自启注册表项（幂等）。
+; Uninstall 注册表项；此处额外清理自启注册表项（本 App 目前**没有**开机自启功能，
+; 该键不会被创建；保留此删除是幂等兜底，防止将来加了自启却忘了卸载时清理）。
 !macro NSIS_HOOK_POSTUNINSTALL
   DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "DeepSeek Harness"
 !macroend

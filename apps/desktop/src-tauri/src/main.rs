@@ -2109,15 +2109,24 @@ async fn uninstall_run(app: AppHandle, webview: tauri::Webview, wipe: bool) -> R
         // app 数据/WebView2 缓存改由 PREUNINSTALL 的 sidecar 无条件清理。
         let exe = std::env::current_exe().unwrap_or_default();
         let uninstaller = exe.parent().unwrap_or(Path::new(".")).join("uninstall.exe");
-        let mut spawned = false;
         if uninstaller.is_file() {
-            let ok = no_console(Command::new(&uninstaller)).arg("/S").spawn().is_ok();
-            if ok {
-                spawned = true;
-                logln!("[uninstall] spawned system uninstaller (/S): {}", uninstaller.display());
+            if let Err(e) = no_console(Command::new(&uninstaller)).arg("/S").spawn() {
+                // 安装版但卸载器起不来（安全软件拦下 / 权限 / 文件损坏）：**不能**当成
+                // 便携版去删数据——那会变成"数据没了、程序还在、提示还写着便携版"。
+                // 保持"什么都没动"的可用状态，如实报错让用户重试或走系统「设置 → 应用」。
+                UNINSTALLING.store(false, Ordering::SeqCst);
+                notify(
+                    "卸载未完成",
+                    &format!("无法启动系统卸载器：{e}\n可重试，或从「设置 → 应用」中卸载。"),
+                );
+                let app2 = app.clone();
+                let _ = app2
+                    .clone()
+                    .run_on_main_thread(move || reveal_main_window(&app2, None));
+                return Err(format!("启动系统卸载器失败: {e}"));
             }
-        }
-        if !spawned {
+            logln!("[uninstall] spawned system uninstaller (/S): {}", uninstaller.display());
+        } else {
             // 便携版（解压即用，没有 uninstall.exe）：没有系统卸载器可委托，只能自己
             // 清理用户数据。此前这里只发通知、什么都不删，文案却写着"应用数据已清理"
             // ——既留下数百 MB 的 dsh 闭包与 WebView2 缓存，又误报。
@@ -2215,6 +2224,11 @@ fn uninstall_targets(
         let lib = home.join("Library");
         dirs.push(lib.join("Caches").join(APP_ID)); // WebView 资源缓存
         dirs.push(lib.join("WebKit").join(APP_ID)); // WebView 存储（LocalStorage/IndexedDB）
+        // HTTPStorages 有**两种形态**，都要清：`<id>.binarycookies`（文件，见下方 files）
+        // 与 `<id>/`（目录，内含 httpstorages.sqlite）。本机统计：122 个 App 里 91 个用
+        // 目录形态、13 个用文件形态——只清文件形态会漏（实测：沙箱里造出目录形态后
+        // 卸载不删）。
+        dirs.push(lib.join("HTTPStorages").join(APP_ID));
         dirs.push(
             lib.join("Saved Application State")
                 .join(format!("{APP_ID}.savedState")),
@@ -2300,6 +2314,10 @@ fn uninstall_teardown(p: &Paths, wipe_dsh: bool) -> Result<(), String> {
         std::thread::sleep(Duration::from_millis(1000));
         leftovers = remove_uninstall_targets(&dirs, &files);
     }
+    // 临时区里的更新包（几十 MB）也一并清掉：留给它们只有"卸载后还在"这一种结局
+    // （启动清扫只在 App 还在运行时发生）。此刻不存在进行中的下载（卸载期间更新按钮
+    // 被禁用），所以按名字强制清、不等 1 小时 TTL。
+    crate::appupdate::sweep_update_packages(true);
     if !leftovers.is_empty() {
         let msg = format!(
             "以下数据被占用未能删除，重启电脑后即可手动清理：\n{}",
