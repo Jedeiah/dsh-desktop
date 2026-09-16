@@ -624,7 +624,8 @@ fn strip_verbatim_prefix(s: &str) -> Option<String> {
 /// current_exe()` 在 Windows 返回 verbatim 路径，泄漏进子进程参数后 node 的
 /// 模块解析会崩溃（`EISDIR: lstat 'C:'`），导致 dsh 无法启动。
 /// 非 Windows / 无前缀时原样返回。
-fn strip_verbatim(p: PathBuf) -> PathBuf {
+/// App 更新助手也用（传给 PowerShell 的 exe 路径同样不能带 verbatim 前缀）。
+pub(crate) fn strip_verbatim(p: PathBuf) -> PathBuf {
     #[cfg(target_os = "windows")]
     {
         if let Some(c) = strip_verbatim_prefix(&p.to_string_lossy()) {
@@ -1151,6 +1152,12 @@ async fn update_dsh_cmd(app: AppHandle, webview: tauri::Webview, ver: String) ->
     SETUP_BUSY.store(false, Ordering::SeqCst);
     *mlock(&SETUP_PROGRESS) = None;
     result.map_err(|e| format!("安装线程异常：{e}"))??;
+    // App 更新期间不重启：更新收尾阶段安装器要覆盖 $INSTDIR，此刻拉起 dsh 会把 node.exe
+    // 的映像锁占回去（本进程马上要退出，重启也没有意义）
+    if crate::appupdate::update_in_progress() {
+        logln("[setup] 应用更新中，跳过 dsh 安装完成后的自动重启");
+        return Ok(());
+    }
     // 安装成功 → 自动重启工作台（新版本生效）
     let _ = app_after
         .clone()
@@ -1582,12 +1589,17 @@ fn webview_new_window_policy(
 }
 
 pub(crate) fn kill_dsh() {
-    // mark as intentional so the boot thread never treats the EOF as a crash
-    // and never spawns a restart after the app is quitting (avoids orphans).
-    INTENTIONAL_STOP.store(true, Ordering::SeqCst);
     // 安装中的 pnpm 也是我们的子进程：退出路径必须一起结束，否则它会变成孤儿继续跑
     // （还留着 v<ver>-tmp 目录，下次安装可能撞 tmp/共享 store 锁）。幂等：没在装就是 no-op。
     crate::dsh::kill_setup_child_blocking();
+    // 只有**确实有子进程要杀**时才置「主动停止」：该标志是给 boot 的读取循环用的——
+    // 让它别把这次 EOF 当崩溃。没有子进程就没有待解释的 EOF，这时置位反而有害：
+    // 标志会一直留到下一个 dsh 真的崩溃时被消费掉，那次崩溃就不再自愈、也不计数
+    // （App 内更新失败后 respawn_dsh 会二次调用 kill_dsh，正是这种情形）。
+    if mlock(&CHILD).is_none() {
+        return;
+    }
+    INTENTIONAL_STOP.store(true, Ordering::SeqCst); // 让 boot 循环别把这次 EOF 当崩溃
     if let Some(mut c) = mlock(&CHILD).take() {
         // Windows：先按进程树整棵结束——node 派生的 dsh 执行器不会随
         // TerminateProcess 一起结束，残留进程会占住 ~/.dsh 的 profile 锁，导致下次
@@ -1605,7 +1617,8 @@ pub(crate) fn kill_dsh() {
 }
 
 pub(crate) fn restart_dsh(app: &AppHandle) {
-    INTENTIONAL_STOP.store(true, Ordering::SeqCst);
+    // 「主动停止」标志由 kill_dsh 在有子进程可杀时置位（见其注释），这里不再重复置位：
+    // 无子进程时重复置位会让**下一次**真实崩溃被误判为主动停止（不自愈、不计数）。
     kill_dsh();
     // 关键：重启立刻清 DSH_URL——否则新 dsh 启动前仍持旧 URL,前端(updateDsh 非首装
     // 分支启动的轮询 / 引导等待态轮询)会拿到已死端口的旧 URL 而误重载。dsh:url 事件

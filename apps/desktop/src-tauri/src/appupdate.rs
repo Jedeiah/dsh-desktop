@@ -490,11 +490,16 @@ fn spawn_update_helper(app: &tauri::AppHandle, installer: &Path) -> Result<(), S
         .and_then(|p| p.file_stem().map(|s| s.to_string_lossy().to_string()))
         .unwrap_or_else(|| "dsh-desktop".to_string());
     // 安装后的主程序路径：与当前 exe 同路径（安装器就地覆盖它）。
+    // **必须 strip_verbatim**：Windows 上 `current_exe()` 返回 `\\?\C:\…`，verbatim 前缀
+    // 泄漏进子进程参数是本仓库踩过的坑（见 main.rs strip_verbatim 注释），而
+    // PowerShell 的 Start-Process 走 ShellExecute，扩展长度路径不被接受。
     // 便携版（不是安装器装的）这里会回退到便携副本——助手只在「一个实例都没起来」时
     // 才用它兜底，不会覆盖 /R 已经拉起的新版。
-    let exe_path = std::env::current_exe().ok();
+    let exe_path = std::env::current_exe().ok().map(crate::strip_verbatim);
+    let attempt = update_attempt_path(app);
     let script = update_helper_script(
         &marker,
+        &attempt,
         self_pid,
         &proc_name,
         installer,
@@ -509,8 +514,10 @@ fn spawn_update_helper(app: &tauri::AppHandle, installer: &Path) -> Result<(), S
     {
         cmd = crate::no_console(cmd); // 不闪控制台窗口
     }
-    cmd.spawn().map_err(|e| format!("启动更新助手失败: {e}"))?;
-    // 等握手（最多 10s）：出现=助手确实在跑，可以放心退出
+    let mut child = cmd.spawn().map_err(|e| format!("启动更新助手失败: {e}"))?;
+    // 等握手（最多 10s）：出现=助手确实在跑，可以放心退出。
+    // 超时必须**杀掉助手**再报错：否则它 30s 后照样安装，而我们已经告诉用户「已取消」，
+    // 还会在 App 存活的情况下装（脚本内也有一道「本进程没退出就放弃」的保险）。
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     loop {
         if marker.is_file() {
@@ -518,6 +525,9 @@ fn spawn_update_helper(app: &tauri::AppHandle, installer: &Path) -> Result<(), S
             return Ok(());
         }
         if std::time::Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            crate::logln("[update] 更新助手未就绪，已结束助手进程并取消本次更新");
             return Err(
                 "更新助手未就绪（PowerShell 可能被安全策略禁用），已取消本次更新；可到 Releases 手动下载安装"
                     .to_string(),
@@ -529,15 +539,18 @@ fn spawn_update_helper(app: &tauri::AppHandle, installer: &Path) -> Result<(), S
 
 /// 生成更新助手脚本（纯函数：便于单测与人工核对）。
 ///
-/// 顺序：**先握手 → 再等本进程消失 → 最后才安装**，安装完若没有任何实例在跑则补启动一次。
-/// 握手放在最前，是为了让 App 确认「助手真的在跑」之后才退出；等待放在中间、安装放在最后，
-/// 则是为了让安装器复制文件时安装目录里一个我们的进程都没有（否则文件会被静默跳过，见
-/// install_windows）。
+/// 顺序：**先握手 → 再等本进程消失 → 再确认它真的没了 → 才安装**，安装完若没有任何实例
+/// 在跑则补启动一次（`/R` 不检查返回值，失败就什么都不剩）。
+/// 握手放在最前，是为了让 App 确认「助手真的在跑」之后才退出；等待+确认放在中间、安装放在
+/// 最后，是为了让安装器复制文件时安装目录里一个我们的进程都没有（否则被占用的文件会被
+/// 安装器静默跳过，见 install_windows）。**确认那一步不能省**：等待有 30s 上限，到点若
+/// 本进程还活着就 `exit`——宁可不装，也不要在 App 活着时装（那正是要消灭的场景）。
 /// 「本进程是否已退出」按 `pid` 判（精确）；「有没有实例在跑」按 exe 文件名判（新实例是
 /// 另一个 pid，名字与安装后的主程序一致）。
 #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 fn update_helper_script(
     marker: &Path,
+    attempt: &Path,
     self_pid: u32,
     proc_name: &str,
     installer: &Path,
@@ -554,12 +567,15 @@ fn update_helper_script(
     };
     format!(
         "$ErrorActionPreference='SilentlyContinue'; \
-         Set-Content -Path {marker} -Value 'ready' -Encoding ASCII; \
+         Set-Content -LiteralPath {marker} -Value 'ready' -Encoding ASCII; \
          for ($i=0; $i -lt 300; $i++) {{ if (-not (Get-Process -Id {pid} -ErrorAction SilentlyContinue)) {{ break }}; Start-Sleep -Milliseconds 100 }}; \
+         if (Get-Process -Id {pid} -ErrorAction SilentlyContinue) {{ exit }}; \
+         Add-Content -LiteralPath {attempt} -Value 'state=launching' -Encoding ASCII; \
          $p = Start-Process -FilePath {installer} -ArgumentList '/S','/R' -PassThru; \
          if ($p) {{ $p.WaitForExit() }}; \
          Start-Sleep -Seconds 2;{relaunch}",
         marker = ps_quote(&marker.display().to_string()),
+        attempt = ps_quote(&attempt.display().to_string()),
         pid = self_pid,
         installer = ps_quote(&installer.display().to_string()),
         relaunch = relaunch,
@@ -598,6 +614,8 @@ fn update_attempt_path(app: &tauri::AppHandle) -> std::path::PathBuf {
 }
 
 /// 记录「本次启动正在尝试更新到 ver」（安装器接手前调用）。
+/// 第一行是目标版本；助手真正开始安装时会追加一行 `state=launching`（见
+/// update_helper_script），启动核对据此区分「装到一半」与「压根没开始装」。
 fn mark_update_attempt(app: &tauri::AppHandle, ver: &str) {
     let p = update_attempt_path(app);
     if let Some(dir) = p.parent() {
@@ -639,16 +657,28 @@ enum UpdateAttempt {
 /// 用户可能立刻又双击图标把**旧**版本拉起来 —— 此时标记才写了十几秒，安装可能正在进行，
 /// 不能报「更新未生效」（假警报）。
 const UPDATE_ATTEMPT_SETTLE: Duration = Duration::from_secs(120);
+/// 助手**还没开始装**（标记里没有 `state=launching`）时的等待上限：助手等本进程退出最多
+/// 30s，加上启动开销，60s 后还没进入安装即视为失败——比全窗口更早给出结论。
+const UPDATE_ATTEMPT_SETTLE_PRELAUNCH: Duration = Duration::from_secs(60);
 
 /// 纯函数便于单测：标记内容 + 当前版本 + 标记年龄 → 结论。
+/// 标记里带 `state=launching`（助手在真正运行安装器前追加）说明安装已开始；没有则是
+/// 「只发起了、还没开始装」——两者用不同等待窗口，既避免假警报，也不让「压根没开始装」
+/// 拖到两分钟后才发现。
 fn update_attempt_verdict(mark: &str, current: &str, age: Option<Duration>) -> Option<UpdateAttempt> {
     let target = parse_update_attempt(mark)?;
     if target == current {
         return Some(UpdateAttempt::Applied);
     }
+    let launching = mark.contains("state=launching");
+    let window = if launching {
+        UPDATE_ATTEMPT_SETTLE
+    } else {
+        UPDATE_ATTEMPT_SETTLE_PRELAUNCH
+    };
     // 拿不到年龄（mtime 缺失）时按「已过等待期」处理：宁可如实报一次失败，
     // 也不要因为读不到时间而永远沉默。
-    if age.map(|d| d < UPDATE_ATTEMPT_SETTLE).unwrap_or(false) {
+    if age.map(|d| d < window).unwrap_or(false) {
         return Some(UpdateAttempt::Pending);
     }
     Some(UpdateAttempt::Failed)
@@ -772,6 +802,7 @@ mod tests {
     fn update_helper_script_shape_and_quoting() {
         let s = update_helper_script(
             Path::new(r"C:\Users\a b\AppData\Roaming\com.dsh-desktop.app\update-helper.txt"),
+            Path::new(r"C:\Users\a b\AppData\Roaming\com.dsh-desktop.app\update-attempt.txt"),
             4242,
             "dsh-desktop",
             Path::new(r"C:\Users\a b\AppData\Local\Temp\dsh-desktop-update-0.5.3.exe"),
@@ -779,25 +810,43 @@ mod tests {
                 r"C:\Users\a b\AppData\Local\DeepSeek Harness Desktop\dsh-desktop.exe",
             )),
         );
-        // 关键顺序：先握手 → 等本进程（pid）退出 → 才安装 → 装完按需补启动
+        // 关键顺序：握手 → 等本进程（pid）退出 → **确认真的退出了** → 标记安装已开始 →
+        // 安装 → 装完按需补启动
         let handshake = s.find("Set-Content").expect("握手续写");
         let wait_app = s.find("Get-Process -Id 4242").expect("按 pid 等待本进程退出");
+        let confirm = s.rfind("Get-Process -Id 4242").expect("确认本进程已退出");
+        let mark_launching = s.find("state=launching").expect("标记安装已开始");
         let install = s.find("Start-Process -FilePath 'C:\\Users\\a b\\AppData\\Local\\Temp")
             .expect("启动安装器");
         let relaunch = s.find("Get-Process -Name 'dsh-desktop'").expect("兜底拉起判据");
-        assert!(handshake < wait_app && wait_app < install && install < relaunch, "顺序错：{s}");
+        assert!(handshake < wait_app && wait_app < confirm, "等待/确认顺序错：{s}");
+        assert!(confirm < mark_launching && mark_launching < install, "安装标记/安装顺序错：{s}");
+        assert!(install < relaunch, "兜底拉起的判据必须在安装之后：{s}");
+        // 确认那一步必须「仍在运行就退出」——宁可不装，也不要在 App 活着时装
+        assert!(s.contains("{ exit }") || s.contains(") { exit }"), "缺少放弃保险：{s}");
         // 静默 + 装完拉起新版
         assert!(s.contains("-ArgumentList '/S','/R'"), "缺少 /S /R：{s}");
-        // 含空格路径必须是完整单引号字面量（否则 PowerShell 按空格切分）
+        // 含空格路径必须是完整单引号字面量（否则 PowerShell 按空格切分）；且用 -LiteralPath
+        // （-Path 会把路径里的 [ ] 当通配符）
         assert!(s.contains("'C:\\Users\\a b\\AppData\\Local\\Temp\\dsh-desktop-update-0.5.3.exe'"));
+        assert!(s.contains("Set-Content -LiteralPath"), "标记写入应用 -LiteralPath：{s}");
+        assert!(s.contains("Add-Content -LiteralPath"), "状态追加应用 -LiteralPath：{s}");
         // 拿不到自身路径时不写兜底拉起（宁可不拉，也不拉起空路径）：-Name 只出现在
         // 兜底拉起那一句里，用它判断该句是否存在
-        let no_exe = update_helper_script(Path::new("C:/m.txt"), 1, "p", Path::new("C:/s.exe"), None);
+        let no_exe = update_helper_script(
+            Path::new("C:/m.txt"),
+            Path::new("C:/a.txt"),
+            1,
+            "p",
+            Path::new("C:/s.exe"),
+            None,
+        );
         assert!(!no_exe.contains("Get-Process -Name"), "{no_exe}");
         assert!(no_exe.contains("Get-Process -Id 1"), "{no_exe}");
         // 单引号转义：路径里的 ' 必须写成 ''
         let q = update_helper_script(
             Path::new("C:/tmp/it's here/m.txt"),
+            Path::new("C:/tmp/it's here/a.txt"),
             7,
             "dsh-desktop",
             Path::new("C:/tmp/it's here/setup.exe"),
@@ -816,6 +865,7 @@ mod tests {
         let out = std::env::temp_dir().join("dsh-update-helper-script.ps1");
         let script = update_helper_script(
             Path::new("C:\\Temp\\helper-marker.txt"),
+            Path::new("C:\\Temp\\update-attempt.txt"),
             std::process::id(),
             "dsh-desktop",
             Path::new("C:\\Temp\\dsh-desktop-update-0.5.3.exe"),
@@ -838,24 +888,34 @@ mod tests {
 
     #[test]
     fn update_attempt_verdict_handles_three_cases() {
+        let launched = "0.5.3\nstate=launching\n";
         // 已到目标版本 → 生效
         assert_eq!(
-            update_attempt_verdict("0.5.3\n", "0.5.3", Some(Duration::from_secs(5))),
+            update_attempt_verdict(launched, "0.5.3", Some(Duration::from_secs(5))),
             Some(UpdateAttempt::Applied)
         );
         // 版本没变但标记很新（用户装完前又双击了旧版）→ 不下结论、保留标记
         assert_eq!(
-            update_attempt_verdict("0.5.3\n", "0.5.2", Some(Duration::from_secs(30))),
+            update_attempt_verdict(launched, "0.5.2", Some(Duration::from_secs(30))),
             Some(UpdateAttempt::Pending)
         );
         // 过了等待期仍未变 → 判定失败
         assert_eq!(
-            update_attempt_verdict("0.5.3\n", "0.5.2", Some(Duration::from_secs(600))),
+            update_attempt_verdict(launched, "0.5.2", Some(Duration::from_secs(600))),
             Some(UpdateAttempt::Failed)
+        );
+        // 只发起了、助手还没开始装（无 state=launching）→ 等 60s 就够，不必等满 120s
+        assert_eq!(
+            update_attempt_verdict("0.5.3\n", "0.5.2", Some(Duration::from_secs(90))),
+            Some(UpdateAttempt::Failed)
+        );
+        assert_eq!(
+            update_attempt_verdict("0.5.3\n", "0.5.2", Some(Duration::from_secs(10))),
+            Some(UpdateAttempt::Pending)
         );
         // 拿不到年龄 → 按失败处理（不因读不到时间而永远沉默）
         assert_eq!(
-            update_attempt_verdict("0.5.3\n", "0.5.2", None),
+            update_attempt_verdict(launched, "0.5.2", None),
             Some(UpdateAttempt::Failed)
         );
         // 空/无效标记 → 无结论

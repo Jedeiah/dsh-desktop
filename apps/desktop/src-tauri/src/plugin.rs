@@ -566,6 +566,12 @@ pub async fn plugin_op(
         if !success {
             return Err(output);
         }
+        // App 更新期间不重启：更新收尾阶段安装器要覆盖 $INSTDIR，此刻拉起 dsh 会把
+        // node.exe 的映像锁占回去（且本进程马上要退出，重启没有意义）
+        if crate::appupdate::update_in_progress() {
+            crate::logln("[plugin] 应用更新中，跳过插件变更后的自动重启");
+            return Ok(output);
+        }
         // 插件变更后自动重启工作台生效（替代原「请手动重启」提示）
         let app2 = app.clone();
         let _ = app2.clone().run_on_main_thread(move || crate::restart_dsh(&app2));
