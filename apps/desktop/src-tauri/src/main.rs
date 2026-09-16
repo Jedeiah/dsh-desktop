@@ -2116,6 +2116,20 @@ async fn uninstall_run(app: AppHandle, webview: tauri::Webview, wipe: bool) -> R
                 late.join("; ")
             ));
         }
+        // 上面这两轮都是**本进程还在运行**时删的，而 WebKit 恰恰会在进程退出那一刻再落盘
+        // 一次（本机实测：卸载后 cookie 文件又出现，mtime 与 App 退出同秒）。所以再挂一个
+        // 脱离本进程的 shell，等我们退出后按同一份清单删最后一遍。
+        let (dirs, files) = uninstall_targets(&home_dir(), &p.app_data);
+        let cmd = post_exit_cleanup_cmd(&dirs, &files, &p.app_data, APP_ID);
+        match std::process::Command::new("/bin/sh")
+            .args(["-c", &cmd])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+        {
+            Ok(_) => logln!("[uninstall] 已挂退出后清理（等本进程退出再删一遍 cookie/偏好）"),
+            Err(e) => logln!("[uninstall] 退出后清理未能挂起: {e}"),
+        }
         clear_dock_recents();
     }
     #[cfg(target_os = "windows")]
@@ -2338,6 +2352,33 @@ fn restore_after_failed_uninstall(app: &AppHandle) {
     if let Some(u) = url.as_deref() {
         crate::workbench::ensure_ready(app, u);
     }
+}
+
+/// shell 单引号字面量（POSIX）：把 `'` 写成 `'\''`。
+fn sh_quote(p: &std::path::Path) -> String {
+    format!("'{}'", p.display().to_string().replace('\'', "'\\''"))
+}
+
+/// 生成「App 退出之后」再删一遍的命令（纯函数便于单测）。
+///
+/// 为什么需要：WebKit/AppKit 会在**本进程退出时**才把 cookie 等数据落盘——实测本机卸载后
+/// `~/Library/HTTPStorages/<id>.binarycookies` 又出现，mtime 与 App 退出同一秒（而它已被
+/// 前面两轮删除清掉过）。那一刻进程内已经没有"再删一次"的机会了，所以把同一份目标清单
+/// 交给一个脱离本进程的短命 shell：睡几秒（等我们彻底退出）后 `rm` 一遍。
+///
+/// 安全边界与 `uninstall_targets` 一致（绝对路径 + 末段含 bundle id）；额外**排除 app_data**：
+/// 万一用户在这几秒里重装并启动，新实例刚写下的 app 数据不能被误删。
+fn post_exit_cleanup_cmd(dirs: &[PathBuf], files: &[PathBuf], keep: &std::path::Path, app_id: &str) -> String {
+    let mut cmd = String::from("sleep 3;");
+    for d in dirs.iter().filter(|d| d.as_path() != keep) {
+        cmd.push_str(&format!(" rm -rf {}", sh_quote(d)));
+    }
+    for f in files {
+        cmd.push_str(&format!(" rm -f {}", sh_quote(f)));
+    }
+    // 偏好域交给 cfprefsd：只删文件的话它可能把内存里的域再写回磁盘
+    cmd.push_str(&format!(" defaults delete {app_id} 2>/dev/null;"));
+    cmd
 }
 
 /// 卸载失败后的统一收尾：复位「卸载中」标志、系统通知、恢复可用界面，并回错。
@@ -3188,6 +3229,28 @@ mod tests {
             // 用户看不出关系的目录），remove_uninstall_targets 会跳过它们
             assert!(p.is_absolute(), "卸载目标 {p:?} 不是绝对路径");
         }
+    }
+
+    #[test]
+    fn post_exit_cleanup_excludes_app_data_and_quotes_paths() {
+        let keep = PathBuf::from("/Users/x/Library/Application Support/com.dsh-desktop.app");
+        let dirs = vec![
+            keep.clone(),
+            PathBuf::from("/Users/x/Library/WebKit/com.dsh-desktop.app"),
+            PathBuf::from("/Users/a b/Library/HTTPStorages/com.dsh-desktop.app"),
+        ];
+        let files = vec![PathBuf::from("/Users/x/Library/HTTPStorages/com.dsh-desktop.app.binarycookies")];
+        let cmd = post_exit_cleanup_cmd(&dirs, &files, &keep, "com.dsh-desktop.app");
+        // app_data 必须被排除（用户几秒内重装时不能误删新数据）
+        assert!(!cmd.contains("Application Support/com.dsh-desktop.app'"), "app_data 未被排除: {cmd}");
+        // 含空格的路径必须整体加引号
+        assert!(cmd.contains("'/Users/a b/Library/HTTPStorages/com.dsh-desktop.app'"), "{cmd}");
+        assert!(cmd.contains("rm -rf '/Users/x/Library/WebKit/com.dsh-desktop.app'"), "{cmd}");
+        assert!(cmd.contains("rm -f '/Users/x/Library/HTTPStorages/com.dsh-desktop.app.binarycookies'"), "{cmd}");
+        assert!(cmd.contains("defaults delete com.dsh-desktop.app"), "{cmd}");
+        assert!(cmd.starts_with("sleep 3;"), "{cmd}");
+        // 单引号转义
+        assert_eq!(sh_quote(std::path::Path::new("/tmp/it's/a")), "'/tmp/it'\\''s/a'");
     }
 
     #[test]

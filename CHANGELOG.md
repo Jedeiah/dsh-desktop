@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.4（未发布）— 卸载后在 App 退出的瞬间被 WebKit 写回的 cookie（2026-09-17）
+
+### 修复
+
+- **macOS 卸载后 `~/Library/HTTPStorages/<id>.binarycookies` 会重新出现**（真机实测）：卸载流程里已经删过它（本进程内删了两轮：常规删除 + 等 900ms 的补删），但 WebKit 会在**本进程退出那一刻**再把 cookie 落盘——实测该文件 mtime 与「App 被移入废纸篓后 `killall Dock`」同一秒，而其它所有目标都清得干干净净，说明删除成功、是删完之后又被写回来。
+  修法：卸载的 macOS 收尾额外挂一个**脱离本进程的短命 shell**（`/bin/sh -c "sleep 3; rm -rf …; rm -f …; defaults delete <id>"`），等本进程彻底退出后按同一份清单再删一遍。清单与 `uninstall_targets` 同源（绝对路径 + 末段含 bundle id），并**排除 app_data**——万一用户在这几秒内重装启动，新实例刚写下的数据不能被误删。
+
 ## 0.5.3 — Windows App 内更新改为「更新助手」；卸载链修复与残留提示（2026-09-17）
 
 ### 修复
