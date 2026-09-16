@@ -2355,6 +2355,10 @@ fn restore_after_failed_uninstall(app: &AppHandle) {
 }
 
 /// shell 单引号字面量（POSIX）：把 `'` 写成 `'\''`。
+/// 只在 macOS 的卸载收尾里用（Windows 不需要：那边的删除由独立 sidecar 在杀进程之后做，
+/// 不存在"App 退出时把数据写回来"的时序）。非 macOS 构建放行 dead_code，否则 CI 的
+/// windows job（clippy -D warnings）会报「never used」——本机 macOS 编译看不到。
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn sh_quote(p: &std::path::Path) -> String {
     format!("'{}'", p.display().to_string().replace('\'', "'\\''"))
 }
@@ -2368,6 +2372,7 @@ fn sh_quote(p: &std::path::Path) -> String {
 ///
 /// 安全边界与 `uninstall_targets` 一致（绝对路径 + 末段含 bundle id）；额外**排除 app_data**：
 /// 万一用户在这几秒里重装并启动，新实例刚写下的 app 数据不能被误删。
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn post_exit_cleanup_cmd(dirs: &[PathBuf], files: &[PathBuf], keep: &std::path::Path, app_id: &str) -> String {
     let mut cmd = String::from("sleep 3;");
     for d in dirs.iter().filter(|d| d.as_path() != keep) {
