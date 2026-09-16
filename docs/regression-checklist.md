@@ -75,6 +75,7 @@
 | 5.6 | 卸载无残留（macOS） | 卸载后检查 `~/Library/` 下 `Application Support`、`Caches`、`WebKit`、`HTTPStorages`、`Preferences`、`Saved Application State` 里本 App 条目（`Logs`、`Cookies` 本 App 不使用，作反向核对） | **全部不存在**；特别是 `<bundle-id>.binarycookies`（文件形态）**与 `<bundle-id>/`（目录形态，内含 httpstorages.sqlite；本机实测同一目录下 91 个目录形态 / 12 个文件形态）**，以及 `<bundle-id>.plist`；`~/.dsh` 按所选档位保留/删除 | |
 | 5.7 | 卸载无残留（Windows） | 卸载后检查 `%APPDATA%`、`%LOCALAPPDATA%` 下本 App 条目 | 全部不存在；`~/.dsh`（`%USERPROFILE%\.dsh`）按所选档位保留/删除 | |
 | 5.5b | 安装版但卸载器起不来（未发布） | 让 `$INSTDIR\uninstall.exe` 无法启动（如重命名/安全软件拦下）后点「仅卸载应用」 | **不冒充便携版去删数据**；弹「卸载未完成：无法启动系统卸载器…」，主窗与工作台都回来（可直接重试）；程序文件与 app 数据保持原样——注意「完全卸载」档位会提示 `~/.dsh` 已按选择删除 | |
+| 5.5d | 卸载残留有提示（未发布） | 先人为制造占用（如手工起一个 `node.exe` 跑 `resources\node\node.exe`，或用工具占住 `$INSTDIR` 里某个文件），再从系统「设置 → 应用」卸载 | 卸载结束弹一次提示框，列出 `$INSTDIR` / `%APPDATA%\<id>` / `%LOCALAPPDATA%\<id>` 三处需手动删除的残留；无占用时**不弹**（不打扰正常卸载） | |
 | 5.5c | 卸载清掉临时区的更新包（未发布） | 先让临时区存在 `dsh-desktop-update-*`（如更新失败留下），再卸载 | 卸载时被清掉（日志「清理遗留安装包」）；临时区其它文件不受影响 | |
 | 5.8 | 更新包不留残留 | 走一次 App 内更新，更新后看临时目录 | 无 `dsh-desktop-update-*` 文件（Windows 上安装包要留给助手在退出后使用，最迟在下次启动且超过 1 小时 TTL 时被清扫，日志出现「清理遗留安装包」） | |
 

@@ -37,9 +37,30 @@
   !endif
 !macroend
 
-; POSTUNINSTALL：兜底清扫（可选）。当前默认卸载器已删除开始菜单快捷方式与
-; Uninstall 注册表项；此处额外清理自启注册表项（本 App 目前**没有**开机自启功能，
-; 该键不会被创建；保留此删除是幂等兜底，防止将来加了自启却忘了卸载时清理）。
+; POSTUNINSTALL：卸载收尾。两件事：
+;
+; ① 兜底提示"没清干净"。NSIS 的 Delete / RMDir 失败**完全是静默的**——只置内部错误位，
+;    不弹框、不中断（核对过 NSIS 源码：util.c 的 myDelete 失败路径只 `exec_error++`；
+;    只有 File 指令才有 AllowSkipFiles 那套对话框，而它作用于安装期写文件）。所以若删
+;    文件那一刻仍有进程占着（node/dsh 子进程没退干净、杀毒软件正在扫描），对应文件会被
+;    跳过，而非递归的 `RMDir "$INSTDIR"` 也就删不掉目录——用户看到的是"卸载成功"、
+;    目录却还在，且没有任何提示。
+;    本 App 内卸载是**静默**的（/S，App 已退出、没有界面可回显），这是唯一能给用户反馈的
+;    通道：MessageBox 不带 /SD 时在静默模式也会显示（NSIS 源码 util.c 的 my_MessageBox：
+;    只有 `type>>21` 有默认值时才被抑制）。为避免打扰正常卸载，**只在真有残留时**才弹。
+;
+; ② 幂等清理自启注册表项（本 App 目前**没有**开机自启功能，该键不会被创建；保留此删除
+;    是防止将来加了自启却忘了卸载时清理）。
 !macro NSIS_HOOK_POSTUNINSTALL
+  ; 三处关键位置任一仍存在即判定"没清干净"：程序目录（$INSTDIR 是非递归 RMDir，被占用的
+  ; 文件会让它删不掉）、%APPDATA%\<id>（app 数据：dsh 闭包/日志/设置）、
+  ; %LOCALAPPDATA%\<id>（WebView2 用户数据与缓存）。后两处由 PREUNINSTALL 的 sidecar 清，
+  ; sidecar 没跑成（被安全软件拦下等）时它们会原样留下——正是这个提示要覆盖的情形。
+  ; `${FileExists} "$dir\*.*"` 是 NSIS 自带的目录存在性惯用法（FileFunc.nsh 自身内部就用它）。
+  ${If} ${FileExists} "$INSTDIR\*.*"
+  ${OrIf} ${FileExists} "$APPDATA\${BUNDLEID}\*.*"
+  ${OrIf} ${FileExists} "$LOCALAPPDATA\${BUNDLEID}\*.*"
+    MessageBox MB_ICONEXCLAMATION|MB_OK "卸载未完全清理：仍有文件被占用（例如 node 进程未退出、杀毒软件正在扫描）。$\r$\n$\r$\n重启电脑后手动删除以下残留目录即可：$\r$\n・$INSTDIR$\r$\n・$APPDATA\${BUNDLEID}$\r$\n・$LOCALAPPDATA\${BUNDLEID}"
+  ${EndIf}
   DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "DeepSeek Harness"
 !macroend

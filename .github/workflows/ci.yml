@@ -72,3 +72,13 @@ jobs:
       # 整个界面白屏。这里用 node 做一次解析检查（不做风格/lint）。
       - name: node --check（壳页 UI JS）
         run: for f in apps/desktop/ui/*.js; do echo "checking $f"; node --check "$f"; done
+      # NSIS 钩子（installer-hooks.nsh）只在 Windows 打包时装进 tauri-bundler 的模板参与编译，
+      # 语法错误会拖到发版时 Windows job 打包失败才暴露。这里用 apt 的 makensis 把它放进
+      # 最小等价上下文（同样的 include 顺序 + 同样的宏 + 同样的插入点）编译一次；
+      # 产物落在临时目录，不污染工作区。
+      - name: NSIS 钩子编译检查（makensis）
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq nsis
+          tmp=$(mktemp -d)
+          cp apps/desktop/src-tauri/nsis-hooks-check.nsi apps/desktop/src-tauri/installer-hooks.nsh "$tmp"/
+          (cd "$tmp" && makensis -V2 nsis-hooks-check.nsi)

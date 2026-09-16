@@ -13,6 +13,9 @@ apps/desktop/src-tauri/resources/*
 # 构建脚本输出
 build/
 
+# NSIS 钩子编译检查的产物（nsis-hooks-check.nsi，本地跑 makensis 时会落在脚本旁边）
+apps/desktop/src-tauri/hook-check.exe
+
 # 编辑器/系统临时
 *.swp
 *.tmp
