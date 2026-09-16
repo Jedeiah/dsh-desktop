@@ -130,6 +130,16 @@ fn is_pnpm_bar_line(line: &str) -> bool {
     line.len() >= 2 && line.chars().all(|c| c == '+' || c == '-')
 }
 
+/// 关闭安装日志句柄。卸载路径专用：Windows 共享锁下句柄不关，`logs/install.log`
+/// 就删不掉，进而整个 app_data 删除失败（便携版卸载会"看似清理完成"却留下 logs/。
+/// 实测过的同类问题：launcher.log 句柄已有对应的复位）。
+/// 幂等：没装过 dsh 就是 no-op。
+pub fn close_install_log() {
+    if let Ok(mut g) = INSTALL_LOG.lock() {
+        *g = None;
+    }
+}
+
 /// Cancel a running install (kill the npm child; install_version then fails,
 /// cleans tmp, and the caller can retry). Best-effort per platform.
 pub fn cancel_install() {

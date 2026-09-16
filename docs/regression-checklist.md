@@ -72,9 +72,9 @@
 | 5.3 | Windows 唯一卸载链 | 安装后从「设置 → 应用」触发卸载 | 唤起系统卸载器，程序文件与数据彻底清理（`uninstall.exe` 内置同款清理） | |
 | 5.4 | Windows 静默卸载 | 安装版点「仅卸载应用」→ 确认 | 不再出现系统卸载器确认页（`/S` 静默）；程序文件、注册表项、快捷方式被删除；应用数据/WebView 缓存被清理；`~/.dsh` 保留 | |
 | 5.5 | Windows 便携版卸载 | 解压版运行中点「仅卸载应用」→ 确认 | 无 `uninstall.exe` → App 自行清理应用数据/WebView 缓存 → 退出；通知提示便携版需手动删除所在文件夹 | |
-| 5.6 | 卸载无残留（macOS） | 卸载后检查 `~/Library/` 下 `Application Support`、`Caches`、`WebKit`、`HTTPStorages`、`Preferences`、`Saved Application State`、`Logs`、`Cookies` 里本 App 条目 | **全部不存在**；特别是 `<bundle-id>.binarycookies`（文件形态）**与 `<bundle-id>/`（目录形态，内含 httpstorages.sqlite，本机 122 个 App 里 91 个用这种）**，以及 `<bundle-id>.plist`；`~/.dsh` 按所选档位保留/删除 | |
+| 5.6 | 卸载无残留（macOS） | 卸载后检查 `~/Library/` 下 `Application Support`、`Caches`、`WebKit`、`HTTPStorages`、`Preferences`、`Saved Application State` 里本 App 条目（`Logs`、`Cookies` 本 App 不使用，作反向核对） | **全部不存在**；特别是 `<bundle-id>.binarycookies`（文件形态）**与 `<bundle-id>/`（目录形态，内含 httpstorages.sqlite；本机实测同一目录下 91 个目录形态 / 12 个文件形态）**，以及 `<bundle-id>.plist`；`~/.dsh` 按所选档位保留/删除 | |
 | 5.7 | 卸载无残留（Windows） | 卸载后检查 `%APPDATA%`、`%LOCALAPPDATA%` 下本 App 条目 | 全部不存在；`~/.dsh`（`%USERPROFILE%\.dsh`）按所选档位保留/删除 | |
-| 5.5b | 安装版但卸载器起不来（未发布） | 让 `$INSTDIR\uninstall.exe` 无法启动（如重命名/安全软件拦下）后点「仅卸载应用」 | **不冒充便携版去删数据**；弹「卸载未完成：无法启动系统卸载器…」，主窗回来可重试；程序文件与用户数据都保持原样 | |
+| 5.5b | 安装版但卸载器起不来（未发布） | 让 `$INSTDIR\uninstall.exe` 无法启动（如重命名/安全软件拦下）后点「仅卸载应用」 | **不冒充便携版去删数据**；弹「卸载未完成：无法启动系统卸载器…」，主窗与工作台都回来（可直接重试）；程序文件与 app 数据保持原样——注意「完全卸载」档位会提示 `~/.dsh` 已按选择删除 | |
 | 5.5c | 卸载清掉临时区的更新包（未发布） | 先让临时区存在 `dsh-desktop-update-*`（如更新失败留下），再卸载 | 卸载时被清掉（日志「清理遗留安装包」）；临时区其它文件不受影响 | |
 | 5.8 | 更新包不留残留 | 走一次 App 内更新，更新后看临时目录 | 无 `dsh-desktop-update-*` 文件（Windows 上安装包要留给助手在退出后使用，最迟在下次启动且超过 1 小时 TTL 时被清扫，日志出现「清理遗留安装包」） | |
 

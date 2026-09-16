@@ -280,8 +280,17 @@ pub fn sweep_update_packages(force: bool) {
             .and_then(|m| m.modified().ok())
             .and_then(|t| t.elapsed().ok());
         if force || is_stale_installer(&name, age) {
-            crate::logln(&format!("[update] 清理遗留安装包: {}", e.path().display()));
-            let _ = std::fs::remove_file(e.path());
+            let path = e.path();
+            match std::fs::remove_file(&path) {
+                // 成功才记：此前先记日志再删，删失败也会留下"已清理"的误导性日志
+                Ok(()) => crate::logln(&format!("[update] 清理遗留安装包: {}", path.display())),
+                // NotFound=期间被别的路径删了，不算问题；其它（占用等）如实记一条
+                Err(err) if err.kind() != std::io::ErrorKind::NotFound => crate::logln(&format!(
+                    "[update] 清理安装包失败（留着稍后再试）: {}（{err}）",
+                    path.display()
+                )),
+                Err(_) => {}
+            }
         }
     }
 }

@@ -1994,6 +1994,13 @@ fn open_repo_cmd(_app: AppHandle) -> Result<(), String> {
 #[tauri::command]
 async fn confirm_uninstall_cmd(app: AppHandle, webview: tauri::Webview, wipe: bool) -> Result<(), String> {
     crate::ensure_shell_webview(&webview)?;
+    // App 更新期间拒绝卸载：更新收尾阶段会退出本进程、由更新助手（临时区那个安装包）
+    // 接管安装，此刻卸载会与它抢同一个目录/同一个安装包（轻则更新白下，重则留下
+    // 半装状态）。前端在更新期间也锁了卸载按钮，这里是后端兜底——从系统「设置 → 应用」
+    // 触发的卸载绕过 UI，那条链由 NSIS 侧车处理，不受本门约束。
+    if crate::appupdate::update_in_progress() {
+        return Err("应用正在更新，请稍后再试".to_string());
+    }
     let app2 = app.clone();
     let confirmed = tauri::async_runtime::spawn_blocking(move || {
         let (title, msg) = if wipe {
@@ -2081,19 +2088,34 @@ async fn uninstall_run(app: AppHandle, webview: tauri::Webview, wipe: bool) -> R
     .and_then(|r| r);
     if let Err(e) = teardown {
         // 卸载确认窗口已销毁，JS 无法回显：用系统通知兜底。
-        // 复位标志：否则后续 ExitRequested 一直被 prevent_exit 拦截，用户无法退出。
-        UNINSTALLING.store(false, Ordering::SeqCst);
-        notify("卸载未完成", &e);
-        // 窗口已全毁：重建主窗口让用户有恢复入口（否则无窗口可操作，只能强杀）
-        let app2 = app.clone();
-        let _ = app2.clone().run_on_main_thread(move || reveal_main_window(&app2, None));
-        return Err(e);
+        // fail_uninstall 会复位标志（否则 ExitRequested 一直被 prevent_exit 拦截，用户
+        // 退不出去）、重建主窗**并把工作台 child 接回来**（否则用户拿到空白工作区）。
+        return fail_uninstall(&app, "卸载未完成", &e);
     }
     // teardown 成功：移入回收站 / 引导系统卸载，然后退出
     #[cfg(target_os = "macos")]
     {
-        trash_self();
+        if !trash_self() {
+            // Finder / 自动化权限失败时 .app 会留在 /Applications：数据已清但本体没动，
+            // 必须给可操作的提示（通用分支一直这么做，macOS 分支此前是静默的）。
+            notify(
+                "应用未移入废纸篓",
+                "应用数据已清理。App 本体未能自动移入废纸篓，请手动把它拖进废纸篓。",
+            );
+        }
         std::thread::sleep(Duration::from_millis(900));
+        // WebKit 的网络进程退出时会把 cookie 落盘——"卸载后重装旧 cookie 还在"是用户实测
+        // 过的老问题。等它退干净后**补删一轮文件类目标**（目录类已在 teardown 清过），
+        // 这样即便它在 teardown 之后才把 cookie 写回来，也会被这轮清掉。
+        let p = paths_from_app(&app);
+        let (_, files) = uninstall_targets(&home_dir(), &p.app_data);
+        let late = remove_uninstall_targets(&[], &files);
+        if !late.is_empty() {
+            logln(&format!(
+                "[uninstall] 退出前仍有 cookie/偏好残留: {}",
+                late.join("; ")
+            ));
+        }
         clear_dock_recents();
     }
     #[cfg(target_os = "windows")]
@@ -2116,23 +2138,18 @@ async fn uninstall_run(app: AppHandle, webview: tauri::Webview, wipe: bool) -> R
                 // 程序文件与 app 数据都保持原样（仅「删除 ~/.dsh」档位在拉起卸载器**之前**
                 // 就已按用户选择删掉 ~/.dsh，故在提示里如实说明），让用户重试或改走系统
                 // 「设置 → 应用」。
-                UNINSTALLING.store(false, Ordering::SeqCst);
                 let wiped = if wipe {
                     "\n（已按你的选择删除 ~/.dsh；程序文件与应用数据保持原样）"
                 } else {
                     ""
                 };
-                notify(
+                return fail_uninstall(
+                    &app,
                     "卸载未完成",
                     &format!(
                         "无法启动系统卸载器：{e}\n可重试，或从「设置 → 应用」中卸载。{wiped}"
                     ),
                 );
-                let app2 = app.clone();
-                let _ = app2
-                    .clone()
-                    .run_on_main_thread(move || reveal_main_window(&app2, None));
-                return Err(format!("启动系统卸载器失败: {e}"));
             }
             logln!("[uninstall] spawned system uninstaller (/S): {}", uninstaller.display());
         } else {
@@ -2141,13 +2158,7 @@ async fn uninstall_run(app: AppHandle, webview: tauri::Webview, wipe: bool) -> R
             // ——既留下数百 MB 的 dsh 闭包与 WebView2 缓存，又误报。
             let p = paths_from_app(&app);
             if let Err(e) = uninstall_teardown(&p, wipe) {
-                UNINSTALLING.store(false, Ordering::SeqCst);
-                notify("卸载未完成", &e);
-                let app2 = app.clone();
-                let _ = app2
-                    .clone()
-                    .run_on_main_thread(move || reveal_main_window(&app2, None));
-                return Err(e);
+                return fail_uninstall(&app, "卸载未完成", &e);
             }
             notify(
                 "便携版：数据已清理",
@@ -2304,12 +2315,43 @@ fn remove_uninstall_targets(dirs: &[PathBuf], files: &[PathBuf]) -> Vec<String> 
     leftovers
 }
 
+/// 卸载失败后的恢复：重建主窗 + 把工作台 child 也接回来。
+///
+/// 为什么不能只调 `reveal_main_window`：`uninstall_run` 动手前就 `destroy()` 了全部
+/// webview（为释放 WebView2 数据目录占用），而重建出的壳页**没有 child webview**
+/// （reveal_main_window 自己的注释也这么写）——`ensure_ready` 只在 dsh 输出就绪 URL 时
+/// 被调用，而 dsh 此刻还活着、不会再输出 → 用户会拿到一个**工作区空白的窗口**，只能
+/// 靠「重启 dsh」自救。这里直接用当前已知的就绪 URL 把 child 重建出来：不重启 dsh，
+/// 也就不会打断正在跑的任务。
+fn restore_after_failed_uninstall(app: &AppHandle) {
+    let app2 = app.clone();
+    let url = mlock(&DSH_URL).clone();
+    let _ = app.clone().run_on_main_thread(move || {
+        reveal_main_window(&app2, url.as_deref());
+        if let Some(u) = url.as_deref() {
+            // 同在主线程队列里、排在 reveal 之后：此时主窗一定已经存在
+            crate::workbench::ensure_ready(&app2, u);
+        }
+    });
+}
+
+/// 卸载失败后的统一收尾：复位「卸载中」标志、系统通知、恢复可用界面，并回错。
+/// 三条失败路径（数据清理失败 / 系统卸载器起不来 / 便携版清理失败）共用，
+/// 避免各写一遍时漏掉某一步。
+fn fail_uninstall(app: &AppHandle, title: &str, msg: &str) -> Result<(), String> {
+    UNINSTALLING.store(false, Ordering::SeqCst);
+    notify(title, msg);
+    restore_after_failed_uninstall(app);
+    Err(msg.to_string())
+}
+
 fn uninstall_teardown(p: &Paths, wipe_dsh: bool) -> Result<(), String> {
     kill_dsh();
     let home = home_dir();
-    // 关闭日志句柄：当前进程持有 logs/launcher.log，Windows 共享锁下不关则
-    // 删除 app_data 必然 oserror 32。后续 logln 不再写文件（卸载流程无需日志）。
+    // 关闭日志句柄：当前进程持有 logs/launcher.log 与 logs/install.log，Windows 共享锁下
+    // 不关则删除 app_data 必然 oserror 32。后续 logln 不再写文件（卸载流程无需日志）。
     *mlock(&LOG_FILE) = None;
+    crate::dsh::close_install_log();
     #[cfg(target_os = "macos")]
     {
         // 偏好域交给 cfprefsd 删除：只删文件的话它可能把缓存里的域写回磁盘，
@@ -2327,9 +2369,16 @@ fn uninstall_teardown(p: &Paths, wipe_dsh: bool) -> Result<(), String> {
         leftovers = remove_uninstall_targets(&dirs, &files);
     }
     // 临时区里的更新包（几十 MB）也一并清掉：留给它们只有"卸载后还在"这一种结局
-    // （启动清扫只在 App 还在运行时发生）。此刻不存在进行中的下载（卸载期间更新按钮
-    // 被禁用），所以按名字强制清、不等 1 小时 TTL。
+    // （启动清扫只在 App 还在运行时发生）。App 内卸载在更新期间被前端锁 + 后端门挡住
+    // （见 uninstall_run 的 update_in_progress），所以按名字强制清、不等 TTL；
+    // 从系统「设置 → 应用」触发的卸载绕过 UI，此时若有更新包正被占用，删除会失败并留日志。
     crate::appupdate::sweep_update_packages(true);
+    // Windows：模板只在勾选"删除应用数据"时才清 MANU 注册表键，而 /S 下该勾选框恒为
+    // 未选中（确认页不出现）→ App 内卸载必然留下 `HKCU\Software\dsh-desktop\DeepSeek
+    // Harness Desktop`（含 InstallLocation / Installer Language）。这里按同一语义补清：
+    // 先删产品键，父键**仅在确实为空时**删（对应模板的 DeleteRegKey /ifempty）。
+    #[cfg(target_os = "windows")]
+    cleanup_registry_keys();
     if !leftovers.is_empty() {
         let msg = format!(
             "以下数据被占用未能删除，重启电脑后即可手动清理：\n{}",
@@ -2416,6 +2465,34 @@ fn trash_self() -> bool {
 // ---------------------------------------------------------------------------
 
 #[cfg(target_os = "windows")]
+/// 清掉安装器留在 HKCU 的 MANU 注册表键（卸载路径专用）。
+///
+/// 键名来源（可核对，不是猜的）：tauri-bundler 把模板的 `{{manufacturer}}` 填成
+/// `publisher().unwrap_or(bundle_id.split('.').nth(1))`（`nsis/mod.rs:269-271`），本项目
+/// 未配 publisher、bundle id 为 `com.dsh-desktop.app` → `dsh-desktop`；
+/// 模板里 `MANUPRODUCTKEY = Software\${MANUFACTURER}\${PRODUCTNAME}`
+/// （`installer.nsi:67-68`，PRODUCTNAME = "DeepSeek Harness Desktop"），安装时写入
+/// `InstallLocation`（:682）。
+///
+/// 删除语义对齐模板：产品键直接删；父键**只在没有子键/值时才删**（模板用的是
+/// `DeleteRegKey /ifempty`），避免误删同名厂商键下的其它内容。
+/// 用 PowerShell（本模块已有依赖）：注册表 cmdlet 在无提权下可写 HKCU。
+fn cleanup_registry_keys() {
+    let script = "$ErrorActionPreference='SilentlyContinue'; \
+         Remove-Item -LiteralPath 'HKCU:\\Software\\dsh-desktop\\DeepSeek Harness Desktop' -Recurse -Force; \
+         $k = Get-Item -LiteralPath 'HKCU:\\Software\\dsh-desktop'; \
+         if ($k -and $k.SubKeyCount -eq 0 -and $k.ValueCount -eq 0) { Remove-Item -LiteralPath 'HKCU:\\Software\\dsh-desktop' -Force }";
+    match no_console(Command::new("powershell"))
+        .args(["-NoProfile", "-NonInteractive", "-Command", script])
+        .status()
+    {
+        Ok(s) if s.success() => logln!("[uninstall] 注册表键已清理"),
+        Ok(s) => logln!("[uninstall] 注册表清理退出码={:?}", s.code()),
+        Err(e) => logln!("[uninstall] 注册表清理未能运行: {e}"),
+    }
+}
+
+#[cfg(target_os = "windows")]
 /// 结束其它运行中的本应用实例及其子进程树（`--self-uninstall-full` 卸载 sidecar 用）。
 /// 目的：释放 `$INSTDIR` 程序文件 / app 数据 / WebView2 缓存的文件锁 —— 否则
 /// NSIS 删文件时因占用而失败（"右键→卸载 无反应"根因之一）。全程无 GUI/无窗口。
@@ -2449,11 +2526,69 @@ Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {{
         .status();
     match status {
         Ok(s) if s.success() => logln!("[uninstall-full] killed other instances ok"),
-        Ok(s) => logln!("[uninstall-full] kill other instances exit={:?}", s.code()),
-        Err(e) => logln!("[uninstall-full] kill other instances failed to run: {e}"),
+        Ok(s) => {
+            logln!("[uninstall-full] kill other instances exit={:?}", s.code());
+            kill_other_app_instances_no_powershell(self_pid);
+        }
+        Err(e) => {
+            logln!("[uninstall-full] kill other instances failed to run: {e}");
+            kill_other_app_instances_no_powershell(self_pid);
+        }
     }
     // 给文件句柄释放留一点时间
     std::thread::sleep(Duration::from_millis(600));
+}
+
+/// `kill_other_app_instances` 的 **PowerShell 不可用**兜底（策略禁用 / WMI 故障）。
+///
+/// 为什么需要：主路径依赖 PowerShell + `Get-CimInstance`（因为要按命令行区分"我们的 node"
+/// 与用户自己的 node）。一旦 PowerShell 起不来，主程序实例就不会被结束 → NSIS 删
+/// `$INSTDIR` 时文件被占用 → 静默跳过（NSIS 的 `Delete` 失败不弹框）→ 卸载"成功"但目录还在。
+/// 兜底只用 **tasklist + taskkill**（系统自带、无策略面）：按映像名列出 pid，**排除自己**
+/// （sidecar 与主程序同名，用 pid 排除），逐个 `/T` 树杀——树杀同时覆盖主程序拉起的
+/// node/dsh 子进程。不按 node 名字泛杀（那会误伤用户自己的 node），与主路径同一取舍。
+#[cfg(target_os = "windows")]
+fn kill_other_app_instances_no_powershell(self_pid: u32) {
+    let exe_name = std::env::current_exe()
+        .ok()
+        .map(|p| strip_verbatim(p))
+        .and_then(|p| p.file_name().map(|s| s.to_string_lossy().to_string()))
+        .unwrap_or_else(|| "dsh-desktop.exe".to_string());
+    let out = no_console(Command::new("tasklist"))
+        .args(["/FI", &format!("IMAGENAME eq {exe_name}"), "/FO", "CSV", "/NH"])
+        .output();
+    let Ok(out) = out else {
+        logln!("[uninstall-full] tasklist 兜底也失败");
+        return;
+    };
+    let pids = tasklist_pids(&String::from_utf8_lossy(&out.stdout), self_pid);
+    logln(&format!("[uninstall-full] tasklist 兜底命中 pid={pids:?}"));
+    for pid in pids {
+        let _ = no_console(Command::new("taskkill"))
+            .args(["/PID", &pid.to_string(), "/T", "/F"])
+            .status();
+    }
+}
+
+/// 从 `tasklist /FO CSV /NH` 输出里取 pid（排除 exclude）。
+/// 纯函数便于单测：每行形如 `"dsh-desktop.exe","1234","Console","1","12,345 K"`；
+/// 无匹配时 tasklist 会输出一行 `INFO: No tasks are running...`（非 CSV，直接忽略）。
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn tasklist_pids(csv: &str, exclude: u32) -> Vec<u32> {
+    let mut pids = Vec::new();
+    for line in csv.lines() {
+        let mut fields = line.split("\",\"");
+        let (Some(_name), Some(pid)) = (fields.next(), fields.next()) else {
+            continue;
+        };
+        let pid = pid.trim_matches('"').trim();
+        if let Ok(pid) = pid.parse::<u32>() {
+            if pid != exclude {
+                pids.push(pid);
+            }
+        }
+    }
+    pids
 }
 
 fn run_cli_hooks(args: &[String]) -> bool {
@@ -3046,6 +3181,49 @@ mod tests {
             // 用户看不出关系的目录），remove_uninstall_targets 会跳过它们
             assert!(p.is_absolute(), "卸载目标 {p:?} 不是绝对路径");
         }
+    }
+
+    #[test]
+    fn remove_uninstall_targets_handles_both_forms() {
+        // 回归：按"登记表"删会在形态错位时报 NotADirectory/IsADirectory —— 既误报残留、
+        // 又真的删不掉（新增的 HTTPStorages/<id> 正是"形态可能错位"的目标）。
+        let root = std::env::temp_dir().join(format!("dsh-uninst-rm-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let dir_ok = root.join("dir_target");
+        std::fs::create_dir_all(dir_ok.join("inner")).unwrap();
+        let dir_is_file = root.join("dir_target_is_file"); // 登记为目录、实际是文件
+        std::fs::write(&dir_is_file, b"x").unwrap();
+        let file_ok = root.join("file_target");
+        std::fs::write(&file_ok, b"x").unwrap();
+        let file_is_dir = root.join("file_target_is_dir"); // 登记为文件、实际是目录
+        std::fs::create_dir_all(file_is_dir.join("inner")).unwrap();
+
+        let leftovers = remove_uninstall_targets(
+            &[dir_ok.clone(), dir_is_file.clone()],
+            &[file_ok.clone(), file_is_dir.clone()],
+        );
+        assert!(leftovers.is_empty(), "不应报残留：{leftovers:?}");
+        for p in [&dir_ok, &dir_is_file, &file_ok, &file_is_dir] {
+            assert!(!p.exists(), "未删除：{}", p.display());
+        }
+        // 相对路径必须被跳过（宁可不删也不删错东西）
+        let rel_dir = PathBuf::from("dsh-relative-should-never-be-deleted");
+        assert!(remove_uninstall_targets(std::slice::from_ref(&rel_dir), &[]).is_empty());
+        assert!(!rel_dir.exists());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn tasklist_pids_parses_csv_and_skips_self() {
+        // 真实输出形如："dsh-desktop.exe","1234","Console","1","12,345 K"
+        let csv = "\"dsh-desktop.exe\",\"1234\",\"Console\",\"1\",\"12,345 K\"\r\n\
+                   \"dsh-desktop.exe\",\"4321\",\"Console\",\"1\",\"9,876 K\"\r\n";
+        assert_eq!(tasklist_pids(csv, 4321), vec![1234]); // 自己（4321）必须排除
+        assert_eq!(tasklist_pids(csv, 9999), vec![1234, 4321]);
+        // 没有匹配时 tasklist 输出的是提示文本，不是 CSV
+        assert!(tasklist_pids("INFO: No tasks are running which match the specified criteria.\r\n", 1).is_empty());
+        assert!(tasklist_pids("", 1).is_empty());
     }
 
     #[test]
