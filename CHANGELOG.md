@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.5.4（未发布）— 卸载后在 App 退出的瞬间被 WebKit 写回的 cookie（2026-09-17）
+## 0.5.4 — macOS 卸载后 cookie 被 WebKit 在退出瞬间写回（2026-09-17）
 
 ### 修复
 

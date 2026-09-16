@@ -73,7 +73,7 @@
 | 5.4 | Windows 静默卸载 | 安装版点「仅卸载应用」→ 确认 | 不再出现系统卸载器确认页（`/S` 静默）；程序文件、注册表项、快捷方式被删除；应用数据/WebView 缓存被清理；`~/.dsh` 保留 | |
 | 5.5 | Windows 便携版卸载 | 解压版运行中点「仅卸载应用」→ 确认 | 无 `uninstall.exe` → App 自行清理应用数据/WebView 缓存 → 退出；通知提示便携版需手动删除所在文件夹 | |
 | 5.6 | 卸载无残留（macOS） | 卸载后检查 `~/Library/` 下 `Application Support`、`Caches`、`WebKit`、`HTTPStorages`、`Preferences`、`Saved Application State` 里本 App 条目（`Logs`、`Cookies` 本 App 不使用，作反向核对） | **全部不存在**；特别是 `<bundle-id>.binarycookies`（文件形态）**与 `<bundle-id>/`（目录形态，内含 httpstorages.sqlite；本机实测同一目录下 91 个目录形态 / 12 个文件形态）**，以及 `<bundle-id>.plist`；`~/.dsh` 按所选档位保留/删除 | |
-| 5.6b | 卸载后 cookie 不再重现（未发布） | macOS 卸载完成后**等 5 秒以上**再检查 `~/Library/HTTPStorages/<id>.binarycookies`（以及 `<id>/` 目录形态） | 文件不存在（由脱离本进程的 shell 在退出后补删；实测修前会在 App 退出同秒重现） | |
+| 5.6b | 卸载后 cookie 不再重现 | macOS 卸载完成后**等 5 秒以上**再检查 `~/Library/HTTPStorages/<id>.binarycookies`（以及 `<id>/` 目录形态） | 文件不存在（由脱离本进程的 shell 在退出后补删；实测修前会在 App 退出同秒重现） | |
 | 5.7 | 卸载无残留（Windows） | 卸载后检查 `%APPDATA%`、`%LOCALAPPDATA%` 下本 App 条目 | 全部不存在；`~/.dsh`（`%USERPROFILE%\.dsh`）按所选档位保留/删除 | |
 | 5.5b | 安装版但卸载器起不来 | 让 `$INSTDIR\uninstall.exe` 无法启动（如重命名/安全软件拦下）后点「仅卸载应用」 | **不冒充便携版去删数据**；弹「卸载未完成：无法启动系统卸载器…」，主窗与工作台都回来（可直接重试）；程序文件与 app 数据保持原样——注意「完全卸载」档位会提示 `~/.dsh` 已按选择删除 | |
 | 5.5d | 卸载残留有提示 | 先人为制造占用（如手工起一个 `node.exe` 跑 `resources\node\node.exe`，或用工具占住 `$INSTDIR` 里某个文件），再从系统「设置 → 应用」卸载 | 卸载结束弹一次提示框，列出 `$INSTDIR` / `%APPDATA%\<id>` / `%LOCALAPPDATA%\<id>` 三处需手动删除的残留；无占用时**不弹**（不打扰正常卸载） | |
