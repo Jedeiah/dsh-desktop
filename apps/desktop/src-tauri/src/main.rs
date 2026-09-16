@@ -2113,11 +2113,20 @@ async fn uninstall_run(app: AppHandle, webview: tauri::Webview, wipe: bool) -> R
             if let Err(e) = no_console(Command::new(&uninstaller)).arg("/S").spawn() {
                 // 安装版但卸载器起不来（安全软件拦下 / 权限 / 文件损坏）：**不能**当成
                 // 便携版去删数据——那会变成"数据没了、程序还在、提示还写着便携版"。
-                // 保持"什么都没动"的可用状态，如实报错让用户重试或走系统「设置 → 应用」。
+                // 程序文件与 app 数据都保持原样（仅「删除 ~/.dsh」档位在拉起卸载器**之前**
+                // 就已按用户选择删掉 ~/.dsh，故在提示里如实说明），让用户重试或改走系统
+                // 「设置 → 应用」。
                 UNINSTALLING.store(false, Ordering::SeqCst);
+                let wiped = if wipe {
+                    "\n（已按你的选择删除 ~/.dsh；程序文件与应用数据保持原样）"
+                } else {
+                    ""
+                };
                 notify(
                     "卸载未完成",
-                    &format!("无法启动系统卸载器：{e}\n可重试，或从「设置 → 应用」中卸载。"),
+                    &format!(
+                        "无法启动系统卸载器：{e}\n可重试，或从「设置 → 应用」中卸载。{wiped}"
+                    ),
                 );
                 let app2 = app.clone();
                 let _ = app2
@@ -2275,17 +2284,20 @@ fn remove_uninstall_targets(dirs: &[PathBuf], files: &[PathBuf]) -> Vec<String> 
             false
         }
     };
-    for dir in dirs {
-        if safe(dir) && dir.exists() {
-            if let Err(e) = remove_dir_all_retry(dir) {
-                leftovers.push(format!("{}（{e}）", dir.display()));
-            }
+    // 按**实际形态**删，而不是按登记表：同一个位置在不同系统/版本上可能是文件也可能是
+    // 目录（HTTPStorages 的 `<id>.binarycookies` 与 `<id>/` 就是典型）。按登记表硬删会
+    // 报 NotADirectory/IsADirectory —— 变成"明明能删却报残留"，而且真的删不掉。
+    let remove = |p: &PathBuf| {
+        if p.is_dir() {
+            remove_dir_all_retry(p)
+        } else {
+            remove_file_retry(p)
         }
-    }
-    for f in files {
-        if safe(f) && f.exists() {
-            if let Err(e) = remove_file_retry(f) {
-                leftovers.push(format!("{}（{e}）", f.display()));
+    };
+    for dir in dirs.iter().chain(files.iter()) {
+        if safe(dir) && dir.exists() {
+            if let Err(e) = remove(dir) {
+                leftovers.push(format!("{}（{e}）", dir.display()));
             }
         }
     }
