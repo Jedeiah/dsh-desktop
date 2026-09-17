@@ -110,8 +110,10 @@ pub fn parse_versions(body: &str) -> Vec<String> {
 }
 
 /// Query the registry for the `latest` dist-tag version.
-pub fn latest_version(registry: &str) -> Result<String, String> {
-    let url = format!("{registry}/{PKG}/latest");
+/// 任意包的 latest（`dist-tags.latest`）：走 `<registry>/<包名>/latest`。
+/// 供 dsh 自身更新检查（latest_version）与「插件更新检查」共用。
+pub fn latest_version_of(registry: &str, pkg: &str) -> Result<String, String> {
+    let url = format!("{registry}/{pkg}/latest");
     let resp = ureq::get(&url)
         .timeout(Duration::from_secs(20))
         .call()
@@ -127,6 +129,10 @@ pub fn latest_version(registry: &str) -> Result<String, String> {
         .and_then(|x| x.as_str())
         .map(|s| s.to_string())
         .ok_or_else(|| "registry 响应缺少 version 字段".into())
+}
+
+pub fn latest_version(registry: &str) -> Result<String, String> {
+    latest_version_of(registry, PKG)
 }
 
 /// 200 响应体是否表示「版本存在」。部分 registry 镜像对不存在的版本返回

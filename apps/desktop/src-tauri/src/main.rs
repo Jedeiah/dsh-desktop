@@ -2740,6 +2740,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             plugin::plugin_op,
             plugin::plugin_list_cmd,
+            plugin::plugin_check_updates_cmd,
             appupdate::check_app_update_cmd,
             appupdate::app_update_probe_cmd,
             appupdate::app_update_cmd,

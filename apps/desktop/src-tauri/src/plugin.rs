@@ -607,6 +607,71 @@ fn push_capped(buf: &mut String, line: &str) {
     }
 }
 
+/// 插件更新检查结果（前端据此渲染「已装 → 最新」与「更新」按钮）。
+#[derive(serde::Serialize)]
+pub struct PluginUpdate {
+    pub name: String,
+    /// node_modules 里读到的**实际**安装版本（读不到 = 未安装/被手动删过）
+    pub installed: Option<String>,
+    /// registry 的 `dist-tags.latest`（查询失败为 None，原因见 error）
+    pub latest: Option<String>,
+    /// 有最新版且严格大于已装版本
+    pub updatable: bool,
+    /// 该插件查询失败的原因（单个失败不影响其它插件）
+    pub error: Option<String>,
+}
+
+/// 读 `node_modules/<name>/package.json` 的 version——用**实际安装版本**而不是
+/// profile package.json 里的 spec（spec 是范围如 `^1.2.0`，拿它比"有没有新版"会把同范围内
+/// 的新版误判成已最新）。
+fn installed_version(profile: &std::path::Path, name: &str) -> Option<String> {
+    let dir = if looks_like_local_path(name) {
+        let base = name.rsplit(['\\', '/']).next().unwrap_or(name);
+        profile.join("node_modules").join(base)
+    } else {
+        profile.join("node_modules").join(name)
+    };
+    let raw = std::fs::read_to_string(dir.join("package.json")).ok()?;
+    let v: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    v.get("version").and_then(|x| x.as_str()).map(|s| s.to_string())
+}
+
+/// 只有 registry（npm）来源才做版本比对：Git 可能被 `#ref` 钉住、URL/本地路径没有"最新版"
+/// 概念——猜出来的"有更新"会骗人（宁可不显示，也不给假结论）。
+fn version_checkable(source: &str) -> bool {
+    source == "registry"
+}
+
+/// 检查已装插件是否有新版（**只查 npm 来源**；手动触发，逐个查 registry）。
+#[tauri::command]
+pub async fn plugin_check_updates_cmd(app: tauri::AppHandle) -> Result<Vec<PluginUpdate>, String> {
+    let profile = crate::home_dir().join(".dsh/profiles/web");
+    let reg = crate::registry::registry_url(crate::load_settings(&app).registry.as_deref());
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut out = Vec::new();
+        for p in list_installed_plugins(&profile) {
+            if !version_checkable(&p.source) {
+                continue;
+            }
+            let installed = installed_version(&profile, &p.name);
+            let (latest, error) = match crate::registry::latest_version_of(&reg, &p.name) {
+                Ok(v) => (Some(v), None),
+                Err(e) => (None, Some(e)),
+            };
+            let updatable = match (&installed, &latest) {
+                (Some(i), Some(l)) => {
+                    crate::registry::cmp_versions(l, i) == std::cmp::Ordering::Greater
+                }
+                _ => false,
+            };
+            out.push(PluginUpdate { name: p.name, installed, latest, updatable, error });
+        }
+        Ok(out)
+    })
+    .await
+    .map_err(|e| format!("检查插件更新线程异常：{e}"))?
+}
+
 /// 前端插件列表 command：读 `~/.dsh/profiles/web` 的 package.json。
 #[tauri::command]
 pub fn plugin_list_cmd(app: tauri::AppHandle) -> Vec<PluginInfo> {
@@ -617,6 +682,40 @@ pub fn plugin_list_cmd(app: tauri::AppHandle) -> Vec<PluginInfo> {
 
 #[cfg(test)]
 mod tests {
+    /// 手动测试（**需要网络**）：泛化后的 `latest_version_of` 对任意包名都成立
+    /// （URL 构造 + dist-tags.latest 解析）。CI 不跑。
+    ///   cargo test -- --ignored --nocapture latest_version_of_any_package
+    #[test]
+    #[ignore]
+    fn latest_version_of_any_package() {
+        let reg = "https://registry.npmmirror.com";
+        let v = crate::registry::latest_version_of(reg, "@deepseek-ai/dsh").unwrap();
+        assert!(!v.is_empty(), "dsh latest 为空");
+        println!("  @deepseek-ai/dsh latest = {v}");
+        // scoped 包名带斜杠也要能查（URL 里保持 /，npm registry 支持）
+        let v2 = crate::registry::latest_version_of(reg, "@deepseek-ai/dsh-base");
+        println!("  @deepseek-ai/dsh-base latest = {:?}", v2);
+        // 不存在的包必须报错（而不是返回空串被当成"有最新版"）
+        assert!(crate::registry::latest_version_of(reg, "@deepseek-ai/definitely-not-a-real-pkg-xyz").is_err());
+    }
+
+    #[test]
+    fn installed_version_reads_node_modules_and_version_checkable_is_npm_only() {
+        let root = std::env::temp_dir().join(format!("dsh-plugupd-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let nm = root.join("node_modules").join("@scope").join("pkg");
+        std::fs::create_dir_all(&nm).unwrap();
+        std::fs::write(nm.join("package.json"), r#"{"name":"@scope/pkg","version":"1.2.3"}"#).unwrap();
+        assert_eq!(installed_version(&root, "@scope/pkg").as_deref(), Some("1.2.3"));
+        // 未安装 → None（不会被当成"有更新"）
+        assert_eq!(installed_version(&root, "@scope/absent"), None);
+        // 只有 npm 来源参与比对
+        assert!(version_checkable("registry"));
+        assert!(!version_checkable("git"));
+        assert!(!version_checkable("url"));
+        assert!(!version_checkable("local"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
     #[test]
     fn push_capped_keeps_tail_and_note() {
         let mut buf = String::new();
