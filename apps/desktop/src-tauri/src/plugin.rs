@@ -450,8 +450,7 @@ fn run_dsh_plugin(
         for line in reader.lines() {
             let Ok(l) = line else { break };
             let l = l.trim_end_matches('\r').to_string();
-            buf.push_str(&l);
-            buf.push('\n');
+            push_capped(&mut buf, &l);
             // 收敛到插件管理目标：壳页主窗。窗口已销毁则仅收集全文。
             // 经 crate::main_window() 取（优先主窗保存的 handle）：该环境
             // `get_webview_window(WINDOW_LABEL)` 恒为空（见 main.rs MAIN_WIN 注释），
@@ -469,8 +468,7 @@ fn run_dsh_plugin(
         for line in reader.lines() {
             let Ok(l) = line else { break };
             let l = l.trim_end_matches('\r').to_string();
-            buf.push_str(&l);
-            buf.push('\n');
+            push_capped(&mut buf, &l);
             // 同 out_thread：走 crate::main_window() 才能在该环境拿到主窗
             if let Some(w) = crate::main_window(&emit_app2) {
                 let _ = w.emit("dsh:plugin-output", &l);
@@ -581,6 +579,34 @@ pub async fn plugin_op(
     .map_err(|e| format!("插件操作线程异常：{e}"))?
 }
 
+/// 插件操作的输出上限（每个流各一份）：超出后**保留末尾**并加一行说明。
+/// 为什么需要：这个 String 会随进程存活到操作结束，并作为 IPC 返回值再传一遍给前端——
+/// 正常插件操作只有几十~几千行（几 KB~几百 KB），但被打包/postinstall 脚本狂打日志时
+/// 可以无界增长。前端本身已有 500 行的显示上限（shell.js 的 logLine），这里补的是
+/// **后端内存与 IPC 载荷**这一侧。
+const MAX_PLUGIN_OUTPUT: usize = 256 * 1024;
+/// 截断说明行（保留在末尾而不是开头：用户最关心最后的报错）。
+const TRUNCATED_NOTE: &str = "…（输出过长，仅保留末尾部分；完整日志见 launcher.log）";
+
+/// 把一行追加进受上限约束的缓冲；超出时从**开头**丢弃（纯函数便于单测）。
+fn push_capped(buf: &mut String, line: &str) {
+    buf.push_str(line);
+    buf.push('\n');
+    if buf.len() > MAX_PLUGIN_OUTPUT {
+        // 从字符边界上切：直接按字节切可能落在 UTF-8 中间（中文日志很常见）。
+        let cut = buf
+            .char_indices()
+            .map(|(i, _)| i)
+            .take_while(|i| *i < buf.len() - MAX_PLUGIN_OUTPUT)
+            .last()
+            .unwrap_or(0);
+        buf.drain(..cut);
+        if !buf.starts_with(TRUNCATED_NOTE) {
+            buf.insert_str(0, &format!("{TRUNCATED_NOTE}\n"));
+        }
+    }
+}
+
 /// 前端插件列表 command：读 `~/.dsh/profiles/web` 的 package.json。
 #[tauri::command]
 pub fn plugin_list_cmd(app: tauri::AppHandle) -> Vec<PluginInfo> {
@@ -591,6 +617,24 @@ pub fn plugin_list_cmd(app: tauri::AppHandle) -> Vec<PluginInfo> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn push_capped_keeps_tail_and_note() {
+        let mut buf = String::new();
+        // 小输出原样保留
+        push_capped(&mut buf, "hello 世界");
+        push_capped(&mut buf, "second");
+        assert_eq!(buf, "hello 世界\nsecond\n");
+        // 超限：保留末尾、开头加说明、且不破坏 UTF-8
+        let mut big = String::new();
+        for i in 0..2000 {
+            push_capped(&mut big, &format!("行 {i} 中文内容 {}", "x".repeat(200)));
+        }
+        assert!(big.len() <= MAX_PLUGIN_OUTPUT + TRUNCATED_NOTE.len() + 2, "未封顶: {}", big.len());
+        assert!(big.starts_with(TRUNCATED_NOTE), "缺少截断说明");
+        assert!(big.trim_end().ends_with(&format!("行 1999 中文内容 {}", "x".repeat(200))), "末尾被丢了");
+        assert!(std::str::from_utf8(big.as_bytes()).is_ok(), "破坏了 UTF-8");
+    }
+
     use super::*;
     use std::path::PathBuf;
 

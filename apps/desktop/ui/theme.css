@@ -468,9 +468,11 @@ body.chrome-collapsed .drawer { top: 0; }
 .drawer-body { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; padding: 16px; display: flex; flex-direction: column; }
 .drawer-section { display: none; }
 .drawer-section.active { display: flex; flex-direction: column; flex: 1 0 auto; }
-/* 插件区：输出面板吸收剩余高度（日志区随之变大，不留死白） */
-.drawer-section[data-section="plugins"] .panel:last-child { flex: 1; display: flex; flex-direction: column; }
-.drawer-section[data-section="plugins"] .panel:last-child .log { flex: 1; max-height: none; min-height: 120px; }
+/* 插件区：输出面板吸收剩余高度，但**日志框封顶**（此前 max-height:none 会让它随行数一直
+   变长——500 行就有几千像素，抽屉被顶得一路往下延伸）。封顶后超出部分在框内滚动
+   （.log 基类已有 overflow-y:auto）。min-height:0 让 flex 子项能真正收缩。 */
+.drawer-section[data-section="plugins"] .panel:last-child { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+.drawer-section[data-section="plugins"] .panel:last-child .log { flex: 1 1 auto; min-height: 120px; max-height: 320px; }
 
 /* =============================================================================
  * 面板 / 组件

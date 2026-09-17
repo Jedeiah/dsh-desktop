@@ -1513,6 +1513,10 @@
   function logLine(text, cls) {
     pluginLogEmptyEl.hidden = true;
     pluginLogEl.hidden = false;
+    // 单行也封顶：有些包（postinstall / 打包日志）一次就打出一行几十 KB——行数虽有上限，
+    // 超长单行仍会让节点文本与重排代价无界增长。
+    const MAX_LINE = 2000;
+    if (text.length > MAX_LINE) text = text.slice(0, MAX_LINE) + ` …（本行过长已截断，原长 ${text.length}）`;
     const line = document.createElement('div');
     const t = document.createElement('span');
     t.className = 'l-time';
