@@ -1544,6 +1544,77 @@
     pkgInputEl.disabled = busy;
   }
 
+  // 已装插件的更新检查结果（name → {installed, latest, updatable, error}）。
+  // 只在用户点「检查更新」时刷新（每个插件一次 registry 请求，不做自动轮询）。
+  let pluginUpdates = new Map();
+
+  async function checkPluginUpdates() {
+    if (pluginBusy || appUpdating) return;
+    const btn = $('btnCheckPluginUpdates');
+    const old = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = '检查中…';
+    try {
+      const list = await invoke('plugin_check_updates_cmd');
+      pluginUpdates = new Map((Array.isArray(list) ? list : []).map((u) => [u.name, u]));
+      const upd = [...pluginUpdates.values()].filter((u) => u.updatable);
+      const errs = [...pluginUpdates.values()].filter((u) => u.error);
+      if (upd.length) {
+        logLine('发现 ' + upd.length + ' 个插件可更新：' + upd.map((u) => u.name + ' ' + (u.installed || '?') + ' → ' + u.latest).join('；'), 'l-acc');
+      } else {
+        logLine(pluginUpdates.size ? '已安装的 npm 插件均为最新' : '没有可检查的 npm 来源插件（Git / 本地来源不比对版本）', 'l-ok');
+      }
+      if (errs.length) logLine('有 ' + errs.length + ' 个插件查询失败（不影响其它）：' + errs.map((u) => u.name).join('、'), 'l-warn');
+      refreshPlugins();
+    } catch (e) {
+      logLine('检查插件更新失败：' + ((e && e.message) || e), 'l-warn');
+    } finally {
+      btn.disabled = false;
+      btn.textContent = old;
+    }
+  }
+
+  // 更新到 registry 上的最新版：`dsh plugin add <name>@latest`（= pnpm add），会把 profile 里的
+  // 依赖范围重写成最新——**不是** pnpm update 那种"只在声明范围内升"。跨大版本先确认一次。
+  function updatePlugin(name, from, to) {
+    if (pluginBusy || appUpdating) return;
+    const major = (v) => String(v || '').split('.')[0];
+    const cross = major(from) !== major(to);
+    openModal({
+      title: cross ? '更新插件（跨大版本）' : '更新插件',
+      message: cross
+        ? name + '：' + (from || '?') + ' → ' + to + '\n\n大版本不同，插件可能与当前 dsh 不兼容；更新后工作台会自动重启。'
+        : name + '：' + (from || '?') + ' → ' + to + '\n\n更新后工作台会自动重启。',
+      okLabel: '更新', danger: cross,
+      onAccept: () => doUpdatePlugin(name, to),
+    });
+  }
+
+  async function doUpdatePlugin(name, to) {
+    setPluginBusy(true);
+    const tid = 'pkg-' + name;
+    taskStart(tid, '更新插件');
+    taskUpdate(tid, name + ' → ' + to);
+    logLine('正在更新 ' + name + ' → ' + to + '…');
+    try {
+      // op 仍走 add：`<name>@latest` 让 pnpm 把依赖重写到最新（后端白名单与校验都已支持）
+      const text = await invoke('plugin_op', { op: 'add', pkg: name + '@latest' });
+      if (text) logLine(text);
+      logLine(name + ' 已更新，工作台正在重启…', 'l-ok');
+      taskFinish(tid, 'ok', name + ' 已更新');
+      toast('插件已更新', 'ok');
+      pluginUpdates.delete(name); // 结论已过期，等下次检查
+    } catch (e) {
+      const msg = typeof e === 'string' ? e : (e && e.message) || String(e);
+      logLine('更新失败：' + msg, 'l-warn');
+      taskFinish(tid, 'err', msg);
+      toast('更新失败', 'err');
+    } finally {
+      setPluginBusy(false);
+      refreshPlugins();
+    }
+  }
+
   async function refreshPlugins() {
     try {
       const list = await invoke('plugin_list_cmd');
@@ -1570,6 +1641,7 @@
         }
         row.appendChild(grow);
 
+        const upd = pluginUpdates.get(p.name);
         const meta = document.createElement('span');
         meta.className = 'row-meta mono';
         // 来源 + 名称：npm 显示版本 spec、Git/URL 显示来源类型、本地插件显示清理后的
@@ -1578,6 +1650,17 @@
         meta.textContent = p.source_label || (p.version ? 'v' + p.version : '');
         meta.title = meta.textContent;
         row.appendChild(meta);
+        if (p.installed && upd && upd.updatable) {
+          // 有新版：来源文案换成 `来源  已装 → 最新`，并在「卸载」前加「更新」
+          meta.textContent = (p.source_label || '') + '  ' + (upd.installed || '?') + ' → ' + (upd.latest || '?');
+          meta.title = meta.textContent;
+          const up = document.createElement('button');
+          up.className = 'btn sm';
+          up.textContent = '更新';
+          up.disabled = appUpdating || pluginBusy;
+          up.addEventListener('click', () => updatePlugin(p.name, upd.installed, upd.latest));
+          row.appendChild(up);
+        }
         if (p.installed) {
           const btn = document.createElement('button');
           btn.className = 'btn danger-ghost sm';
@@ -1654,6 +1737,7 @@
     }
   }
   btnInstallPkgEl.addEventListener('click', () => runPlugin());
+  $('btnCheckPluginUpdates').addEventListener('click', checkPluginUpdates);
   btnRemovePkgEl.addEventListener('click', () => {
     const name = pkgInputEl.value.trim();
     if (!name) { toast('请输入包名', 'err'); return; }

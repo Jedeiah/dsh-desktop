@@ -76,6 +76,7 @@
 | 5.4 | Windows 静默卸载 | 安装版点「仅卸载应用」→ 确认 | 不再出现系统卸载器确认页（`/S` 静默）；程序文件、注册表项、快捷方式被删除；应用数据/WebView 缓存被清理；`~/.dsh` 保留 | |
 | 5.5 | Windows 便携版卸载 | 解压版运行中点「仅卸载应用」→ 确认 | 无 `uninstall.exe` → App 自行清理应用数据/WebView 缓存 → 退出；通知提示便携版需手动删除所在文件夹 | |
 | 5.6 | 卸载无残留（macOS） | 卸载后检查 `~/Library/` 下 `Application Support`、`Caches`、`WebKit`、`HTTPStorages`、`Preferences`、`Saved Application State` 里本 App 条目（`Logs`、`Cookies` 本 App 不使用，作反向核对） | **全部不存在**；特别是 `<bundle-id>.binarycookies`（文件形态）**与 `<bundle-id>/`（目录形态，内含 httpstorages.sqlite；本机实测同一目录下 91 个目录形态 / 12 个文件形态）**，以及 `<bundle-id>.plist`；`~/.dsh` 按所选档位保留/删除 | |
+| 3b.2 | 插件检查更新 / 更新（未发布） | 插件分段 → 已安装插件面板头点「检查更新」 | npm 来源的行显示 `已装 → 最新` 并出现「更新」按钮（Git/本地来源不显示、不比对）；输出面板给出「发现 N 个可更新」或「均为最新」；点「更新」→ 跨大版本时先弹确认 → 更新完成后工作台自动重启、该行版本刷新 | |
 | 3b.1 | 插件输出框不无限延伸 | 插件分段连续安装/卸载（或让输出很长），观察输出框 | 框高封顶（约 320px）并**在框内滚动**，抽屉不被顶下去；超过 500 行的旧行被丢弃、超长单行被截断标注 | |
 | 5.6b | 卸载后 cookie 不再重现 | macOS 卸载完成后**等 5 秒以上**再检查 `~/Library/HTTPStorages/<id>.binarycookies`（以及 `<id>/` 目录形态） | 文件不存在（由脱离本进程的 shell 在退出后补删；实测修前会在 App 退出同秒重现） | |
 | 5.7 | 卸载无残留（Windows） | 卸载后检查 `%APPDATA%`、`%LOCALAPPDATA%` 下本 App 条目 | 全部不存在；`~/.dsh`（`%USERPROFILE%\.dsh`）按所选档位保留/删除 | |
