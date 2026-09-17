@@ -130,6 +130,13 @@ fn classify_source(name: &str, spec: &str) -> (String, String) {
     if lower.starts_with("https://") || lower.starts_with("http://") {
         return ("url".to_string(), "URL".to_string());
     }
+    // GitHub 简写 `owner/repo`（安装输入框明确支持）也是 git 源：不归到 registry，
+    // 否则「检查更新」会拿它去查 registry（必然 404，日志出现"查询失败"），
+    // 而 CHANGELOG 承诺的是「Git / URL / 本地来源不参与比对」。判据：带斜杠且不是
+    // `@scope/pkg`（scoped 包名以 @ 开头）。
+    if spec.contains('/') && !spec.starts_with('@') && !spec.starts_with('.') {
+        return ("git".to_string(), "Git 源".to_string());
+    }
     ("registry".to_string(), format!("npm · {spec}"))
 }
 
@@ -653,6 +660,12 @@ pub async fn plugin_check_updates_cmd(app: tauri::AppHandle) -> Result<Vec<Plugi
             if !version_checkable(&p.source) {
                 continue;
             }
+            // `npm:`/`workspace:`/`jsr:`/`portal:` 这类别名或工作区 spec 不参与比对：
+            // 它们的"最新版"不在 registry 的同名包上，比对会把别名依赖误报/误改成同名 npm 包。
+            let spec = p.version.to_ascii_lowercase();
+            if ["npm:", "workspace:", "jsr:", "portal:"].iter().any(|pre| spec.starts_with(pre)) {
+                continue;
+            }
             let installed = installed_version(&profile, &p.name);
             let (latest, error) = match crate::registry::latest_version_of(&reg, &p.name) {
                 Ok(v) => (Some(v), None),
@@ -728,7 +741,13 @@ mod tests {
         for i in 0..2000 {
             push_capped(&mut big, &format!("行 {i} 中文内容 {}", "x".repeat(200)));
         }
-        assert!(big.len() <= MAX_PLUGIN_OUTPUT + TRUNCATED_NOTE.len() + 2, "未封顶: {}", big.len());
+        // 上界 = 上限 + 注记 + 少量余量：drain 后可能残留一个跨切割点的多字节字符（≤4B），
+        // 注记自身约 80B。断言留 8B 余量，避免换个行长/模板就变成边界脆弱测试。
+        assert!(
+            big.len() <= MAX_PLUGIN_OUTPUT + TRUNCATED_NOTE.len() + 8,
+            "未封顶: {}",
+            big.len()
+        );
         assert!(big.starts_with(TRUNCATED_NOTE), "缺少截断说明");
         assert!(big.trim_end().ends_with(&format!("行 1999 中文内容 {}", "x".repeat(200))), "末尾被丢了");
         assert!(std::str::from_utf8(big.as_bytes()).is_ok(), "破坏了 UTF-8");

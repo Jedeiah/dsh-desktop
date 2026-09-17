@@ -473,6 +473,8 @@ body.chrome-collapsed .drawer { top: 0; }
 .dot-breath {
   width: 8px; height: 8px; border-radius: 50%;
   background: var(--danger, #e5484d);
+  /* 描一圈底色：顶栏那颗会压在 ⌘K 角标上，有描边才读得出是"按钮上的徽标"而不是角标缺角 */
+  box-shadow: 0 0 0 1.5px var(--surface, #1b1d23);
   animation: dotBreath 1.6s ease-in-out infinite;
 }
 .dot-inline { display: inline-block; margin-left: 6px; vertical-align: middle; }

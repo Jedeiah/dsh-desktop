@@ -178,14 +178,17 @@ pub fn download_installer(url: &str, dest: &Path, app: &tauri::AppHandle) -> Res
 /// 纯网络检查（阻塞）：**真正可更新**才返回 Some(ver)（latest > 当前 App 版本），
 /// 避免已是最新版仍误报「发现新版本」——此前仅返回 latest，前端 `if (v)` 拿到版本号即误判。
 /// 必须离开主线程调用（同步网络请求在主线程执行会冻结 UI——0.3.0 卡死根因）。
-fn check_app_update_blocking() -> Option<String> {
-    let latest = latest_app_version().ok()?;
+/// 返回 `Ok(None)` = 查到了、且当前已是最新；`Err` = **没查成**（网络/DNS/超时/解析失败）。
+/// 两者必须分开：把失败折叠成「无新版」会（a）在状态栏显示"已是最新"，（b）更糟的是
+/// **把已缓存的红点/横幅清掉**——用户明明已经知道有新版的结论会被一次断网抹掉。
+fn check_app_update_blocking() -> Result<Option<String>, String> {
+    let latest = latest_app_version()?;
     let cur = env!("CARGO_PKG_VERSION");
-    if crate::registry::cmp_versions(&latest, cur) == std::cmp::Ordering::Greater {
+    Ok(if crate::registry::cmp_versions(&latest, cur) == std::cmp::Ordering::Greater {
         Some(latest)
     } else {
         None
-    }
+    })
 }
 
 /// 把检查结果写进进程内缓存并广播给壳页（红点 / 关于页横幅据此渲染）。
@@ -197,14 +200,14 @@ fn store_app_latest(app: &tauri::AppHandle, latest: Option<String>) {
 }
 
 #[tauri::command]
-pub async fn check_app_update_cmd(app: tauri::AppHandle) -> Option<String> {
+pub async fn check_app_update_cmd(app: tauri::AppHandle) -> Result<Option<String>, String> {
     // 网络检查离开主线程（见 check_app_update_blocking 注释）。
     let latest = tauri::async_runtime::spawn_blocking(check_app_update_blocking)
         .await
-        .unwrap_or(None);
-    // 手动检查的结果也进缓存并广播：这样顶栏红点 / 关于页横幅与「检查更新」的结论始终一致
+        .map_err(|e| format!("检查更新线程异常：{e}"))??;
+    // 只有**查成功**才进缓存并广播（失败时保持上一次的结论不动：断网不该熄灭已有的红点）
     store_app_latest(&app, latest.clone());
-    latest
+    Ok(latest)
 }
 
 /// 启动探测（壳页加载/重载时调用）：返回**已缓存**的"有新版"版本号；
@@ -216,10 +219,11 @@ pub fn app_update_probe_cmd(app: tauri::AppHandle) -> Option<String> {
     if !APP_CHECKED.swap(true, Ordering::SeqCst) {
         let a = app.clone();
         tauri::async_runtime::spawn(async move {
-            let latest = tauri::async_runtime::spawn_blocking(check_app_update_blocking)
-                .await
-                .unwrap_or(None);
-            store_app_latest(&a, latest);
+            // 失败（Err）不写缓存：保持上一次的结论，避免"后台一次失败把红点抹掉"。
+            // APP_CHECKED 已置位，本进程不再重试（用户手动点「检查更新」不受限）。
+            if let Ok(Ok(latest)) = tauri::async_runtime::spawn_blocking(check_app_update_blocking).await {
+                store_app_latest(&a, latest);
+            }
         });
     }
     cached

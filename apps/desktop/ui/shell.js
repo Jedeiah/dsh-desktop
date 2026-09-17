@@ -1538,11 +1538,14 @@
     pluginLogEmptyEl.hidden = false;
   }
   let pluginUpdates = new Map();
+  // 「检查更新」的代际：每次发起/每次插件操作都 +1；检查返回时代际不匹配就丢弃结果
+  // （否则检查期间完成的安装/卸载会被一份旧快照覆盖，行内回填过期结论）。
+  let pluginCheckGen = 0;
 
   function setPluginBusy(busy) {
     // 任何插件操作（安装/卸载/更新）都会改动依赖树 → 上一次「检查更新」的结论立即失效，
     // 否则行内可能继续显示 `1.0.0 → 2.0.0` 这种过期结论
-    if (busy) pluginUpdates.clear();
+    if (busy) { pluginUpdates.clear(); pluginCheckGen++; }
     pluginBusy = busy;
     btnInstallPkgEl.disabled = busy;
     btnRemovePkgEl.disabled = busy;
@@ -1562,21 +1565,26 @@
     btn.disabled = true;
     btn.textContent = '检查中…';
     try {
+      const gen = ++pluginCheckGen;
       const list = await invoke('plugin_check_updates_cmd');
+      if (gen !== pluginCheckGen) return; // 期间有插件操作 → 这份结论已过期，丢弃
       pluginUpdates = new Map((Array.isArray(list) ? list : []).map((u) => [u.name, u]));
       const upd = [...pluginUpdates.values()].filter((u) => u.updatable);
       const errs = [...pluginUpdates.values()].filter((u) => u.error);
       if (upd.length) {
         logLine('发现 ' + upd.length + ' 个插件可更新：' + upd.map((u) => u.name + ' ' + (u.installed || '?') + ' → ' + u.latest).join('；'), 'l-acc');
-      } else {
-        logLine(pluginUpdates.size ? '已安装的 npm 插件均为最新' : '没有可检查的 npm 来源插件（Git / 本地来源不比对版本）', 'l-ok');
+      } else if (pluginUpdates.size === 0) {
+        logLine('没有可检查的 npm 来源插件（Git / 本地来源不比对版本）', 'l-ok');
+      } else if (errs.length === 0) {
+        logLine('已安装的 npm 插件均为最新', 'l-ok');
       }
       if (errs.length) logLine('有 ' + errs.length + ' 个插件查询失败（不影响其它）：' + errs.map((u) => u.name).join('、'), 'l-warn');
       refreshPlugins();
     } catch (e) {
       logLine('检查插件更新失败：' + ((e && e.message) || e), 'l-warn');
     } finally {
-      btn.disabled = false;
+      // App 更新期间该按钮已被 setAppUpdating 锁定 → 不能在这里无条件点亮
+      if (!appUpdating) btn.disabled = false;
       btn.textContent = old;
     }
   }
@@ -1619,7 +1627,7 @@
     try {
       // op 仍走 add：`<name>@latest` 让 pnpm 把依赖重写到最新（后端白名单与校验都已支持）
       const text = await invoke('plugin_op', { op: 'add', pkg: name + '@latest' });
-      if (text) logLine(text);
+      if (text) logTail(text, 5);
       logLine(name + ' 已更新，工作台正在重启…', 'l-ok');
       taskFinish(tid, 'ok', name + ' 已更新');
       toast('插件已更新', 'ok');
@@ -1715,7 +1723,7 @@
     logLine('正在卸载 ' + pkg + '…');
     try {
       const text = await invoke('plugin_op', { op: 'remove', pkg });
-      if (text) logLine(text);
+      if (text) logTail(text, 5);
       logLine(pkg + ' 已卸载，工作台正在重启…', 'l-ok');
       taskFinish(tid, 'ok', pkg + ' 已卸载');
       toast(pkg + ' 已卸载', 'ok');
@@ -1741,7 +1749,7 @@
     logLine('正在解析 ' + name + '…');
     try {
       const text = await invoke('plugin_op', { op: 'add', pkg: name });
-      if (text) logLine(text);
+      if (text) logTail(text, 5);
       logLine(name + ' 已安装，工作台正在重启…', 'l-ok');
       taskFinish(tid, 'ok', name + ' 已安装');
       toast('插件已安装', 'ok');
@@ -1770,6 +1778,13 @@
   });
   pkgInputEl.addEventListener('keydown', (e) => { if (e.key === 'Enter') runPlugin(); });
   $('btnClearLog').addEventListener('click', clearPluginLog);
+
+  // plugin_op 的返回值是整段输出（后端已按 60KB 截尾）。直接 logLine 会被单行 2000 字符
+  // 上限截掉**结尾**——而报错恰在结尾。这里只取最后几行逐行打印（每行都短，不受上限影响）。
+  function logTail(text, lines) {
+    const arr = String(text || '').trim().split('\n').filter((l) => l.trim());
+    arr.slice(-(lines || 5)).forEach((l) => logLine(l));
+  }
 
   // 实时输出：插件构建脚本的行级推送（后端已自动重启工作台）
   T.event.listen('dsh:plugin-output', (e) => {
@@ -1847,6 +1862,9 @@
       // 锁定期间重渲染出来的版本行按钮是按"更新中"渲染成禁用的，快照恢复管不到它们
       // （元素是新建的）——解锁后重渲染一次，让它们回到按真实 registry 状态渲染。
       refreshDsh();
+      // 锁定期间若插件列表被重渲染过（例如后台完成的插件检查），行内按钮是按「更新中」
+      // 快照渲染的、不在快照恢复范围内 → 补一次重渲染，否则它们会一直禁用
+      refreshPlugins();
       renderAppUpdateNotice(); // 更新结束后按当前 appLatest 重新显示（失败时横幅要回来）
     }
   }
