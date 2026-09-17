@@ -468,6 +468,24 @@ body.chrome-collapsed .drawer { top: 0; }
 .drawer-body { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; padding: 16px; display: flex; flex-direction: column; }
 .drawer-section { display: none; }
 .drawer-section.active { display: flex; flex-direction: column; flex: 1 0 auto; }
+/* App 有新版本时的呼吸灯红点：顶栏「管理」（唯一始终可见的区域）+ 关于 tab。
+   一闪一闪而不是常亮——比角标更容易被注意到，又不占位。 */
+.dot-breath {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--danger, #e5484d);
+  animation: dotBreath 1.6s ease-in-out infinite;
+}
+.dot-inline { display: inline-block; margin-left: 6px; vertical-align: middle; }
+.manage-btn { position: relative; }
+.manage-btn .dot-breath { position: absolute; top: 3px; right: 3px; }
+@keyframes dotBreath {
+  0%, 100% { opacity: .30; transform: scale(.80); }
+  50%      { opacity: 1;   transform: scale(1.15); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .dot-breath { animation: none; opacity: 1; }
+}
+
 /* 插件区：输出面板吸收剩余高度，但**日志框封顶**（此前 max-height:none 会让它随行数一直
    变长——500 行就有几千像素，抽屉被顶得一路往下延伸）。封顶后超出部分在框内滚动
    （.log 基类已有 overflow-y:auto）。min-height:0 让 flex 子项能真正收缩。 */

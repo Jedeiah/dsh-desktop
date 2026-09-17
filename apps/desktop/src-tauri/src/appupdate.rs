@@ -12,6 +12,14 @@ use tauri::Emitter; // Tauri 2：emit 定义在 Emitter trait 上
 /// UI 侧会禁用相关按钮，但正确性靠这里：并发调用会下载两份安装包、拉起两次安装器。
 static UPDATING: AtomicBool = AtomicBool::new(false);
 
+/// 最近一次 App 更新检查的结果（**本进程内缓存**）：None = 尚未检查 / 无新版。
+/// 为什么缓存：① 壳页会 reload（重启 dsh、切主题等），只存前端变量的话红点与横幅会消失；
+/// ② 「每次启动只查一次」需要一个进程内标记（见 APP_CHECKED）。
+static APP_LATEST: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+/// 本次启动是否已经发起过检查（发起即置位：失败也**不**在本进程内重试，避免反复打扰；
+/// 用户手动点「检查更新」不受此限制）。
+static APP_CHECKED: AtomicBool = AtomicBool::new(false);
+
 /// 是否有 App 更新任务在进行中——供其它会拉起 node/dsh 的命令做互斥。
 /// 必要性（Windows）：更新收尾阶段安装器正在覆盖 `$INSTDIR` 里的文件，此时任何一次
 /// dsh 重启 / dsh 安装 / 插件操作都会重新拉起 `resources\node\node.exe`，把刚释放的
@@ -167,22 +175,54 @@ pub fn download_installer(url: &str, dest: &Path, app: &tauri::AppHandle) -> Res
     Ok(n)
 }
 
+/// 纯网络检查（阻塞）：**真正可更新**才返回 Some(ver)（latest > 当前 App 版本），
+/// 避免已是最新版仍误报「发现新版本」——此前仅返回 latest，前端 `if (v)` 拿到版本号即误判。
+/// 必须离开主线程调用（同步网络请求在主线程执行会冻结 UI——0.3.0 卡死根因）。
+fn check_app_update_blocking() -> Option<String> {
+    let latest = latest_app_version().ok()?;
+    let cur = env!("CARGO_PKG_VERSION");
+    if crate::registry::cmp_versions(&latest, cur) == std::cmp::Ordering::Greater {
+        Some(latest)
+    } else {
+        None
+    }
+}
+
+/// 把检查结果写进进程内缓存并广播给壳页（红点 / 关于页横幅据此渲染）。
+fn store_app_latest(app: &tauri::AppHandle, latest: Option<String>) {
+    *crate::mlock(&APP_LATEST) = latest.clone();
+    if let Some(w) = crate::main_window(app) {
+        let _ = w.emit("app:update-available", latest);
+    }
+}
+
 #[tauri::command]
-pub async fn check_app_update_cmd() -> Option<String> {
-    // 网络检查离开主线程（同步 command 在主线程执行会冻结 UI——0.3.0 卡死根因）。
-    // 返回**真正可更新**的版本（latest > 当前 App 版本才 Some），避免已是最新版
-    // 仍误报「发现新版本」——此前仅返回 latest，前端 `if (v)` 拿到版本号即误判。
-    tauri::async_runtime::spawn_blocking(|| {
-        let latest = latest_app_version().ok()?;
-        let cur = env!("CARGO_PKG_VERSION");
-        if crate::registry::cmp_versions(&latest, cur) == std::cmp::Ordering::Greater {
-            Some(latest)
-        } else {
-            None
-        }
-    })
-    .await
-    .unwrap_or(None)
+pub async fn check_app_update_cmd(app: tauri::AppHandle) -> Option<String> {
+    // 网络检查离开主线程（见 check_app_update_blocking 注释）。
+    let latest = tauri::async_runtime::spawn_blocking(check_app_update_blocking)
+        .await
+        .unwrap_or(None);
+    // 手动检查的结果也进缓存并广播：这样顶栏红点 / 关于页横幅与「检查更新」的结论始终一致
+    store_app_latest(&app, latest.clone());
+    latest
+}
+
+/// 启动探测（壳页加载/重载时调用）：返回**已缓存**的"有新版"版本号；
+/// 若本次启动还没发起过检查，则后台发起一次，结果经 `app:update-available` 事件回来。
+/// 只读 + 最多一次网络请求，故不设窗口守卫（与 setup_state_cmd 同级）。
+#[tauri::command]
+pub fn app_update_probe_cmd(app: tauri::AppHandle) -> Option<String> {
+    let cached = crate::mlock(&APP_LATEST).clone();
+    if !APP_CHECKED.swap(true, Ordering::SeqCst) {
+        let a = app.clone();
+        tauri::async_runtime::spawn(async move {
+            let latest = tauri::async_runtime::spawn_blocking(check_app_update_blocking)
+                .await
+                .unwrap_or(None);
+            store_app_latest(&a, latest);
+        });
+    }
+    cached
 }
 
 #[tauri::command]

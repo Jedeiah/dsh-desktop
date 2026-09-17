@@ -2741,6 +2741,7 @@ fn main() {
             plugin::plugin_op,
             plugin::plugin_list_cmd,
             appupdate::check_app_update_cmd,
+            appupdate::app_update_probe_cmd,
             appupdate::app_update_cmd,
             uninstall_run,
             confirm_uninstall_cmd,

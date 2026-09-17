@@ -1702,6 +1702,18 @@
   // 操作都可能被拦腰打断（dsh 装到一半留 tmp、卸载与更新互相拆台）。正确性另有后端并发门兜底。
   let appUpdating = false;
   let appUpdateLockedEls = [];
+  // 「有新版」的两级提示：顶栏「管理」上的呼吸灯（唯一始终可见的区域——工作台盖住壳页时
+  // 壳页只剩 36pt 顶栏）+ 关于面板顶部横幅 + 关于 tab 上的小点。三者由这一个函数统一决定，
+  // 避免状态散落后出现「红点还在但已经在装」这类矛盾；更新进行中一律隐藏（进度条在关于面板）。
+  function renderAppUpdateNotice() {
+    const show = !!appLatest && !appUpdating;
+    const dot = $('manageDot'), tabDot = $('aboutTabDot'), banner = $('appUpdateBanner');
+    if (dot) dot.hidden = !show;
+    if (tabDot) tabDot.hidden = !show;
+    if (banner) banner.hidden = !show;
+    const latestEl = $('appUpdateLatest');
+    if (latestEl && show) latestEl.textContent = 'v' + appLatest;
+  }
   function appUpdateLockTargets() {
     return [
       btnCheckAppEl,
@@ -1721,6 +1733,7 @@
       if (prog) { prog.hidden = false; }
       if (fill) { fill.style.width = '0%'; }
       if (txt) { txt.hidden = false; txt.textContent = '准备下载…'; }
+      renderAppUpdateNotice(); // 更新中：隐藏红点与横幅（进度条已在关于面板显示）
     } else {
       // 逐个恢复"锁之前的禁用状态"（否则会把本该禁用的按钮放出来，例如已是最新时的下载按钮）
       appUpdateLockedEls.forEach(({ el, was }) => { el.disabled = was; });
@@ -1730,6 +1743,7 @@
       // 锁定期间重渲染出来的版本行按钮是按"更新中"渲染成禁用的，快照恢复管不到它们
       // （元素是新建的）——解锁后重渲染一次，让它们回到按真实 registry 状态渲染。
       refreshDsh();
+      renderAppUpdateNotice(); // 更新结束后按当前 appLatest 重新显示（失败时横幅要回来）
     }
   }
   // 下载/校验进度（Rust 只在整数百分比变化时发一次）
@@ -1775,11 +1789,13 @@
         btnDownloadAppEl.disabled = false;
         btnDownloadAppEl.textContent = '下载并安装 v' + v;
         setAppStatus('发现新版本 v' + v, 'acc');
+      renderAppUpdateNotice();
       } else {
         appLatest = null;
         btnDownloadAppEl.disabled = true;
         btnDownloadAppEl.textContent = '下载并安装更新';
         setAppStatus('已是最新版本', 'ok');
+      renderAppUpdateNotice();
       }
     } catch (e) {
       setAppStatus('检查更新失败：' + (e.message || e), 'err');
@@ -1789,7 +1805,18 @@
     }
   }
   btnCheckAppEl.addEventListener('click', checkApp);
-  btnDownloadAppEl.addEventListener('click', async () => {
+  // 启动探测：壳页**加载与重载**都会调（后端保证每次启动至多查一次；结果缓存在后端，
+  // 所以 reload 后红点/横幅不会丢）。有新版 → 亮红点 + 关于面板横幅。
+  invoke('app_update_probe_cmd')
+    .then((v) => { if (v) { appLatest = v; renderAppUpdateNotice(); } })
+    .catch(() => {});
+  // 后台检查完成后由后端广播（含"无新版"的 null：据此熄灭红点与横幅）
+  T.event.listen('app:update-available', (e) => {
+    appLatest = (e && e.payload) || null;
+    renderAppUpdateNotice();
+  }).catch(() => {});
+  // 「下载并安装」的唯一入口：关于面板主按钮与顶部横幅按钮共用（两份流程必然走岔）
+  async function startAppInstall() {
     if (appUpdating) return; // 双保险：按钮此时已禁用
     setAppUpdating(true);
     setAppStatus('正在下载并安装更新…安装完成后应用将自动重启');
@@ -1806,7 +1833,9 @@
       setAppStatus('更新失败：' + ((e && e.message) || e), 'err');
       btnDownloadAppEl.disabled = !appLatest;
     }
-  });
+  }
+  btnDownloadAppEl.addEventListener('click', startAppInstall);
+  $('btnAppUpdateNow').addEventListener('click', startAppInstall);
   $('btnOpenReleases').addEventListener('click', () => {
     invoke('open_browser_cmd').catch((e) => setAppStatus('打开下载页失败：' + (e.message || e), 'err'));
   });

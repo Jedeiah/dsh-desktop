@@ -52,7 +52,7 @@
   <span class="chrome-spacer"></span>
 
   <button class="task-pill" id="taskPill" hidden aria-label="任务中心"></button>
-  <button class="manage-btn" id="btnManage">管理 <kbd data-modkey="MODK">⌘K</kbd></button>
+  <button class="manage-btn" id="btnManage">管理 <kbd data-modkey="MODK">⌘K</kbd><span class="dot-breath" id="manageDot" hidden aria-hidden="true"></span></button>
   <button class="icon-btn" id="btnCollapseChrome" title="收起导航栏" aria-label="收起导航栏">
     <svg class="ic" viewBox="0 0 20 20"><path d="M5 12.5l5-5 5 5"/></svg>
   </button>
@@ -80,7 +80,7 @@
     <div class="segmented" role="tablist" aria-label="管理分区">
       <button role="tab" data-section="dsh" class="active" aria-selected="true">dsh</button>
       <button role="tab" data-section="plugins" aria-selected="false">插件</button>
-      <button role="tab" data-section="about" aria-selected="false">关于</button>
+      <button role="tab" data-section="about" aria-selected="false">关于<span class="dot-breath dot-inline" id="aboutTabDot" hidden aria-hidden="true"></span></button>
     </div>
     <button class="icon-btn drawer-close" id="drawerClose" title="关闭" aria-label="关闭">
       <svg class="ic" viewBox="0 0 20 20"><path d="M5.5 5.5l9 9M14.5 5.5l-9 9"/></svg>
@@ -165,6 +165,12 @@
 
     <!-- ---------- 关于 ---------- -->
     <section class="drawer-section" data-section="about">
+      <!-- App 自身有新版本时的横幅（启动探测 / 手动检查后显示；更新进行中自动隐藏） -->
+      <div class="update-banner" id="appUpdateBanner" hidden>
+        <div class="ub-text">App 有新版本 <b class="mono" id="appUpdateLatest">—</b></div>
+        <button class="btn sm" id="btnAppUpdateNow">下载并安装</button>
+      </div>
+
       <div class="panel">
         <div class="about-head">
           <img class="about-mark" src="icon.png" alt="" />
