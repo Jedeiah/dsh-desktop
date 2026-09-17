@@ -126,6 +126,50 @@ window.addEventListener('keydown',function(e){
 });
 }catch(_){}})();"#;
 
+/// 注入 dsh 页面 document-start 的 WebKit 语义对齐垫片（仅 macOS 注入，见下），两件事：
+///
+/// **一、让浮层在「按下菜单项」时不被误关**（功能修复）
+/// 根因（本机双引擎探针实测：同一份 dsh v0.1.6-alpha.2、同一套真实鼠标事件）：dsh 的
+/// 模型/推理等级选择器（dsh-client-ui-model-selection）用两条判据决定浮层要不要关——
+/// ① document 的 mousedown 落在 root/菜单之外；② 根节点 onBlur 时新焦点不在 root/菜单
+/// 之内。② 依赖 Blink 的行为：**鼠标按下会把焦点移到被按的按钮**。Chrome 实测：按下选项
+/// → focusout.relatedTarget = 被按选项（在菜单内）→ 不关；macOS WebKit（WKWebView/Safari）
+/// 按下按钮**不移动焦点**，焦点丢给 body 且 relatedTarget=null → `relatedTarget instanceof
+/// Node` 为假 → 判成「焦点离开浮层」→ close()。选项在按下瞬间被卸载，抬起时 WebKit 不再
+/// 派发 click → 选择从未提交，用户看到「点完还是原来的模型/档位」。
+/// 本垫片在 focusout 捕获阶段拦掉这种「菜单项失焦到 body/无处」的事件（`stopPropagation`
+/// 让 React 根上的 onBlur 收不到），从而不关浮层、click 正常派发；**不移动焦点、不
+/// preventDefault**，所以不引入任何焦点副作用。判据很窄：只在焦点的旧主是 role=menu/listbox
+/// 成员、且新焦点是 body/空 时生效——点浮层外仍由判据 ① 正常关闭，输入框等其它失焦不受影响。
+///
+/// **二、对齐 Blink 的焦点环（focus-visible）策略**（消除「选中框」）
+/// 同一引擎差异的副作用：WebKit 里鼠标点击不移动焦点，于是「上一次输入模态是键盘」（用户在
+/// 输入框打过字）之后，WebKit 会把**脚本聚焦**判成 `:focus-visible`；dsh 自己的 `.focus()`
+/// （打开二级菜单时聚焦当前项、选中后把焦点还给输入框上的模型按钮）就画出焦点环——浏览器
+/// （Blink）在鼠标点击后不画这个环。故记录「最后一次输入是指针还是键盘」并只在指针模态下
+/// 抑制 `:focus-visible` 的 outline/box-shadow；文本类控件（input/textarea/select/
+/// contenteditable）排除在外——Blink 对它们即使点击也画环。键盘操作时环照常出现，不影响可访问性。
+///
+/// 上游修好后可删（判据 ② 改成「按下期间的 blur 不算离开」即可，本垫片随之失效）。
+/// Windows（WebView2/Blink）本就是 Chrome 语义，不注入（调用点整体 `#[cfg]` 门控）。
+#[cfg(target_os = "macos")]
+const WEBKIT_MENU_SHIM_JS: &str = r#"(function(){try{
+var de=document.documentElement,set=function(v){try{de.setAttribute('data-dsh-modality',v);}catch(_){}};
+document.addEventListener('mousedown',function(){set('pointer');},true);
+document.addEventListener('pointerdown',function(){set('pointer');},true);
+document.addEventListener('keydown',function(){set('keyboard');},true);
+document.addEventListener('focusout',function(e){
+  var t=e.target,rt=e.relatedTarget;
+  if(!t||t.nodeType!==1)return;
+  if(!t.closest('[role="menu"],[role="listbox"]'))return;
+  if(rt&&rt!==document.body)return;
+  e.stopPropagation();
+},true);
+var s=document.createElement('style');
+s.textContent='html[data-dsh-modality="pointer"] :focus-visible:not(input):not(textarea):not(select):not([contenteditable]){outline:none!important;box-shadow:none!important}';
+(de.head||de).appendChild(s);
+}catch(_){}})();"#;
+
 /// child webview 标签（同时作为降级窗口的 label）。
 pub const LABEL: &str = "workbench";
 /// 降级窗口标题。
@@ -288,7 +332,12 @@ fn ensure_ready_on_main(app: &AppHandle, url: &str) -> bool {
     }
     let builder = WebviewBuilder::new(LABEL, WebviewUrl::External(parsed))
         .initialization_script(DARK_BG_JS)
-        .initialization_script(SHORTCUT_FORWARD_JS)
+        .initialization_script(SHORTCUT_FORWARD_JS);
+    // WebKit 语义对齐垫片只在 macOS 注入：Windows（WebView2/Blink）本就是 Chrome 语义，
+    // 无需注入，也就不去依赖「WebView2 接受空脚本」这种未验证的行为。
+    #[cfg(target_os = "macos")]
+    let builder = builder.initialization_script(WEBKIT_MENU_SHIM_JS);
+    let builder = builder
         .on_navigation(crate::webview_navigation_policy)
         .on_new_window(crate::webview_new_window_policy)
         .on_page_load(|wv, payload| {
@@ -641,7 +690,10 @@ fn open_fallback_window(app: &AppHandle, url: &str) {
         .inner_size(1280.0, 820.0)
         .min_inner_size(800.0, 560.0)
         .theme(Some(tauri::Theme::Dark))
-        .initialization_script(SHORTCUT_FORWARD_JS) // 降级窗口同样是独立 webview，快捷键同样需要转发
+        .initialization_script(SHORTCUT_FORWARD_JS); // 降级窗口同样是独立 webview，快捷键同样需要转发
+    #[cfg(target_os = "macos")]
+    let built = built.initialization_script(WEBKIT_MENU_SHIM_JS);
+    let built = built
         .on_navigation(crate::webview_navigation_policy)
         .on_new_window(crate::webview_new_window_policy)
         .build();

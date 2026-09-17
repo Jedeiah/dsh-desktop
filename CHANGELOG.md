@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.5.6 — 工作台「模型/推理等级」点选不生效（macOS WebKit）（2026-09-18）
+
+### 修复
+
+- **工作台里点「模型／推理等级」选项不生效（macOS 专有）**：同一份 dsh 在浏览器里点得动、在 App 里点完还是原来的值。根因是**引擎对「鼠标按下」的焦点语义差异**，被 dsh 自己的浮层关闭逻辑放大：
+  dsh 的模型/等级选择器（`dsh-client-ui-model-selection`）用两条判据决定浮层要不要关——① `document` 的 `mousedown` 落在 root/菜单之外；② 根节点 `onBlur` 时新焦点不在 root/菜单之内。② 依赖 Blink 的行为「按下按钮会把焦点移到该按钮」：Chrome 实测按下选项 → `focusout.relatedTarget` = 被按选项（在菜单内）→ 不关；而 macOS WebKit（WKWebView/Safari）按下按钮**不移动焦点**，焦点丢给 `body` 且 `relatedTarget` 为 `null` → `relatedTarget instanceof Node` 为假 → 判成「焦点离开浮层」→ 浮层在按下瞬间被卸载，位置被下面的输入框接管 → 抬起时 WebKit 不再派发 `click` → 选择从未提交。
+  证据链：同一份 dsh v0.1.6-alpha.2、同一套真实鼠标事件（Chrome 用 CDP 真实事件；macOS 侧用临时 WKWebView 垫片程序合成真实 NSEvent），同一份探针记录 `pointerdown/mousedown/focusout/focusin/pointerup/mouseup/click` + `document.activeElement` + 菜单存在性与位置 + `Node.contains` 调用结果：WebKit 侧 `focusout … rel=null`（Chrome 侧 `rel=BUTTON.option|…`）后 `MENU=null`、无 `click`。
+  修法：工作台 webview 注入一段垫片（`workbench.rs` 的 `WEBKIT_MENU_SHIM_JS`，仅 macOS 注入）做两件事：
+  ① **拦掉「菜单项失焦到 body/无处」的 focusout**（`stopPropagation`，让 React 根上的 onBlur 收不到）——浮层不关、click 正常派发；判据很窄（旧焦点属 `role=menu/listbox` 且新焦点为 body/空），点浮层外仍由「mousedown 落在浮层外」那条正常关闭，输入框等其它失焦不受影响。**不移动焦点、不 preventDefault**，无焦点副作用。
+  ② **对齐 Blink 的焦点环策略**：同一引擎差异还有个副作用——WebKit 里鼠标点击不移动焦点，于是「上次输入是键盘」（用户在输入框打过字）之后，WebKit 会把**脚本聚焦**判成 `:focus-visible`，dsh 自己的 `.focus()`（打开二级菜单时聚焦当前项、选中后把焦点还给输入框上的模型按钮）就会画出焦点环——即用户看到的「选中框」（浏览器里不画）。故记录最后一次输入模态，只在指针模态下抑制 `:focus-visible` 的 outline/box-shadow（input/textarea/select/contenteditable 排除在外，Blink 对它们点击也画环）；键盘操作时环照常出现。
+  Windows（WebView2/Blink）本就是 Chrome 语义，注入空串保持调用点一致。**上游修好后可删**（判据改成「按下期间的 blur 不算离开」即无需垫片）。
+
 ## 0.5.5 — App 更新提醒 + 插件更新（2026-09-17）
 
 ### 新增
