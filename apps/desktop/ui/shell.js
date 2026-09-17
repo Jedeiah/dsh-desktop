@@ -1537,16 +1537,23 @@
     pluginLogEl.hidden = true;
     pluginLogEmptyEl.hidden = false;
   }
+  let pluginUpdates = new Map();
+
   function setPluginBusy(busy) {
+    // 任何插件操作（安装/卸载/更新）都会改动依赖树 → 上一次「检查更新」的结论立即失效，
+    // 否则行内可能继续显示 `1.0.0 → 2.0.0` 这种过期结论
+    if (busy) pluginUpdates.clear();
     pluginBusy = busy;
     btnInstallPkgEl.disabled = busy;
     btnRemovePkgEl.disabled = busy;
     pkgInputEl.disabled = busy;
+    // 行内按钮（更新/卸载）也要跟着禁用：它们可能是"忙"之前渲染出来的，
+    // 否则看起来可点却什么都不做（逻辑上 updatePlugin 有守卫，但不该让人困惑）
+    document.querySelectorAll('#pluginList button').forEach((b) => { b.disabled = busy; });
   }
 
   // 已装插件的更新检查结果（name → {installed, latest, updatable, error}）。
   // 只在用户点「检查更新」时刷新（每个插件一次 registry 请求，不做自动轮询）。
-  let pluginUpdates = new Map();
 
   async function checkPluginUpdates() {
     if (pluginBusy || appUpdating) return;
@@ -1576,16 +1583,29 @@
 
   // 更新到 registry 上的最新版：`dsh plugin add <name>@latest`（= pnpm add），会把 profile 里的
   // 依赖范围重写成最新——**不是** pnpm update 那种"只在声明范围内升"。跨大版本先确认一次。
+  // 「这次更新是否跨出兼容范围」——按 semver 的 ^ 语义判定，而不是只比首段：
+  //   1.x.y：只有 major 变了才不兼容；
+  //   0.x.y：**连次版本也是破坏性的**（^0.1.2 只允许 0.1.x）——用户举的 0.1.2 → 0.2.0 正属此类，
+  //          只比首段会得到"0 == 0 → 不确认"，把最需要提示的情况漏掉。
+  // 版本号解析不了时返回 true（宁可多问一次，也不要静默做不兼容升级）。
+  function isBreakingUpgrade(from, to) {
+    const seg = (v) => String(v || '').split('-')[0].split('.').map((n) => parseInt(n, 10));
+    const a = seg(from), b = seg(to);
+    if (!a.length || !b.length || Number.isNaN(a[0]) || Number.isNaN(b[0])) return true;
+    if (a[0] !== b[0]) return true;
+    if (a[0] === 0) return (a[1] || 0) !== (b[1] || 0);
+    return false;
+  }
+
   function updatePlugin(name, from, to) {
     if (pluginBusy || appUpdating) return;
-    const major = (v) => String(v || '').split('.')[0];
-    const cross = major(from) !== major(to);
+    const breaking = isBreakingUpgrade(from, to);
     openModal({
-      title: cross ? '更新插件（跨大版本）' : '更新插件',
-      message: cross
-        ? name + '：' + (from || '?') + ' → ' + to + '\n\n大版本不同，插件可能与当前 dsh 不兼容；更新后工作台会自动重启。'
+      title: breaking ? '更新插件（跨不兼容版本）' : '更新插件',
+      message: breaking
+        ? name + '：' + (from || '?') + ' → ' + to + '\n\n不在同一个兼容范围内（0.x 的次版本升级同样可能不兼容），更新后工作台会自动重启。'
         : name + '：' + (from || '?') + ' → ' + to + '\n\n更新后工作台会自动重启。',
-      okLabel: '更新', danger: cross,
+      okLabel: '更新', danger: breaking,
       onAccept: () => doUpdatePlugin(name, to),
     });
   }
