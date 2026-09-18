@@ -29,7 +29,7 @@
     var markGlow = null, stGlow = null;   // 光晕层：替代图标上的 filter:drop-shadow（滤镜离屏缓冲会被裁切，看起来像方块）
     var sweepTimer = 0, sweepLast = 0, lastMoveAt = 0;
     var active = false, raf = 0, pending = null, last = null;
-    var lastRipple = { x: 0, y: 0 }, glowStep = -1, drawerW = 560, wasOpen = false, wasDrawer = false;
+    var lastRipple = { x: 0, y: 0 }, drawerW = 560, wasOpen = false, wasDrawer = false;
     var cloning = false, classTimer = 0;
 
     function boxOf(el) { var r = el.getBoundingClientRect(); return { l: r.left, t: r.top, w: r.width, h: r.height }; }
@@ -246,7 +246,7 @@
       }
 
       // 涟漪：按行进距离触发（不平滑滚动时抖动）
-      if (!dim && Math.hypot(x - lastRipple.x, y - lastRipple.y) > 90) {
+      if (!dim && speed > 0 && Math.hypot(x - lastRipple.x, y - lastRipple.y) > 90) {
         lastRipple = { x: x, y: y };
         ripple.style.left = fx(x);
         ripple.style.top = fx(y);
@@ -298,7 +298,6 @@
       pulse.style.opacity = '0';
       mark.style.transform = 'translate(-50%,-50%)';
       mark.style.filter = '';
-      glowStep = -1;
       info.style.transform = 'translate(-50%,-50%)';
       if (lit) {
         lit.style.transform = 'translate(-50%,-50%)';
@@ -312,6 +311,14 @@
     }
 
     function onResize() { if (active) { onLeave(); collect(); } }
+
+    /* 窗口隐藏时收敛效果；恢复可见时若还在加载页则重启自动扫光（否则扫光会一直停着） */
+    function onVisibility() {
+      if (document.hidden) { onLeave(); return; }
+      onLeave();
+      collect();
+      syncSweep();
+    }
 
     function syncSweep() {
       var want = active && startupVisible() && !document.hidden && !sweepTimer;
@@ -328,7 +335,7 @@
           window.addEventListener('mousemove', onMove, { passive: true });
           window.addEventListener('mouseleave', onLeave);
           window.addEventListener('resize', onResize);
-          document.addEventListener('visibilitychange', onLeave);
+          document.addEventListener('visibilitychange', onVisibility);
         } else if (drawer !== wasDrawer) {
           onLeave();
           collect();
@@ -337,7 +344,7 @@
         window.removeEventListener('mousemove', onMove);
         window.removeEventListener('mouseleave', onLeave);
         window.removeEventListener('resize', onResize);
-        document.removeEventListener('visibilitychange', onLeave);
+        document.removeEventListener('visibilitychange', onVisibility);
         clearTimeout(classTimer);
         if (amb) amb.classList.remove('ambient-parallax');
         onLeave();
