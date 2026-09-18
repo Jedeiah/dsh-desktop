@@ -962,3 +962,48 @@ body.small-window .toasts { right: 12px; bottom: 12px; }
 @media (prefers-reduced-motion: reduce) {
   .anim { animation: none; opacity: 1; }
 }
+/* ===================== 氛围背景交互（方案 7：视差分层 + 邻近点亮） =====================
+   只新增下面这些规则：原有 .ambient* 的位置/尺寸/字号一律未改。位移全部由 ambient.js
+   在交互期间写 transform（≤26px），鼠标移出即回位；不交互时连过渡与 will-change 都不挂，
+   所以静止渲染与改造前一致。 */
+.ambient-pulse {
+  position: absolute; inset: 0; opacity: 0; pointer-events: none;
+  transition: opacity 200ms ease;
+  background-image:
+    linear-gradient(rgba(255, 255, 255, 0.34) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.34) 1px, transparent 1px);
+  background-size: 30px 30px;
+  -webkit-mask-image: radial-gradient(circle var(--amb-r, 160px) at var(--amb-x, 50%) var(--amb-y, 40%), #000 0%, transparent 72%);
+  mask-image: radial-gradient(circle var(--amb-r, 160px) at var(--amb-x, 50%) var(--amb-y, 40%), #000 0%, transparent 72%);
+}
+.ambient-ripple {
+  position: absolute; width: 20px; height: 20px; margin: -10px 0 0 -10px; border-radius: 50%;
+  border: 1px solid rgba(160, 180, 255, 0.45); opacity: 0; pointer-events: none;
+}
+.ambient-ripple.on { animation: ambRipple 900ms ease-out 1; }
+@keyframes ambRipple {
+  0% { opacity: 0.55; transform: scale(0.4); }
+  100% { opacity: 0; transform: scale(14); }
+}
+/* 「点亮文字」= 信息块的整块副本 + 跟随鼠标的径向遮罩显影：原文一个字符都不动，
+   因此不打断文本 shaping（曾试过逐字符包 span：实测字宽 +0.16px、居中位置漂移 0.01px，已弃用）。
+   副本复用 .ambient-info 的类 ⇒ 位置/字号/间距天然与原文一致，这里的规则只管"显影"。 */
+.ambient-lit {
+  pointer-events: none; opacity: 0; transition: opacity 200ms ease;
+  -webkit-mask-image: radial-gradient(circle var(--amb-lr, 120px) at var(--amb-lx, 50%) var(--amb-ly, 50%), #000 0%, transparent 74%);
+  mask-image: radial-gradient(circle var(--amb-lr, 120px) at var(--amb-lx, 50%) var(--amb-ly, 50%), #000 0%, transparent 74%);
+}
+.ambient-lit .ai-brand, .ambient-lit .ai-row span, .ambient-lit .ai-row b, .ambient-lit .ai-keys {
+  color: #e9edff !important; text-shadow: 0 0 12px rgba(123, 147, 255, 0.55) !important;
+}
+/* 视差过渡（尾随手感）与合成层提示：只挂在启用期间的 .ambient-parallax 下 */
+.ambient-parallax .ambient-glow,
+.ambient-parallax .ambient-grid,
+.ambient-parallax .ambient-mark,
+.ambient-parallax .ambient-pulse { transition: transform 110ms linear; will-change: transform; }
+.ambient-parallax .ambient-info { transition: transform 150ms linear; }
+.ambient-parallax .ambient-ripple,
+.ambient-parallax .ambient-lit { will-change: transform, opacity; }
+@media (prefers-reduced-motion: reduce) {
+  .ambient-ripple.on { animation: none; }
+}
