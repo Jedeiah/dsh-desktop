@@ -999,8 +999,8 @@ body.small-window .toasts { right: 12px; bottom: 12px; }
 /* 视差过渡（尾随手感）与合成层提示：只挂在启用期间的 .ambient-parallax 下 */
 .ambient-parallax .ambient-glow,
 .ambient-parallax .ambient-grid,
-.ambient-parallax .ambient-mark,
 .ambient-parallax .ambient-pulse { transition: transform 110ms linear; will-change: transform; }
+.ambient-parallax .ambient-mark { transition: transform 110ms linear; }
 .ambient-parallax .ambient-info { transition: transform 150ms linear; }
 .ambient-parallax .ambient-ripple,
 .ambient-parallax .ambient-lit { will-change: transform, opacity; }
@@ -1016,8 +1016,32 @@ body.small-window .toasts { right: 12px; bottom: 12px; }
   -webkit-mask-image: radial-gradient(circle var(--amb-lr, 120px) at var(--amb-lx, 50%) var(--amb-ly, 50%), #000 0%, transparent 74%);
   mask-image: radial-gradient(circle var(--amb-lr, 120px) at var(--amb-lx, 50%) var(--amb-ly, 50%), #000 0%, transparent 74%);
 }
-.ambient-parallax .startup-mark { transition: transform 120ms linear, filter 160ms linear; }
+.ambient-parallax .startup-mark { transition: transform 120ms linear; }
 .ambient-parallax .startup-lit { will-change: transform, opacity; }
 @media (prefers-reduced-motion: reduce) {
   .startup-lit { transition: none; }
+}
+
+/* 图标光晕层：替代 filter:drop-shadow —— 滤镜会走离屏缓冲且被裁切，看起来像一块方块；
+   改成径向渐变层 + 呼吸缩放，既没有硬边也不会改变图标本身的渲染路径。 */
+.ambient-mark-glow, .startup-mark-glow {
+  position: absolute; left: 0; top: 0; pointer-events: none; opacity: 0; border-radius: 50%;
+  transition: opacity 180ms ease; will-change: transform, opacity;
+}
+/* 呼吸缩放放在伪元素上：外层 transform 由 JS 每帧定位，不能同属性互相覆盖 */
+.ambient-mark-glow::after, .startup-mark-glow::after {
+  content: ''; position: absolute; inset: 0; border-radius: 50%;
+  background: radial-gradient(circle, rgba(123, 147, 255, 0.50) 0%, rgba(123, 147, 255, 0.20) 44%, transparent 72%);
+  animation: ambGlowBreath 3.6s ease-in-out infinite;
+}
+@keyframes ambGlowBreath { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.12); } }
+/* 加载页呼吸光：新层（绝对定位、插在 .startup 子节点最前 ⇒ 画在内容之后），不影响排版 */
+.startup-breath {
+  position: absolute; inset: -12% -8%; pointer-events: none;
+  background: radial-gradient(ellipse 44% 36% at 50% 46%, rgba(77, 107, 254, 0.18) 0%, rgba(123, 147, 255, 0.07) 46%, transparent 72%);
+  animation: ambBreath 6.5s ease-in-out infinite;
+}
+@keyframes ambBreath { 0%, 100% { opacity: 0.5; transform: scale(1); } 50% { opacity: 1; transform: scale(1.07); } }
+@media (prefers-reduced-motion: reduce) {
+  .ambient-mark-glow, .startup-mark-glow, .startup-breath { animation: none; }
 }

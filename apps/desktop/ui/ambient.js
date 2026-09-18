@@ -26,6 +26,8 @@
     var infoBox = null, markBox = null;           // 未位移时的基准位置（缓存，避免每帧读布局）
     // 启动加载页（#startupView）：同一套交互也覆盖它——图标做视差+靠近发亮，标题做「副本+遮罩」点亮
     var stEl = null, stMark = null, stTitle = null, stLit = null, stLitBox = null, stMarkBase = null, stWatch = false;
+    var markGlow = null, stGlow = null;   // 光晕层：替代图标上的 filter:drop-shadow（滤镜离屏缓冲会被裁切，看起来像方块）
+    var sweepTimer = 0, sweepLast = 0, lastMoveAt = 0;
     var active = false, raf = 0, pending = null, last = null;
     var lastRipple = { x: 0, y: 0 }, glowStep = -1, drawerW = 560, wasOpen = false, wasDrawer = false;
     var cloning = false, classTimer = 0;
@@ -79,6 +81,11 @@
         lit.setAttribute('aria-hidden', 'true');
         info.parentNode.insertBefore(lit, info.nextSibling);
       }
+      if (!markGlow) {
+        markGlow = document.createElement('div');
+        markGlow.className = 'ambient-mark-glow';
+        amb.insertBefore(markGlow, mark); // 在水印之下：光晕不参与任何滤镜/分层
+      }
       if (!ripple) {
         ripple = document.createElement('div');
         ripple.className = 'ambient-ripple';
@@ -98,6 +105,17 @@
           stEl.appendChild(stLit);
         } else if (stTitle && stLit) {
           stLit.textContent = stTitle.textContent; // 文案更新时跟随
+        }
+        if (!stEl.querySelector('.startup-breath')) {
+          var br = document.createElement('div');
+          br.className = 'startup-breath';
+          br.setAttribute('aria-hidden', 'true');
+          stEl.insertBefore(br, stEl.firstChild); // 画在内容之后
+        }
+        if (!stGlow && stEl) {
+          stGlow = document.createElement('div');
+          stGlow.className = 'startup-mark-glow';
+          stEl.appendChild(stGlow); // 绝对定位、脱离文档流，不影响加载页排版
         }
         if (!stWatch) {
           stWatch = true;
@@ -119,9 +137,19 @@
       if (!amb || !info || !mark) return;
       infoBox = boxOf(info);
       markBox = boxOf(mark);
+      if (markGlow && markBox) {
+        var gs = Math.round(Math.max(220, markBox.w * 1.7));
+        markGlow.style.width = markGlow.style.height = gs + 'px';
+        markGlow.style.margin = (-gs / 2) + 'px 0 0 ' + (-gs / 2) + 'px';
+      }
       if (stEl && startupVisible() && stTitle) {
         stLitBox = { l: stTitle.offsetLeft, t: stTitle.offsetTop, w: stTitle.offsetWidth, h: stTitle.offsetHeight };
         stMarkBase = stMark ? { l: stMark.offsetLeft, t: stMark.offsetTop, w: stMark.offsetWidth, h: stMark.offsetHeight } : null;
+        if (stGlow && stMarkBase) {
+          var sg = Math.round(stMarkBase.w * 3);
+          stGlow.style.width = stGlow.style.height = sg + 'px';
+          stGlow.style.margin = (-sg / 2) + 'px 0 0 ' + (-sg / 2) + 'px';
+        }
       } else {
         stLitBox = stMarkBase = null;
       }
@@ -186,14 +214,12 @@
         lit.style.opacity = '1';
       }
 
-      // 图标被"照亮"：量化后写 filter（避免每帧重栅格化 290px 的图）
-      if (markBox) {
+      // 图标被"照亮"：用独立光晕层（无滤镜 ⇒ 不产生离屏缓冲/方块边缘）
+      if (markBox && markGlow) {
         var md = Math.hypot(markBox.l + iox * 1.8 + markBox.w / 2 - x, markBox.t + ioy * 1.8 + markBox.h / 2 - y);
-        var step = (!dim && md < 320) ? Math.round(clamp(28 - md / 16, 6, 26) / 4) * 4 : 0;
-        if (step !== glowStep) {
-          glowStep = step;
-          mark.style.filter = step ? 'drop-shadow(0 0 ' + step + 'px rgba(123,147,255,.55)) brightness(1.12)' : '';
-        }
+        var near2 = clamp(1 - md / 360, 0, 1) * (dim ? 0.4 : 1);
+        markGlow.style.transform = 'translate(' + fx(markBox.l + iox * 1.8 + markBox.w / 2) + ',' + fx(markBox.t + ioy * 1.8 + markBox.h / 2) + ')';
+        markGlow.style.opacity = (near2 * 0.9).toFixed(3);
       }
 
       // 启动加载页：图标视差 + 靠近发亮、标题副本遮罩点亮（内容与排版不动）
@@ -207,12 +233,15 @@
         stLit.style.setProperty('--amb-lr', (dim ? 70 : clamp(120 + speed * 0.5, 120, 220)).toFixed(0) + 'px');
         stLit.style.opacity = '1';
         if (stMark && stMarkBase) {
-          var mcx = stMarkBase.l + stMarkBase.w / 2 + (iox * 0.8), mcy = stMarkBase.t + stMarkBase.h / 2 + (ioy * 0.8);
-          var md2 = Math.hypot(mcx - (x - stEl.getBoundingClientRect().left), mcy - (y - stEl.getBoundingClientRect().top));
-          var near = clamp(1 - md2 / 320, 0, 1);
-          stMark.style.transform = 'translate(' + fx(-px * 10 * f) + ',' + fx(-py * 7 * f) + ') scale(' + (1 + 0.025 * near).toFixed(3) + ')';
-          var st = near > 0.12 ? Math.round(clamp(6 + near * 22, 6, 28) / 4) * 4 : 0;
-          stMark.style.filter = st ? 'drop-shadow(0 0 ' + st + 'px rgba(123,147,255,.6)) brightness(' + (1 + 0.08 * near).toFixed(2) + ')' : '';
+          var sEl = stEl.getBoundingClientRect();
+          var mcx = stMarkBase.l + stMarkBase.w / 2 + iox * 0.8, mcy = stMarkBase.t + stMarkBase.h / 2 + ioy * 0.8;
+          var md2 = Math.hypot(mcx + sEl.left - x, mcy + sEl.top - y);
+          var near = clamp(1 - md2 / 300, 0, 1) * (dim ? 0.4 : 1);
+          stMark.style.transform = 'translate(' + fx(-px * 10 * f) + ',' + fx(-py * 7 * f) + ')'; // 只位移，不滤镜、不缩放
+          if (stGlow) {
+            stGlow.style.transform = 'translate(' + fx(mcx) + ',' + fx(mcy) + ')';
+            stGlow.style.opacity = (near * 0.95).toFixed(3);
+          }
         }
       }
 
@@ -227,9 +256,26 @@
       }
     }
 
+    /* 加载页自动扫光：鼠标静止时，点亮位置沿缓慢轨迹自己游走（内容不变，纯装饰） */
+    function sweep(ts) {
+      sweepTimer = 0;
+      if (!active || !startupVisible() || document.hidden) return;
+      if (ts - sweepLast > 40) { // ~25fps 足够，省电
+        sweepLast = ts;
+        if (!last || ts - lastMoveAt > 1200) {
+          var w = window.innerWidth, h = window.innerHeight;
+          var vx = w * (0.5 + 0.33 * Math.sin(ts / 2600));
+          var vy = h * (0.52 + 0.24 * Math.cos(ts / 3100));
+          apply(vx, vy, 0);
+        }
+      }
+      sweepTimer = requestAnimationFrame(sweep);
+    }
+
     function onMove(e) {
       if (document.hidden) return;
       needParallaxClass();
+      lastMoveAt = performance.now();
       var x = e.clientX, y = e.clientY;
       var speed = last ? Math.hypot(x - last.x, y - last.y) : 0;
       last = { x: x, y: y };
@@ -259,11 +305,18 @@
         lit.style.opacity = '0';
       }
       if (stLit) stLit.style.opacity = '0';
-      if (stMark) { stMark.style.transform = ''; stMark.style.filter = ''; }
+      if (stMark) stMark.style.transform = '';
+      if (markGlow) markGlow.style.opacity = '0';
+      if (stGlow) stGlow.style.opacity = '0';
       dropParallaxClassSoon();
     }
 
     function onResize() { if (active) { onLeave(); collect(); } }
+
+    function syncSweep() {
+      var want = active && startupVisible() && !document.hidden && !sweepTimer;
+      if (want) sweepTimer = requestAnimationFrame(sweep);
+    }
 
     function sync() {
       var open = body.classList.contains('overlay-open');
@@ -292,6 +345,7 @@
       wasOpen = open;
       wasDrawer = drawer;
       active = open;
+      syncSweep();
     }
 
     new MutationObserver(sync).observe(body, { attributes: true, attributeFilter: ['class'] });
