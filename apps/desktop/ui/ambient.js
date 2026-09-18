@@ -24,6 +24,8 @@
     var amb = null, grid = null, mark = null, info = null, glowA = null, glowB = null;
     var pulse = null, ripple = null, lit = null;
     var infoBox = null, markBox = null;           // 未位移时的基准位置（缓存，避免每帧读布局）
+    // 启动加载页（#startupView）：同一套交互也覆盖它——图标做视差+靠近发亮，标题做「副本+遮罩」点亮
+    var stEl = null, stMark = null, stTitle = null, stLit = null, stLitBox = null, stMarkBase = null, stWatch = false;
     var active = false, raf = 0, pending = null, last = null;
     var lastRipple = { x: 0, y: 0 }, glowStep = -1, drawerW = 560, wasOpen = false, wasDrawer = false;
     var cloning = false, classTimer = 0;
@@ -83,6 +85,26 @@
         amb.appendChild(ripple);
       }
       refreshLit();
+      // 启动加载页元素（可能不存在：打包运行早期/隐藏态）
+      stEl = document.getElementById('startupView');
+      if (stEl) {
+        stMark = stEl.querySelector('.startup-mark');
+        stTitle = stEl.querySelector('.startup-title');
+        if (stTitle && !stLit) {
+          stLit = document.createElement('div');
+          stLit.className = 'startup-title startup-lit';
+          stLit.setAttribute('aria-hidden', 'true');
+          stLit.textContent = stTitle.textContent; // 纯文本副本：不动原文一个字
+          stEl.appendChild(stLit);
+        } else if (stTitle && stLit) {
+          stLit.textContent = stTitle.textContent; // 文案更新时跟随
+        }
+        if (!stWatch) {
+          stWatch = true;
+          // 启动页由 shell.js 切 hidden/style 隐藏：属性变化需重新同步（决定是否继续挂监听）
+          new MutationObserver(sync).observe(stEl, { attributes: true, attributeFilter: ['hidden', 'style', 'class'] });
+        }
+      }
       // 信息块内容会随状态更新（地址/版本）：跟随刷新副本；按标志位防自触发
       if (!info.dataset.ambWatch) {
         info.dataset.ambWatch = '1';
@@ -97,6 +119,21 @@
       if (!amb || !info || !mark) return;
       infoBox = boxOf(info);
       markBox = boxOf(mark);
+      if (stEl && startupVisible() && stTitle) {
+        stLitBox = { l: stTitle.offsetLeft, t: stTitle.offsetTop, w: stTitle.offsetWidth, h: stTitle.offsetHeight };
+        stMarkBase = stMark ? { l: stMark.offsetLeft, t: stMark.offsetTop, w: stMark.offsetWidth, h: stMark.offsetHeight } : null;
+      } else {
+        stLitBox = stMarkBase = null;
+      }
+    }
+
+    /* 启动加载页是否正在显示（shell.js 用 hidden + style.display 双保险切换） */
+    function startupVisible() {
+      if (!stEl) stEl = document.getElementById('startupView'); // 惰性查找：首次 sync 时 build 还没跑
+      if (!stEl) return false;
+      if (stEl.hidden || stEl.style.display === 'none') return false;
+      var r = stEl.getBoundingClientRect();
+      return r.width > 0 && r.height > 0;
     }
 
     /* 可见区域宽度：抽屉打开时右侧被占用，位移/点亮都以「剩余区域」为中心 */
@@ -159,6 +196,26 @@
         }
       }
 
+      // 启动加载页：图标视差 + 靠近发亮、标题副本遮罩点亮（内容与排版不动）
+      if (stLit && stLitBox && stLit.parentNode) {
+        stLit.style.left = stLitBox.l + 'px';
+        stLit.style.top = stLitBox.t + 'px';
+        stLit.style.width = stLitBox.w + 'px';
+        var tlx = x - stLitBox.l, tly = y - stLitBox.t;
+        stLit.style.setProperty('--amb-lx', fx(tlx));
+        stLit.style.setProperty('--amb-ly', fx(tly));
+        stLit.style.setProperty('--amb-lr', (dim ? 70 : clamp(120 + speed * 0.5, 120, 220)).toFixed(0) + 'px');
+        stLit.style.opacity = '1';
+        if (stMark && stMarkBase) {
+          var mcx = stMarkBase.l + stMarkBase.w / 2 + (iox * 0.8), mcy = stMarkBase.t + stMarkBase.h / 2 + (ioy * 0.8);
+          var md2 = Math.hypot(mcx - (x - stEl.getBoundingClientRect().left), mcy - (y - stEl.getBoundingClientRect().top));
+          var near = clamp(1 - md2 / 320, 0, 1);
+          stMark.style.transform = 'translate(' + fx(-px * 10 * f) + ',' + fx(-py * 7 * f) + ') scale(' + (1 + 0.025 * near).toFixed(3) + ')';
+          var st = near > 0.12 ? Math.round(clamp(6 + near * 22, 6, 28) / 4) * 4 : 0;
+          stMark.style.filter = st ? 'drop-shadow(0 0 ' + st + 'px rgba(123,147,255,.6)) brightness(' + (1 + 0.08 * near).toFixed(2) + ')' : '';
+        }
+      }
+
       // 涟漪：按行进距离触发（不平滑滚动时抖动）
       if (!dim && Math.hypot(x - lastRipple.x, y - lastRipple.y) > 90) {
         lastRipple = { x: x, y: y };
@@ -201,6 +258,8 @@
         lit.style.transform = 'translate(-50%,-50%)';
         lit.style.opacity = '0';
       }
+      if (stLit) stLit.style.opacity = '0';
+      if (stMark) { stMark.style.transform = ''; stMark.style.filter = ''; }
       dropParallaxClassSoon();
     }
 
@@ -209,7 +268,7 @@
     function sync() {
       var open = body.classList.contains('overlay-open');
       var drawer = body.classList.contains('drawer-open');
-      if (open && build()) {
+      if ((open || startupVisible()) && build()) {
         if (!wasOpen) {
           onLeave();
           collect();

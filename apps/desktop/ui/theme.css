@@ -1007,3 +1007,17 @@ body.small-window .toasts { right: 12px; bottom: 12px; }
 @media (prefers-reduced-motion: reduce) {
   .ambient-ripple.on { animation: none; }
 }
+
+/* 启动加载页的点亮层：标题的纯文本副本 + 跟随鼠标的径向遮罩（原文一个字符不动、排版零影响） */
+.startup-lit {
+  position: absolute; pointer-events: none; opacity: 0; transition: opacity 200ms ease;
+  white-space: nowrap; color: #ffffff !important;
+  text-shadow: 0 0 18px rgba(123, 147, 255, 0.75) !important;
+  -webkit-mask-image: radial-gradient(circle var(--amb-lr, 120px) at var(--amb-lx, 50%) var(--amb-ly, 50%), #000 0%, transparent 74%);
+  mask-image: radial-gradient(circle var(--amb-lr, 120px) at var(--amb-lx, 50%) var(--amb-ly, 50%), #000 0%, transparent 74%);
+}
+.ambient-parallax .startup-mark { transition: transform 120ms linear, filter 160ms linear; }
+.ambient-parallax .startup-lit { will-change: transform, opacity; }
+@media (prefers-reduced-motion: reduce) {
+  .startup-lit { transition: none; }
+}
