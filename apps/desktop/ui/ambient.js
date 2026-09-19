@@ -23,16 +23,14 @@
 
     var amb = null, grid = null, mark = null, info = null, glowA = null, glowB = null;
     var pulse = null, ripple = null, lit = null;
-    var infoBox = null, markBox = null;           // 未位移时的基准位置（缓存，避免每帧读布局）
     // 启动加载页（#startupView）：同一套交互也覆盖它——图标做视差+靠近发亮，标题做「副本+遮罩」点亮
-    var stEl = null, stMark = null, stTitle = null, stLit = null, stLitBox = null, stMarkBase = null, stWatch = false;
+    var stEl = null, stMark = null, stTitle = null, stLit = null, stWatch = false;
     var markGlow = null, stGlow = null;   // 光晕层：替代图标上的 filter:drop-shadow（滤镜离屏缓冲会被裁切，看起来像方块）
     var sweepTimer = 0, sweepLast = 0, lastMoveAt = 0;
     var active = false, raf = 0, pending = null, last = null;
     var lastRipple = { x: 0, y: 0 }, drawerW = 560, wasOpen = false, wasDrawer = false;
     var cloning = false, classTimer = 0;
 
-    function boxOf(el) { var r = el.getBoundingClientRect(); return { l: r.left, t: r.top, w: r.width, h: r.height }; }
 
     /* 交互期才挂载的类：带 will-change/transition。静止时（含浮层打开但没动鼠标）
        完全不存在——否则模糊光晕/遮罩网格会走另一条栅格化路径，静止渲染与改造前不再
@@ -135,23 +133,15 @@
     /* 基准位置：在「无位移」状态下量取（collect 前先 onLeave 复位） */
     function collect() {
       if (!amb || !info || !mark) return;
-      infoBox = boxOf(info);
-      markBox = boxOf(mark);
-      if (markGlow && markBox) {
-        var gs = Math.round(Math.max(220, markBox.w * 1.7));
-        markGlow.style.width = markGlow.style.height = gs + 'px';
-        markGlow.style.margin = (-gs / 2) + 'px 0 0 ' + (-gs / 2) + 'px';
+      if (markGlow && mark) {
+        var gsz = Math.round(Math.max(220, mark.getBoundingClientRect().width * 1.7));
+        markGlow.style.width = markGlow.style.height = gsz + 'px';
+        markGlow.style.margin = (-gsz / 2) + 'px 0 0 ' + (-gsz / 2) + 'px';
       }
-      if (stEl && startupVisible() && stTitle) {
-        stLitBox = { l: stTitle.offsetLeft, t: stTitle.offsetTop, w: stTitle.offsetWidth, h: stTitle.offsetHeight };
-        stMarkBase = stMark ? { l: stMark.offsetLeft, t: stMark.offsetTop, w: stMark.offsetWidth, h: stMark.offsetHeight } : null;
-        if (stGlow && stMarkBase) {
-          var sg = Math.round(stMarkBase.w * 3);
-          stGlow.style.width = stGlow.style.height = sg + 'px';
-          stGlow.style.margin = (-sg / 2) + 'px 0 0 ' + (-sg / 2) + 'px';
-        }
-      } else {
-        stLitBox = stMarkBase = null;
+      if (stGlow && stMark && startupVisible() && stMark.getBoundingClientRect().width > 0) {
+        var sgs = Math.round(stMark.getBoundingClientRect().width * 3);
+        stGlow.style.width = stGlow.style.height = sgs + 'px';
+        stGlow.style.margin = (-sgs / 2) + 'px 0 0 ' + (-sgs / 2) + 'px';
       }
     }
 
@@ -206,41 +196,50 @@
       pulse.style.opacity = '1';
 
       // ② 邻近点亮：文字用副本的移动遮罩显影（坐标换算到副本自身的局部坐标系）
-      if (lit && infoBox) {
-        var lx = x - (infoBox.l + iox), ly = y - (infoBox.t + ioy);
-        lit.style.setProperty('--amb-lx', fx(lx));
-        lit.style.setProperty('--amb-ly', fx(ly));
+      if (lit) {
+        // 实时矩形含自身 transform（translate(-50%,-50%) translate(iox,ioy)），而 mask 坐标用的是
+        // **变换前**的局部坐标 ⇒ 必须把「宽/高的一半」和已知位移一起还原回去，否则光斑会偏半个元素。
+        var li = lit.getBoundingClientRect();
+        lit.style.setProperty('--amb-lx', fx(x - (li.left + li.width / 2 - iox)));
+        lit.style.setProperty('--amb-ly', fx(y - (li.top + li.height / 2 - ioy)));
         lit.style.setProperty('--amb-lr', (dim ? 60 : clamp(105 + speed * 0.5, 105, 190)).toFixed(0) + 'px');
         lit.style.opacity = '1';
       }
 
       // 图标被"照亮"：用独立光晕层（无滤镜 ⇒ 不产生离屏缓冲/方块边缘）
-      if (markBox && markGlow) {
-        var md = Math.hypot(markBox.l + iox * 1.8 + markBox.w / 2 - x, markBox.t + ioy * 1.8 + markBox.h / 2 - y);
+      if (markGlow) {
+        var mg = mark.getBoundingClientRect(); // 实时：水印会随 --drawer-w 重排
+        var md = Math.hypot(mg.left + mg.width / 2 - x, mg.top + mg.height / 2 - y);
         var near2 = clamp(1 - md / 360, 0, 1) * (dim ? 0.4 : 1);
-        markGlow.style.transform = 'translate(' + fx(markBox.l + iox * 1.8 + markBox.w / 2) + ',' + fx(markBox.t + ioy * 1.8 + markBox.h / 2) + ')';
+        markGlow.style.transform = 'translate(' + fx(mg.left + mg.width / 2) + ',' + fx(mg.top + mg.height / 2) + ')';
         markGlow.style.opacity = (near2 * 0.9).toFixed(3);
       }
 
       // 启动加载页：图标视差 + 靠近发亮、标题副本遮罩点亮（内容与排版不动）
-      if (stLit && stLitBox && stLit.parentNode) {
-        stLit.style.left = stLitBox.l + 'px';
-        stLit.style.top = stLitBox.t + 'px';
-        stLit.style.width = stLitBox.w + 'px';
-        var tlx = x - stLitBox.l, tly = y - stLitBox.t;
-        stLit.style.setProperty('--amb-lx', fx(tlx));
-        stLit.style.setProperty('--amb-ly', fx(tly));
-        stLit.style.setProperty('--amb-lr', (dim ? 70 : clamp(120 + speed * 0.5, 120, 220)).toFixed(0) + 'px');
-        stLit.style.opacity = '1';
-        if (stMark && stMarkBase) {
-          var sEl = stEl.getBoundingClientRect();
-          var mcx = stMarkBase.l + stMarkBase.w / 2 + iox * 0.8, mcy = stMarkBase.t + stMarkBase.h / 2 + ioy * 0.8;
-          var md2 = Math.hypot(mcx + sEl.left - x, mcy + sEl.top - y);
-          var near = clamp(1 - md2 / 300, 0, 1) * (dim ? 0.4 : 1);
-          stMark.style.transform = 'translate(' + fx(-px * 10 * f) + ',' + fx(-py * 7 * f) + ')'; // 只位移，不滤镜、不缩放
-          if (stGlow) {
-            stGlow.style.transform = 'translate(' + fx(mcx) + ',' + fx(mcy) + ')';
-            stGlow.style.opacity = (near * 0.95).toFixed(3);
+      // 位置一律读实时矩形：抽屉拖拽会改 --drawer-w，标题/图标会重排，缓存矩形会过期（用户实测错位）
+      if (stLit && stLit.parentNode) {
+        var sEl = stEl.getBoundingClientRect();
+        if (sEl.width > 0) { // 加载页不可见时整块跳过（浮层场景每帧省 3 次读 + 若干写）
+          // 标题点亮（无标题则整条跳过，不影响下面图标效果）
+          if (stTitle) {
+            var ti = stTitle.getBoundingClientRect();
+            stLit.style.left = (ti.left - sEl.left) + 'px';
+            stLit.style.top = (ti.top - sEl.top) + 'px';
+            stLit.style.width = ti.width + 'px';
+            stLit.style.setProperty('--amb-lx', fx(x - ti.left)); // 副本无自身 transform ⇒ 直接实时矩形
+            stLit.style.setProperty('--amb-ly', fx(y - ti.top));
+            stLit.style.setProperty('--amb-lr', (dim ? 70 : clamp(120 + speed * 0.5, 120, 220)).toFixed(0) + 'px');
+            stLit.style.opacity = '1';
+          }
+          // 图标：视差 + 光晕（与"是否有标题"解耦，结构变了也不会一起失效）
+          if (stMark) {
+            var mi = stMark.getBoundingClientRect();
+            var near = clamp(1 - Math.hypot(mi.left + mi.width / 2 - x, mi.top + mi.height / 2 - y) / 300, 0, 1) * (dim ? 0.4 : 1);
+            stMark.style.transform = 'translate(' + fx(-px * 10 * f) + ',' + fx(-py * 7 * f) + ')';
+            if (stGlow) {
+              stGlow.style.transform = 'translate(' + fx(mi.left - sEl.left + mi.width / 2) + ',' + fx(mi.top - sEl.top + mi.height / 2) + ')';
+              stGlow.style.opacity = (near * 0.95).toFixed(3);
+            }
           }
         }
       }
