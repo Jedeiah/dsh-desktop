@@ -200,6 +200,8 @@ body.chrome-collapsed .stage { top: var(--h-handle); }
   mask-image: radial-gradient(ellipse 85% 75% at 50% 36%, #000 0%, transparent 78%);
 }
 .ambient-mark {
+  /* 重新居中（抽屉开关时的 left 变化）短滑：瞬变会被看成"闪" */
+  transition: left 200ms var(--ease);
   position: absolute; left: 50%; top: 32%; transform: translate(-50%, -50%);
   width: min(34vh, 290px); height: min(34vh, 290px);
   /* 我们的应用图标（icon.png）作为背景水印：彩色图在深底上给到 0.09 才看得清
@@ -215,6 +217,7 @@ body.drawer-open .ambient-mark { left: calc((100% - var(--drawer-w)) / 2); }
 /* 氛围信息块：抽屉/命令面板打开、工作台让位时露出——显示当前环境与快捷键，
    让空白背景有内容可读（用户反馈「太单调」）。低调配色，不与抽屉抢注意力。 */
 .ambient-info {
+  transition: left 200ms var(--ease);
   position: absolute; left: 50%; top: 68%; transform: translate(-50%, -50%);
   /* 默认隐藏：启动页/工作台可见时背景里不应出现任何文字（启动页衬底半透明，
      否则信息卡文字会透出来）。仅浮层（抽屉/命令面板）打开、工作台让位时显示。 */
@@ -246,6 +249,9 @@ img.startup-mark, img.brand-mark, img.setup-mark, img.about-mark {
 /* 启动占位 */
 .startup {
   position: absolute; inset: 0; z-index: 2;
+  /* 抽屉开/关时内容要在「剩余区域」重新居中（padding-right 变化）——必须短滑：
+     瞬变会被看成"图标从屏幕正中闪到左侧"（用户实测；加载页一直可见，与工作台时序无关）。 */
+  transition: padding-right 200ms var(--ease);
   display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px;
   /* 氛围透出的「深色衬底」：中心区域近乎实色保证文案清晰，四周渐透露出品牌
      光晕/网格——既不再是一整块死灰，也不干扰文字（用户：太单调了） */
