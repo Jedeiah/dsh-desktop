@@ -161,7 +161,7 @@ xattr -dr com.apple.quarantine "/Applications/DeepSeek Harness Desktop.app"
 When no dsh installation is found, the app shows a setup screen (dsh is not started yet):
 
 1. The **newest version in the list is preselected** (highest semver, usually upstream `latest`). Hit install: the bundled pnpm downloads and installs it, runs two self-checks, atomically switches, and enters the workbench automatically.
-2. **Advanced options** let you change the **registry** (defaults to the `registry.npmmirror.com` mirror; switch back to `registry.npmjs.org` or anything else) and pin a **specific version** (list read from the registry, semver-descending, five shown, or type a version directly).
+2. **Advanced options** let you change the **registry** (defaults to the official `registry.npmjs.org`; switch to a mirror such as `registry.npmmirror.com` if needed) and pin a **specific version** (list read from the registry, semver-descending, five shown, or type a version directly).
 3. The install can be **cancelled at any time** without touching your data; failures show an error and a retry.
 4. Once installed, dsh web starts automatically and the workbench appears in the window.
 

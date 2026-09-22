@@ -191,7 +191,7 @@ xattr -dr com.apple.quarantine "/Applications/DeepSeek Harness Desktop.app"
 首次启动检测到尚未安装 dsh 时，会显示**引导页**（此时不启动 dsh 进程）：
 
 1. 默认选中 **版本列表里最新的一个**（按 semver 取最大，通常即官方 `latest`），点「安装」：内置 pnpm 下载安装（视网络，通常半分钟到几分钟）→ 双重自检 → 原子切换 → 自动进入工作台；
-2. 展开「高级选项」可改 **Registry 源**（默认国内镜像 `https://registry.npmmirror.com`，可改回官方 `https://registry.npmjs.org`）与**指定版本**（列表来自 registry，按 semver 倒序，列表只显示最近 5 个，其余直接输版本号）；
+2. 展开「高级选项」可改 **Registry 源**（默认官方 `https://registry.npmjs.org`，需要时可换成国内镜像 `https://registry.npmmirror.com`）与**指定版本**（列表来自 registry，按 semver 倒序，列表只显示最近 5 个，其余直接输版本号）；
 3. 安装过程可**随时取消**（不影响任何数据）；失败会给出错误与**重试**；
 4. 装完自动启动 dsh web，窗口里显示工作台。
 
@@ -340,7 +340,7 @@ macOS Intel 机器没有对应产物，检查更新会提示走 **在浏览器�
 | macOS 提示「已损坏，无法打开」 | `xattr -dr com.apple.quarantine "/Applications/DeepSeek Harness Desktop.app"` |
 | Windows 提示「未知发布者」 | 应用未签名，SmartScreen 里选择「仍要运行」 |
 | Windows 白屏 / 启动异常 | 确认系统有 WebView2 运行时（Win10/11 自带；老系统需安装 [WebView2 Runtime](https://developer.microsoft.com/en-us/microsoft-edge/webview2/)） |
-| 首次引导装不上 dsh | 检查网络；在「高级选项」换一个 Registry 源重试（默认是国内镜像 `registry.npmmirror.com`，可换成官方 `registry.npmjs.org`，或反之） |
+| 首次引导装不上 dsh | 检查网络；在「高级选项」换一个 Registry 源重试（默认是官方 `registry.npmjs.org`，可换成国内镜像 `registry.npmmirror.com`，或反之） |
 | 工作台空白 | 重启 App（会自动检查端口与登录态）；仍空白请把 `logs/launcher.log` 贴到 issue |
 | dsh 连续崩溃 5 次 | 应用会弹窗并给出日志路径，**其中 `dsh.log` 记录了 dsh 的异常输出** |
 | 关掉窗口后找不到应用 | 关窗口 = 收进托盘：点托盘图标，或（Windows）重新启动一次 App |
