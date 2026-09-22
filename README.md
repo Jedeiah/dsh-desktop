@@ -25,9 +25,9 @@
 </p>
 
 <p align="center">
-  <img src="docs/images/tour.zh.gif" alt="产品导览：首次启动、工作台、插件管理、命令面板" width="100%">
+  <img src="docs/images/tour.zh.gif" alt="产品导览：插件管理 → ⌘K 命令面板 → 两种桌面化思路 → 结语" width="100%">
   <br>
-  <sub>14 秒导览：首次启动装 dsh → 官方工作台 → 插件管理 → ⌘K 面板 → 版本由你决定</sub>
+  <sub>约 9 秒、4 镜：插件管理 → ⌘K 面板 → 两种桌面化思路 → 结语（首屏为纯 HTML 渲染，全图不含过时版本号）</sub>
 </p>
 
 > **上游也有一个官方桌面端**（Electron 实现、把 dsh 运行时打包进 App、截至目前未公开发布）。

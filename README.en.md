@@ -17,11 +17,13 @@
 </p>
 
 <p align="center">
-  <img src="docs/images/hero.png" alt="DeepSeek Harness Desktop — the official DeepSeek Harness (dsh web) in a desktop app" width="100%">
+  <img src="docs/images/hero.en.png" alt="DeepSeek Harness Desktop — the official DeepSeek Harness (dsh web) in a desktop app (English)" width="100%">
 </p>
 
 <p align="center">
-  <img src="docs/images/tour.en.gif" alt="Product tour: first launch, workbench, plugin management, command palette" width="100%">
+  <img src="docs/images/tour.en.gif" alt="Product tour: plugin management, command palette, two desktop approaches" width="100%">
+  <br>
+  <sub>&asymp;9s, 4 shots: plugin management &rarr; <code>&#8984;K</code> palette &rarr; two desktop approaches &rarr; closing card (rendered HTML first screen; no stale version numbers anywhere in this tour)</sub>
 </p>
 
 <p align="center">
