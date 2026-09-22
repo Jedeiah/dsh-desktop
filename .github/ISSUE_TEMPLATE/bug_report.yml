@@ -1,0 +1,67 @@
+name: Bug 报告
+description: 报告一个可复现的问题（App 行为、安装、更新、卸载）
+title: "[Bug] "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢反馈。**请尽量把日志一起贴上**——桌面端的问题大多能在日志里直接看出原因。
+
+        - macOS 日志：`~/Library/Application Support/com.dsh-desktop.app/logs/`（`launcher.log`、`dsh.log`、`install.log`）
+        - Windows 日志：`%APPDATA%\com.dsh-desktop.app\logs\`
+
+  - type: input
+    id: app_version
+    attributes:
+      label: App 版本
+      description: 管理抽屉 → 关于，或 Release 标签（如 v0.5.8）
+      placeholder: v0.5.8
+    validations:
+      required: true
+
+  - type: input
+    id: dsh_version
+    attributes:
+      label: dsh 版本
+      description: 管理抽屉 → dsh 段显示的当前版本（不确定可留空）
+      placeholder: 0.1.6-alpha.2
+
+  - type: dropdown
+    id: platform
+    attributes:
+      label: 系统
+      options:
+        - macOS（Apple Silicon / arm64）
+        - Windows 10 / 11（x64）
+        - 其它（请在下方说明）
+    validations:
+      required: true
+
+  - type: textarea
+    id: what_happened
+    attributes:
+      label: 发生了什么
+      description: 你做了什么、期望看到什么、实际看到什么
+      placeholder: |
+        1. 打开 App → ...
+        2. 点击 ...
+        3. 实际 ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: 日志（强烈建议）
+      description: 直接粘贴 `launcher.log` / `dsh.log` 的相关片段，或描述现象出现的时间点
+      render: text
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: 确认
+      options:
+        - label: 我已在 Releases 页面确认使用的是最新版本
+        - label: 我搜索过现有 issue，没有重复
+          required: true

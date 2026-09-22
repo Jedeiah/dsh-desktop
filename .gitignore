@@ -23,6 +23,12 @@ apps/desktop/src-tauri/hook-check.exe
 # Reasonix 会话产物（截图/任务日志），不入库
 .reasonix/
 
+# 推广素材与作战文档（本地目录，不入库；生成脚本在 scripts/ 下）
+promo/
+
+# Python 缓存（scripts/ 下的推广与迁移脚本）
+__pycache__/
+
 # 本地调试产物（截图/会话），不入库
 .devshots/
 .superpowers/

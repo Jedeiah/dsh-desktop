@@ -2,7 +2,7 @@
 
 <p align="center">
   <b>dsh 的版本，由你决定。</b><br>
-  <sub>可安装任意已发布版本、随时切换、回滚到上一版 · 上游发新版<b>不必等 App 发版</b> · 与终端 dsh <b>共用同一份 <code>~/.dsh</code></b>（会话、凭据、插件都是同一套）</sub>
+  <sub>官方 DeepSeek Harness（<code>dsh</code>）的桌面壳 —— 可安装任意已发布版本、随时切换、回滚到上一版 · 上游发新版<b>不必等 App 发版</b> · 与终端 dsh <b>共用同一份 <code>~/.dsh</code></b>（会话、凭据、插件都是同一套）</sub>
 </p>
 
 <p align="center">
@@ -13,11 +13,21 @@
 </p>
 
 <p align="center">
+  <b>中文</b> · <a href="README.en.md">English</a>
+</p>
+
+<p align="center">
   <img src="docs/images/hero.png" alt="DeepSeek Harness Desktop —— 把官方 DeepSeek Harness（dsh web）装进桌面 App" width="100%">
 </p>
 
 <p align="center">
   <sub>双击即用，不需要 Node / npm / dsh 或任何开发环境——运行时内置，dsh 按需安装。</sub>
+</p>
+
+<p align="center">
+  <img src="docs/images/tour.zh.gif" alt="产品导览：首次启动、工作台、插件管理、命令面板" width="100%">
+  <br>
+  <sub>14 秒导览：首次启动装 dsh → 官方工作台 → 插件管理 → ⌘K 面板 → 版本由你决定</sub>
 </p>
 
 > **上游也有一个官方桌面端**（Electron 实现、把 dsh 运行时打包进 App、截至目前未公开发布）。
@@ -119,6 +129,7 @@ App **不内置 dsh**，只内置 Node 运行时 + npm + pnpm（macOS 安装包�
 | **干净的卸载** | 两档卸载：保留 `~/.dsh`（便于重装）或连会话凭据一起删；macOS 移入废纸篓、Windows 走系统卸载链；只清理以本 App bundle id 命名的精确路径与自产临时包（`dsh-desktop-update-*`） |
 | **标准桌面体验** | 关窗口收进托盘、单实例（不会开双托盘）、Dock / 托盘召回、崩溃自动重启、系统通知 |
 | **键鼠齐全** | 命令面板（`⌘K` / `Ctrl+K`）、`⌘1`–`⌘4` / `Ctrl+1`–`4` 直达区域、`Esc` 逐级关闭；焦点在工作台里也能用（按键由工作台转发回壳页） |
+| **中英双语** | 界面语言**跟随 dsh 的语种设置**（`~/.dsh/settings.yaml` 的 `locale.preference`）：切完约 1 秒内壳页、托盘、菜单栏一起变，**无需重启**；回退链 `dsh 设置 → 系统 LANG → zh` |
 
 ---
 
@@ -353,6 +364,9 @@ App 启动时会静默检查并在 dsh 段提示，但**不会自动安装**—�
 
 **更新 dsh 会丢会话吗？**
 不会。会话在 `~/.dsh`，与版本无关；闭包升级只是切换 `current` 指向的版本目录。
+
+**怎么回滚到之前的版本？**
+管理抽屉 → **dsh** 分段：列表里对「低于当前版本中已安装的最高版本」会给出独立的**回滚**按钮，点击后二次确认即可切回去。当前版本与上一版本始终各留一份，所以回滚是即时的；安装或更新失败也不会影响当前可用的版本。
 
 **能同时开两个吗？**
 不能，也不需要——单实例：重复启动只会召回已有窗口。

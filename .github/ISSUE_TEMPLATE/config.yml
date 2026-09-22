@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: 使用问题、经验交流、想法
+    url: https://github.com/Jedeiah/dsh-desktop/discussions
+    about: 不确定是不是 bug、想聊用法或提想法，请到 Discussions（比 issue 更合适）
+  - name: 上游 dsh 本身的问题（工作台、插件、模型行为）
+    url: https://github.com/deepseek-ai/deepseek-harness/discussions
+    about: 本仓库只是桌面壳，不修改 dsh；工作台内部行为请反馈到上游
