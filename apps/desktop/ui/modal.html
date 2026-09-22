@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
     <title>DeepSeek Harness Desktop</title>
-    <link rel="stylesheet" href="theme.css?v=0.5.8" />
+    <link rel="stylesheet" href="theme.css?v=0.6.0" />
     <style>
       /* 透明窗口：覆盖 theme.css 的 body 实色背景（否则圆角卡片外露出方框）；
          卡片本身自带渐变背景，body 透明不影响显示 */
@@ -63,7 +63,7 @@
   </head>
   <body>
     <div class="card anim">
-      <button class="close-x" id="closeX" aria-label="关闭" title="关闭">✕</button>
+      <button class="close-x" id="closeX" aria-label="关闭" data-i18n-aria-label="close" title="关闭" data-i18n-title="close">✕</button>
       <div class="head anim" id="head" data-tauri-drag-region>
         <div class="icon-badge neutral">
           <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#7b7fe8" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
@@ -77,11 +77,12 @@
       </div>
       <div class="msg anim anim--d1" id="message"></div>
       <div class="foot anim anim--d1">
-        <button class="ghost" id="btnNo" hidden>稍后</button>
-        <button id="btnOk">确定</button>
+        <button class="ghost" id="btnNo" hidden><span data-i18n="later">稍后</span></button>
+        <button id="btnOk"><span data-i18n="ok">确定</span></button>
       </div>
     </div>
 
-    <script src="modal.js?v=0.5.8"></script>
+    <script src="i18n.js?v=0.6.0"></script>
+  <script src="modal.js?v=0.6.0"></script>
   </body>
 </html>

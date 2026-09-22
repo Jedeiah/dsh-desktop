@@ -8,6 +8,9 @@
   const btnNo = document.getElementById('btnNo');
   const closeX = document.getElementById('closeX');
 
+  // 弹窗是独立窗口，拿不到 shell state：按系统语言选语种（具体文案仍由 Rust 的 modal_spec 提供）
+  DSH_I18N.setLocale(navigator.language);
+
   let spec = null;
   let responded = false;
 
@@ -24,17 +27,17 @@
       spec = await window.__TAURI__.core.invoke('modal_spec');
     } catch (e) {
       title.textContent = 'DeepSeek Harness Desktop';
-      message.textContent = '无法获取提示内容：' + (e.message || e);
-      btnOk.textContent = '确定';
+      message.textContent = DSH_I18N.t('modal_fetch_failed') + (e.message || e);
+      btnOk.textContent = DSH_I18N.t('ok');
       return;
     }
     title.textContent = spec.title || 'DeepSeek Harness Desktop';
     message.textContent = spec.message || '';
     // 按钮文案：优先 spec 自定义（ok_label/no_label），回退默认「确定」/「稍后」
-    btnOk.textContent = spec.ok_label || '确定';
+    btnOk.textContent = spec.ok_label || DSH_I18N.t('ok');
     if (spec.kind === 'yesno') {
       btnNo.hidden = false;
-      btnNo.textContent = spec.no_label || '稍后';
+      btnNo.textContent = spec.no_label || DSH_I18N.t('later');
     } else {
       btnNo.hidden = true;
     }

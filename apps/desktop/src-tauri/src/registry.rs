@@ -117,18 +117,19 @@ pub fn latest_version_of(registry: &str, pkg: &str) -> Result<String, String> {
     let resp = ureq::get(&url)
         .timeout(Duration::from_secs(20))
         .call()
-        .map_err(|e| format!("查询 {url} 失败: {e}"))?;
+        .map_err(|e| crate::i18n::tr_args("err_query_failed", &[("url", &url), ("e", &e.to_string())]))?;
     let mut body = String::new();
     resp.into_reader()
         .take(1 << 20)
         .read_to_string(&mut body)
-        .map_err(|e| format!("读取 registry 响应失败: {e}"))?;
+        .map_err(|e| crate::i18n::tr_args("err_read_registry_response", &[("e", &e.to_string())]))?;
     let v: serde_json::Value =
-        serde_json::from_str(&body).map_err(|e| format!("解析 registry 响应失败: {e}"))?;
+        serde_json::from_str(&body)
+            .map_err(|e| crate::i18n::tr_args("err_parse_registry_response", &[("e", &e.to_string())]))?;
     v.get("version")
         .and_then(|x| x.as_str())
         .map(|s| s.to_string())
-        .ok_or_else(|| "registry 响应缺少 version 字段".into())
+        .ok_or_else(|| crate::i18n::tr("err_registry_no_version_field"))
 }
 
 pub fn latest_version(registry: &str) -> Result<String, String> {
@@ -159,11 +160,14 @@ pub fn version_exists(registry: &str, ver: &str) -> Result<bool, String> {
             resp.into_reader()
                 .take(16 << 20)
                 .read_to_string(&mut body)
-                .map_err(|e| format!("读取 registry 响应失败: {e}"))?;
+                .map_err(|e| crate::i18n::tr_args("err_read_registry_response", &[("e", &e.to_string())]))?;
             Ok(version_exists_response(&body))
         }
         Err(ureq::Error::Status(404, _)) => Ok(false),
-        Err(e) => Err(format!("查询版本存在性失败: {e}")),
+        Err(e) => Err(crate::i18n::tr_args(
+            "err_query_version_existence",
+            &[("e", &e.to_string())],
+        )),
     }
 }
 
@@ -176,12 +180,12 @@ pub fn list_versions(registry: &str) -> Result<Vec<String>, String> {
     let resp = ureq::get(&url)
         .timeout(Duration::from_secs(20))
         .call()
-        .map_err(|e| format!("查询 {url} 失败: {e}"))?;
+        .map_err(|e| crate::i18n::tr_args("err_query_failed", &[("url", &url), ("e", &e.to_string())]))?;
     let mut body = String::new();
     resp.into_reader()
         .take(16 << 20)
         .read_to_string(&mut body)
-        .map_err(|e| format!("读取 registry 响应失败: {e}"))?;
+        .map_err(|e| crate::i18n::tr_args("err_read_registry_response", &[("e", &e.to_string())]))?;
     Ok(parse_versions(&body))
 }
 

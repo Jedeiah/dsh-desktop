@@ -27,6 +27,7 @@
 
 mod appupdate;
 mod dsh;
+mod i18n;
 mod plugin;
 mod registry;
 mod workbench;
@@ -45,7 +46,7 @@ use tauri::menu::{Menu, MenuItem};
 use tauri::menu::{AboutMetadata, PredefinedMenuItem, SubmenuBuilder};
 use tauri::tray::{MouseButton, TrayIconBuilder, TrayIconEvent};
 use tauri::{
-    AppHandle, Manager, RunEvent, WebviewUrl, WebviewWindowBuilder, WindowEvent,
+    AppHandle, Listener, Manager, RunEvent, WebviewUrl, WebviewWindowBuilder, WindowEvent,
 };
 use tauri::Emitter;
 
@@ -687,7 +688,7 @@ pub(crate) fn paths_from_cli() -> Paths {
 /// 区分壳页 / 工作台 / 弹窗，安全边界不变。
 pub(crate) fn ensure_shell_webview(webview: &tauri::Webview) -> Result<(), String> {
     if webview.label() != WINDOW_LABEL {
-        return Err("该操作仅限壳页窗口使用".to_string());
+        return Err(crate::i18n::tr("err_shell_webview_only"));
     }
     Ok(())
 }
@@ -872,8 +873,10 @@ pub(crate) fn load_settings(app: &AppHandle) -> Settings {
 }
 
 fn save_settings_at(app_data: &Path, s: &Settings) -> Result<(), String> {
-    let raw = serde_json::to_string_pretty(s).map_err(|e| format!("序列化设置失败：{e}"))?;
-    std::fs::write(settings_path_from_data(app_data), raw).map_err(|e| format!("写入设置失败：{e}"))
+    let raw = serde_json::to_string_pretty(s)
+        .map_err(|e| crate::i18n::tr_args("err_save_settings_serialize", &[("e", &e.to_string())]))?;
+    std::fs::write(settings_path_from_data(app_data), raw)
+        .map_err(|e| crate::i18n::tr_args("err_save_settings_write", &[("e", &e.to_string())]))
 }
 
 pub(crate) fn save_settings(app: &AppHandle, s: &Settings) -> Result<(), String> {
@@ -978,7 +981,7 @@ async fn setup_dsh_cmd(
     crate::ensure_shell_webview(&webview)?;
     // M2：入口白名单校验，防止任意字符串（npm 参数注入）进入安装流程
     if !crate::registry::valid_version(&ver) {
-        return Err("版本号不合法".to_string());
+        return Err(crate::i18n::tr("err_invalid_version"));
     }
     // registry 与 save_registry_cmd 同规则（非空 / http(s) 前缀 / 长度上限），
     // 防任意串进 npm --registry / ureq URL（安全审查 should-fix）。
@@ -988,12 +991,12 @@ async fn setup_dsh_cmd(
     // node.exe 映像锁占回去（安装器随即静默跳过该文件）；更新完成本进程就退出，操作也会被打断
     //（详见 appupdate::update_in_progress）
     if crate::appupdate::update_in_progress() {
-        return Err("应用正在更新，请稍后再试".to_string());
+        return Err(crate::i18n::tr("app_updating_wait"));
     }
     if SETUP_BUSY.swap(true, Ordering::SeqCst) {
-        return Err("已有一个安装正在进行中".to_string());
+        return Err(crate::i18n::tr("install_already_running"));
     }
-    *mlock(&SETUP_PROGRESS) = Some("准备安装…".to_string());
+    *mlock(&SETUP_PROGRESS) = Some(crate::i18n::tr("setup_preparing"));
     let app_after = app.clone(); // 供安装成功后切回主线程 boot（app 将被 move 进阻塞线程）
     let result = tauri::async_runtime::spawn_blocking(move || {
         let p = paths_from_app(&app);
@@ -1008,7 +1011,7 @@ async fn setup_dsh_cmd(
     // 进度一并复位（与锁并列：成功/失败/取消所有返回路径都覆盖，防残留旧文本）。
     SETUP_BUSY.store(false, Ordering::SeqCst);
     *mlock(&SETUP_PROGRESS) = None;
-    result.map_err(|e| format!("安装线程异常：{e}"))??;
+    result.map_err(|e| crate::i18n::tr_args("err_install_thread", &[("e", &e.to_string())]))??;
     // 安装成功 → 启动工作台。必须放后台线程：boot() 内部阻塞读 dsh 的 stdout
     // 直到其退出（0.3.0 首次安装完成后"程序无响应"根因——run_on_main_thread
     // 会把 boot 放到主线程占死 UI；正常启动/崩溃自愈/restart 均为 thread::spawn）。
@@ -1066,13 +1069,13 @@ async fn version_exists_cmd(
 ) -> Result<bool, String> {
     crate::ensure_shell_webview(&webview)?;
     if !crate::registry::valid_version(&ver) {
-        return Err("版本号不合法（应为 x.y.z 或 x.y.z-pre，如 0.1.1-rc.2）".to_string());
+        return Err(crate::i18n::tr("err_invalid_version_hint"));
     }
     let p = paths_from_app(&app);
     let reg = crate::registry::registry_url(load_settings_at(&p.app_data).registry.as_deref());
     tauri::async_runtime::spawn_blocking(move || crate::registry::version_exists(&reg, &ver))
         .await
-        .map_err(|e| format!("校验线程异常: {e}"))?
+        .map_err(|e| crate::i18n::tr_args("err_verify_thread", &[("e", &e.to_string())]))?
 }
 
 /// dsh 版本管理状态（壳页「更新」Tab 查询）。
@@ -1096,7 +1099,7 @@ async fn get_dsh_state(app: AppHandle) -> DshState {
     let reg = crate::registry::registry_url(load_settings_at(&p.app_data).registry.as_deref());
     let current = crate::dsh::current_closure(&p)
         .and_then(|d| crate::dsh::closure_version(&d))
-        .unwrap_or_else(|| "未安装".into());
+        .unwrap_or_else(|| crate::i18n::tr("not_installed"));
     let latest = mlock(&LATEST_DSH).clone();
     let installing = SETUP_BUSY.load(Ordering::SeqCst);
     // 已安装版本集合（本地读取,同步；用于前端区分「切换」/「安装」）
@@ -1125,19 +1128,19 @@ async fn update_dsh_cmd(app: AppHandle, webview: tauri::Webview, ver: String) ->
     crate::ensure_shell_webview(&webview)?;
     // M2：入口白名单校验，防止任意字符串（npm 参数注入）进入安装流程
     if !crate::registry::valid_version(&ver) {
-        return Err("版本号不合法".to_string());
+        return Err(crate::i18n::tr("err_invalid_version"));
     }
     // App 更新期间拒绝：收尾阶段安装器会覆盖 $INSTDIR，此刻装 dsh 会把刚释放的
     // node.exe 映像锁占回去（安装器随即静默跳过该文件）；更新完成本进程就退出，操作也会被打断
     //（详见 appupdate::update_in_progress）
     if crate::appupdate::update_in_progress() {
-        return Err("应用正在更新，请稍后再试".to_string());
+        return Err(crate::i18n::tr("app_updating_wait"));
     }
     if SETUP_BUSY.swap(true, Ordering::SeqCst) {
-        return Err("已有一个安装正在进行中".to_string());
+        return Err(crate::i18n::tr("install_already_running"));
     }
     let app_after = app.clone(); // 供安装成功后切回主线程 restart_dsh（app 将被 move 进阻塞线程）
-    *mlock(&SETUP_PROGRESS) = Some("准备安装…".to_string());
+    *mlock(&SETUP_PROGRESS) = Some(crate::i18n::tr("setup_preparing"));
     let result = tauri::async_runtime::spawn_blocking(move || {
         let p = paths_from_app(&app);
         let reg = crate::registry::registry_url(load_settings_at(&p.app_data).registry.as_deref());
@@ -1151,7 +1154,7 @@ async fn update_dsh_cmd(app: AppHandle, webview: tauri::Webview, ver: String) ->
     // 进度一并复位（与锁并列：成功/失败/取消所有返回路径都覆盖，防残留旧文本）。
     SETUP_BUSY.store(false, Ordering::SeqCst);
     *mlock(&SETUP_PROGRESS) = None;
-    result.map_err(|e| format!("安装线程异常：{e}"))??;
+    result.map_err(|e| crate::i18n::tr_args("err_install_thread", &[("e", &e.to_string())]))??;
     // App 更新期间不重启：更新收尾阶段安装器要覆盖 $INSTDIR，此刻拉起 dsh 会把 node.exe
     // 的映像锁占回去（本进程马上要退出，重启也没有意义）
     if crate::appupdate::update_in_progress() {
@@ -1281,16 +1284,16 @@ pub(crate) fn boot(app: AppHandle) {
         Err(e) => {
             logln!("failed to spawn dsh: {e}");
             let logs = paths_from_app(&app).app_data.join("logs");
-            let msg = format!(
-                "无法启动内置 dsh：\n{e}\n\n日志位置：\n{}",
-                logs.display()
+            let msg = crate::i18n::tr_args(
+                "err_spawn_dsh",
+                &[("e", &e.to_string()), ("path", &logs.display().to_string())],
             );
             // 致命错误：必须给出路，不能只弹一个「确定」就把用户丢在加载页
             //（实测反馈：点确定后既没有工作台、也退不出去）。「重试」重新拉起，
             //「退出」关闭应用（✕/Esc 也走重试，避免误退）。
             // 先显示主窗：启动失败时它可能还停在"隐藏创建"状态，否则弹窗会浮在空桌面上。
             reveal_main_window(&app, None);
-            if fatal_choice(&app, "DeepSeek Harness Desktop 启动失败", &msg) {
+            if fatal_choice(&app, &crate::i18n::tr("dialog_startup_failed"), &msg) {
                 logln!("[boot] 启动失败 → 用户选择重试");
                 CRASHES.store(0, Ordering::SeqCst);
                 let a = app.clone();
@@ -1365,11 +1368,11 @@ pub(crate) fn boot(app: AppHandle) {
             // give up: surface the logs instead of restarting forever
             logln!("dsh crashed {n} times in a row; giving up");
             let logs = paths_from_app(&app).app_data.join("logs");
-            let msg = format!(
-                "dsh 连续崩溃 {n} 次，已停止自动重启。\n\n日志位置：\n{}\n\n其中 dsh.log 记录了 dsh 的异常输出。",
-                logs.display()
+            let msg = crate::i18n::tr_args(
+                "err_dsh_crash_loop",
+                &[("n", &n.to_string()), ("path", &logs.display().to_string())],
             );
-            if fatal_choice(&app, "DeepSeek Harness Desktop 运行异常", &msg) {
+            if fatal_choice(&app, &crate::i18n::tr("dialog_runtime_error"), &msg) {
                 logln!("[boot] 运行异常 → 用户选择重试（重置崩溃计数）");
                 CRASHES.store(0, Ordering::SeqCst);
                 let a = app.clone();
@@ -1588,6 +1591,189 @@ fn webview_new_window_policy(
     tauri::webview::NewWindowResponse::Deny
 }
 
+/// 构建托盘菜单。启动与「语种热切换」共用同一个函数，保证重建后文案跟当前语种一致。
+fn build_tray_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
+    let show = MenuItem::with_id(
+        app,
+        "show",
+        crate::i18n::tr("tray_show_main_window"),
+        true,
+        None::<&str>,
+    )?;
+    let quit = MenuItem::with_id(app, "quit", crate::i18n::tr("quit"), true, None::<&str>)?;
+    Menu::with_items(app, &[&show, &quit])
+}
+
+/// 构建 macOS 菜单栏（About / Edit / View）。启动与「语种热切换」共用。
+#[cfg(target_os = "macos")]
+fn build_app_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
+    // 原生 About：PredefinedMenuItem::about 点击直接弹系统关于面板
+    // （不依赖菜单事件链——此前自定义项「点击没反应」的回归根因）。
+    let about_item = PredefinedMenuItem::about(
+        app,
+        Some(crate::i18n::tr("about_app").as_str()),
+        Some(AboutMetadata {
+            name: Some("DeepSeek Harness Desktop".into()),
+            version: Some(app.package_info().version.to_string()),
+            copyright: Some("© 2026 Jedeiah · MIT License".into()),
+            credits: Some(crate::i18n::tr("about_credits")),
+            ..Default::default()
+        }),
+    )?;
+    let quit_item =
+        MenuItem::with_id(app, "menu-quit", crate::i18n::tr("quit"), true, Some("CmdOrCtrl+Q"))?;
+    let app_menu = SubmenuBuilder::new(app, "DeepSeek Harness Desktop")
+        .item(&about_item)
+        .separator()
+        .item(&quit_item)
+        .build()?;
+    // 标准 Edit 菜单（macOS 文本编辑必需）——缺它时 Cmd+C/V/X/A
+    // 被菜单系统吞掉，壳页/输入框内快捷键复制粘贴全部失效（实测反馈）。
+    let edit_menu = SubmenuBuilder::new(app, crate::i18n::tr("menu_edit"))
+        .undo()
+        .redo()
+        .separator()
+        .cut()
+        .copy()
+        .paste()
+        .select_all()
+        .build()?;
+    // 「视图」菜单：⌘K 打开管理面板。壳页的 window keydown 只在壳页有焦点时收到——
+    // 焦点在工作台（独立 webview）时按键不会冒泡过来，所以 ⌘K 必须挂到系统菜单快捷键
+    // （系统级触发，不受 webview 焦点影响），由 Rust 转发给壳页的全局函数。
+    let manage_item = MenuItem::with_id(
+        app,
+        "menu-manage",
+        crate::i18n::tr("menu_manage_panel"),
+        true,
+        Some("CmdOrCtrl+K"),
+    )?;
+    let view_menu = SubmenuBuilder::new(app, crate::i18n::tr("menu_view"))
+        .item(&manage_item)
+        .build()?;
+    Menu::with_items(app, &[&app_menu, &edit_menu, &view_menu])
+}
+
+/// 语种热切换 —— **主链路是事件，不是轮询**。
+///
+/// 事件源：工作台 webview 里注入的 `LOCALE_FORWARD_JS`。dsh 切语种会把 `<html lang>`
+/// 设成 `zh-CN` / `en`，注入脚本观察到变化就 `emit('locale:changed', 'zh'|'en')`。
+/// 为什么这样最好：
+///   * **层级对**：文件（`settings.yaml`）只是持久化细节，事件发生在工作台里，就该由它通知；
+///   * **零延迟**：事件驱动，没有定时器，因此**不受 macOS App Nap / 定时器合并节流**影响
+///     （此前 1s 轮询实测出现过 6 秒延迟）；
+///   * **不猜**：不需要把"文件 mtime 变了"当成"语种变了"的代理信号。
+///
+/// 两条补充路径（都不是补丁，是设计的一部分）：
+///   1. **兜底 reconcile**：用户在**浏览器/终端**里改 dsh 设置时工作台不会发事件，
+///      所以每 15s 用 `stat`（不读内容）比一次元数据，变了才读盘解析 —— 成本可忽略；
+///   2. 壳页自身每次拉 `get_shell_state` 时 `refresh_locale()`，保证最终一致。
+///
+/// 本项目 `T.event.listen` 曾实测丢失/挂起，所以上面第 1 条是**必须**存在的收敛路径，不能只靠事件。
+fn apply_locale_change(app: &AppHandle, current: &'static str, notify_shell: bool) {
+    crate::logln(&format!(
+        "[locale] 语种切换为 {current}：重建托盘菜单与 macOS 菜单栏{}",
+        if notify_shell { "，并通知壳页" } else { "" }
+    ));
+    // 菜单是 AppKit 对象：托盘与菜单栏的更新必须回到主线程做。
+    let handle = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        if let Some(tray) = handle.tray_by_id("tray") {
+            if let Ok(menu) = build_tray_menu(&handle) {
+                let _ = tray.set_menu(Some(menu));
+            }
+        }
+        #[cfg(target_os = "macos")]
+        if let Ok(menu) = build_app_menu(&handle) {
+            let _ = handle.set_menu(menu);
+        }
+    });
+    if notify_shell {
+        let _ = app.emit_to(
+            tauri::EventTarget::webview_window(WINDOW_LABEL),
+            "locale:changed",
+            current,
+        );
+    }
+}
+
+/// 主链路：监听工作台报告上来的语种变化。
+/// payload 只接受 `zh*` / `en*` 白名单——事件来自工作台（远程来源），不信任它做别的。
+fn listen_locale_events(app: &AppHandle) {
+    let handle = app.clone();
+    app.listen("locale:changed", move |event| {
+        let raw = match serde_json::from_str::<String>(event.payload()) {
+            Ok(v) => v,
+            Err(_) => return,
+        };
+        let lower = raw.to_lowercase();
+        if !(lower.starts_with("zh") || lower.starts_with("en")) {
+            return; // 白名单之外一律忽略
+        }
+        if crate::i18n::set_locale(&lower) {
+            // 事件已经广播给壳页了，这里不再重复通知；只负责 Rust 侧（原生弹窗）与托盘/菜单栏。
+            apply_locale_change(&handle, crate::i18n::locale(), false);
+        }
+    });
+}
+
+/// 兜底 reconcile：只服务于"在 App 之外改了 dsh 设置"这种工作台不发事件的情况。
+/// 15s 一次 `stat`（窗口隐藏时 60s），成本可忽略；不再承担主链路。
+fn spawn_locale_reconcile(app: AppHandle) {
+    std::thread::spawn(move || {
+        let settings = crate::home_dir().join(".dsh").join("settings.yaml");
+        let stamp = |p: &Path| std::fs::metadata(p).ok().map(|m| (m.len(), m.modified().ok()));
+        crate::logln("[locale] 语种监听已就绪（主链路=工作台事件；兜底=15s/60s 元数据比对）");
+        let mut last = stamp(&settings);
+        // 「上次给托盘/菜单栏用的语种」。必须独立于 i18n 的 LIVE 缓存：壳页每次拉状态都会
+        // refresh_locale() 顺手更新 LIVE，若以 LIVE 变化为准会漏掉重建（审查发现的竞态）。
+        let mut watch = LocaleWatch::new(crate::i18n::locale());
+        loop {
+            let visible = app
+                .get_webview_window(WINDOW_LABEL)
+                .and_then(|w| w.is_visible().ok())
+                .unwrap_or(false);
+            std::thread::sleep(if visible {
+                Duration::from_secs(15)
+            } else {
+                Duration::from_secs(60)
+            });
+            let now = stamp(&settings);
+            if now == last {
+                continue;
+            }
+            last = now;
+            crate::i18n::refresh_locale();
+            let current = crate::i18n::locale();
+            if watch.observe(current) {
+                // 工作台没发事件（在 App 外改的设置）→ 需要通知壳页
+                apply_locale_change(&app, current, true);
+            }
+        }
+    });
+}
+
+/// 语种变更判定：只在语种**真的**变了时返回 true 一次。
+/// 抽成纯状态机是为了可单测——它决定了"每秒轮询"是否会退化成"每秒重建菜单"。
+struct LocaleWatch {
+    applied: &'static str,
+}
+
+impl LocaleWatch {
+    fn new(applied: &'static str) -> Self {
+        Self { applied }
+    }
+
+    /// true = 需要重建托盘/菜单栏（同时把记录更新为当前语种）。
+    fn observe(&mut self, current: &'static str) -> bool {
+        if self.applied == current {
+            return false;
+        }
+        self.applied = current;
+        true
+    }
+}
+
 pub(crate) fn kill_dsh() {
     // 安装中的 pnpm 也是我们的子进程：退出路径必须一起结束，否则它会变成孤儿继续跑
     // （还留着 v<ver>-tmp 目录，下次安装可能撞 tmp/共享 store 锁）。幂等：没在装就是 no-op。
@@ -1773,18 +1959,18 @@ fn open_modal_window(app: &AppHandle) -> bool {
 #[tauri::command]
 fn modal_spec(webview: tauri::Webview) -> Result<ModalSpec, String> {
     if webview.label() != MODAL_LABEL {
-        return Err("该操作仅限弹窗窗口使用".to_string());
+        return Err(crate::i18n::tr("err_modal_webview_only"));
     }
     mlock(&MODAL_SPEC)
         .clone()
-        .ok_or_else(|| "无待显示内容".to_string())
+        .ok_or_else(|| crate::i18n::tr("err_modal_no_content"))
 }
 
 /// 自绘弹窗：用户点击按钮后回传结果并关闭窗口（accept = 用户选择确定）。
 #[tauri::command]
 fn modal_respond(webview: tauri::Webview, accept: bool) -> Result<(), String> {
     if webview.label() != MODAL_LABEL {
-        return Err("该操作仅限弹窗窗口使用".to_string());
+        return Err(crate::i18n::tr("err_modal_webview_only"));
     }
     if let Some(tx) = mlock(&MODAL_RESULT).take() {
         let _ = tx.send(accept);
@@ -1809,8 +1995,15 @@ fn modal_respond(webview: tauri::Webview, accept: bool) -> Result<(), String> {
 /// 用户反馈的原始问题：致命错误只弹一个「确定」，点完什么也没发生，dsh 已死、
 /// 应用却还停在加载页 —— 既没有工作台也退不出去。
 fn fatal_choice(app: &AppHandle, title: &str, msg: &str) -> bool {
-    let body = format!("{msg}\n\n点「退出」关闭应用；点「重试」重新拉起 dsh（✕ 等同于重试）。");
-    let quit = show_modal_with_labels(app, title, &body, "yesno", Some("退出"), Some("重试"));
+    let body = crate::i18n::tr_args("dialog_fatal_hint", &[("msg", msg)]);
+    let quit = show_modal_with_labels(
+        app,
+        title,
+        &body,
+        "yesno",
+        Some(crate::i18n::tr("quit").as_str()),
+        Some(crate::i18n::tr("retry").as_str()),
+    );
     !quit
 }
 
@@ -1882,6 +2075,9 @@ fn get_dsh_url() -> Option<String> {
 #[derive(Serialize)]
 struct ShellState {
     app_version: String,
+    /// 壳页 UI 语种：跟随 dsh 的 `locale.preference`（zh / en）。
+    /// 壳页读取它调 DSH_I18N.setLocale()，这样切 dsh 的语言时桌面壳一起切，不会中英混排。
+    locale: String,
     dsh_version: String,
     registry: String,
     /// 真实窗口是否属于「小窗」（窄 ≤900pt 或矮 ≤620pt）。见 shell.js 的 body.small-window：
@@ -1891,15 +2087,66 @@ struct ShellState {
     window_small: bool,
 }
 
+/// 读 dsh 的语种偏好（`$DSH_HOME/settings.yaml` 里的 `locale.preference`）。
+/// 该文件由 dsh 的 dsh-client-locale 插件写入，取值 `zh` / `en`（也接受 `en-US` 这类）。
+/// 这里只做极简的缩进感知解析：settings.yaml 是 dsh 自己生成的机器文件，顶层键不缩进、
+/// 子键缩进两格；为一个键引入 YAML 依赖不划算。
+fn dsh_locale_preference(home: &std::path::Path) -> Option<String> {
+    let text = std::fs::read_to_string(home.join(".dsh").join("settings.yaml")).ok()?;
+    let mut in_locale = false;
+    for raw in text.lines() {
+        if raw.starts_with("locale:") {
+            in_locale = true;
+            continue;
+        }
+        if !in_locale {
+            continue;
+        }
+        let indented = raw.starts_with(' ') || raw.starts_with('\t');
+        if !indented {
+            break; // 进入下一个顶层键
+        }
+        if let Some(v) = raw.trim().strip_prefix("preference:") {
+            let v = v.trim().trim_matches('"').trim_matches('\'');
+            if !v.is_empty() {
+                return Some(v.to_string());
+            }
+        }
+    }
+    None
+}
+
+/// 语种回退链：dsh 设置 → 系统语言（LANG/LC_ALL）→ zh。
+fn resolve_locale(home: &std::path::Path) -> String {
+    if let Some(pref) = dsh_locale_preference(home) {
+        return pref;
+    }
+    for key in ["LC_ALL", "LC_MESSAGES", "LANG"] {
+        if let Ok(v) = std::env::var(key) {
+            let v = v.to_lowercase();
+            if v.starts_with("en") {
+                return "en".into();
+            }
+            if v.starts_with("zh") {
+                return "zh".into();
+            }
+        }
+    }
+    "zh".into()
+}
+
 #[tauri::command]
 fn get_shell_state(app: AppHandle) -> ShellState {
     let p = paths_from_app(&app);
     let settings = load_settings_at(&p.app_data);
     ShellState {
         app_version: env!("CARGO_PKG_VERSION").to_string(),
+        // 语种在运行期可变（在 dsh 里切语言）：每次拉壳页状态都重解析一次并更新 i18n 的
+        // 进程内缓存，这样刷新壳页就能跟着切（i18n::tr 本身只在首次访问时读盘）。
+        locale: crate::i18n::refresh_locale(),
         dsh_version: crate::dsh::current_closure(&p)
             .and_then(|dir| crate::dsh::closure_version(&dir))
-            .unwrap_or_else(|| "未知".into()),
+            .unwrap_or_else(|| crate::i18n::tr("unknown")),
         registry: crate::registry::registry_url(settings.registry.as_deref()),
         window_small: window_is_small(&app),
     }
@@ -1930,13 +2177,16 @@ const MAX_REGISTRY_LEN: usize = 400;
 /// 校验 registry 源（保存与安装入口共用同一规则）：非空、http(s) 前缀、长度受限。
 fn valid_registry_url(trimmed: &str) -> Result<(), String> {
     if trimmed.is_empty() {
-        return Err("Registry 源不能为空".into());
+        return Err(crate::i18n::tr("registry_empty"));
     }
     if !(trimmed.starts_with("http://") || trimmed.starts_with("https://")) {
-        return Err("Registry 源必须以 http:// 或 https:// 开头".into());
+        return Err(crate::i18n::tr("err_registry_scheme"));
     }
     if trimmed.len() > MAX_REGISTRY_LEN {
-        return Err(format!("Registry 源过长（最多 {MAX_REGISTRY_LEN} 字符）"));
+        return Err(crate::i18n::tr_args(
+            "err_registry_too_long",
+            &[("n", &MAX_REGISTRY_LEN.to_string())],
+        ));
     }
     Ok(())
 }
@@ -1999,25 +2249,32 @@ async fn confirm_uninstall_cmd(app: AppHandle, webview: tauri::Webview, wipe: bo
     // 半装状态）。前端在更新期间也锁了卸载按钮，这里是后端兜底——从系统「设置 → 应用」
     // 触发的卸载绕过 UI，那条链由 NSIS 侧车处理，不受本门约束。
     if crate::appupdate::update_in_progress() {
-        return Err("应用正在更新，请稍后再试".to_string());
+        return Err(crate::i18n::tr("app_updating_wait"));
     }
     let app2 = app.clone();
     let confirmed = tauri::async_runtime::spawn_blocking(move || {
         let (title, msg) = if wipe {
             (
-                "完全卸载",
-                "将删除 ~/.dsh 全部数据（会话与凭据），此操作不可撤销。",
+                crate::i18n::tr("uninstall_full_b"),
+                crate::i18n::tr("uninstall_confirm_full_body"),
             )
         } else {
             (
-                "确认卸载",
-                "将卸载应用，保留 ~/.dsh 配置与数据（可随时重新安装）。",
+                crate::i18n::tr("uninstall_confirm"),
+                crate::i18n::tr("uninstall_confirm_keep_body"),
             )
         };
-        show_modal_with_labels(&app2, title, msg, "yesno", Some("确认卸载"), Some("取消"))
+        show_modal_with_labels(
+            &app2,
+            &title,
+            &msg,
+            "yesno",
+            Some(crate::i18n::tr("uninstall_confirm").as_str()),
+            Some(crate::i18n::tr("cancel").as_str()),
+        )
     })
     .await
-    .map_err(|e| format!("弹窗线程异常：{e}"))?;
+    .map_err(|e| crate::i18n::tr_args("err_modal_thread", &[("e", &e.to_string())]))?;
     if confirmed {
         uninstall_run(app, webview, wipe).await
     } else {
@@ -2070,7 +2327,7 @@ async fn uninstall_run(app: AppHandle, webview: tauri::Webview, wipe: bool) -> R
                 let dsh_home = crate::home_dir().join(".dsh");
                 if dsh_home.exists() {
                     remove_dir_all_retry(&dsh_home)
-                        .map_err(|e| format!("删除 ~/.dsh 失败: {e}"))?;
+                        .map_err(|e| crate::i18n::tr_args("err_remove_dsh_home", &[("e", &e.to_string())]))?;
                 }
             }
             Ok::<(), String>(())
@@ -2084,13 +2341,13 @@ async fn uninstall_run(app: AppHandle, webview: tauri::Webview, wipe: bool) -> R
     // 线程 panic（JoinError）与 teardown 自身失败走同一条错误分支：**不能在这里用 `?`
     // 提前返回**——复位 UNINSTALLING 的代码在下面，跳过去就成了「标志永真 → ExitRequested
     // 一直被 prevent_exit 拦住」，此时窗口已全毁，用户既没窗口也退不出（只能强杀）。
-    .map_err(|e| format!("卸载线程异常：{e}"))
+    .map_err(|e| crate::i18n::tr_args("err_uninstall_thread", &[("e", &e.to_string())]))
     .and_then(|r| r);
     if let Err(e) = teardown {
         // 卸载确认窗口已销毁，JS 无法回显：用系统通知兜底。
         // fail_uninstall 会复位标志（否则 ExitRequested 一直被 prevent_exit 拦截，用户
         // 退不出去）、重建主窗**并把工作台 child 接回来**（否则用户拿到空白工作区）。
-        return fail_uninstall(&app, "卸载未完成", &e);
+        return fail_uninstall(&app, &crate::i18n::tr("uninstall_incomplete"), &e);
     }
     // teardown 成功：移入回收站 / 引导系统卸载，然后退出
     #[cfg(target_os = "macos")]
@@ -2099,8 +2356,8 @@ async fn uninstall_run(app: AppHandle, webview: tauri::Webview, wipe: bool) -> R
             // Finder / 自动化权限失败时 .app 会留在 /Applications：数据已清但本体没动，
             // 必须给可操作的提示（通用分支一直这么做，macOS 分支此前是静默的）。
             notify(
-                "应用未移入废纸篓",
-                "应用数据已清理。App 本体未能自动移入废纸篓，请手动把它拖进废纸篓。",
+                &crate::i18n::tr("notify_app_not_trashed"),
+                &crate::i18n::tr("notify_app_not_trashed_body"),
             );
         }
         std::thread::sleep(Duration::from_millis(900));
@@ -2153,15 +2410,16 @@ async fn uninstall_run(app: AppHandle, webview: tauri::Webview, wipe: bool) -> R
                 // 就已按用户选择删掉 ~/.dsh，故在提示里如实说明），让用户重试或改走系统
                 // 「设置 → 应用」。
                 let wiped = if wipe {
-                    "\n（已按你的选择删除 ~/.dsh；程序文件与应用数据保持原样）"
+                    crate::i18n::tr("uninstall_wiped_note")
                 } else {
-                    ""
+                    String::new()
                 };
                 return fail_uninstall(
                     &app,
-                    "卸载未完成",
-                    &format!(
-                        "无法启动系统卸载器：{e}\n可重试，或从「设置 → 应用」中卸载。{wiped}"
+                    crate::i18n::tr("uninstall_incomplete"),
+                    &crate::i18n::tr_args(
+                        "err_spawn_uninstaller",
+                        &[("e", &e.to_string()), ("wiped", &wiped)],
                     ),
                 );
             }
@@ -2172,11 +2430,11 @@ async fn uninstall_run(app: AppHandle, webview: tauri::Webview, wipe: bool) -> R
             // ——既留下数百 MB 的 dsh 闭包与 WebView2 缓存，又误报。
             let p = paths_from_app(&app);
             if let Err(e) = uninstall_teardown(&p, wipe) {
-                return fail_uninstall(&app, "卸载未完成", &e);
+                return fail_uninstall(&app, &crate::i18n::tr("uninstall_incomplete"), &e);
             }
             notify(
-                "便携版：数据已清理",
-                "程序文件未自动删除。便携版直接删除所在文件夹即可。",
+                &crate::i18n::tr("notify_portable_cleaned"),
+                &crate::i18n::tr("notify_portable_cleaned_body"),
             );
         }
     }
@@ -2184,8 +2442,8 @@ async fn uninstall_run(app: AppHandle, webview: tauri::Webview, wipe: bool) -> R
     {
         if !trash_self() {
             notify(
-                "请通过系统卸载",
-                "应用数据已清理。请通过系统卸载 DeepSeek Harness Desktop。",
+                &crate::i18n::tr("notify_use_system_uninstall"),
+                &crate::i18n::tr("notify_use_system_uninstall_body"),
             );
         }
     }
@@ -2431,18 +2689,17 @@ fn uninstall_teardown(p: &Paths, wipe_dsh: bool) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     cleanup_registry_keys();
     if !leftovers.is_empty() {
-        let msg = format!(
-            "以下数据被占用未能删除，重启电脑后即可手动清理：\n{}",
-            leftovers.join("\n")
-        );
+        let msg =
+            crate::i18n::tr_args("uninstall_leftovers_body", &[("list", &leftovers.join("\n"))]);
         logln!("[uninstall] 残留: {msg}");
-        notify("部分数据将延迟清理", &msg);
+        notify(&crate::i18n::tr("notify_leftovers"), &msg);
     }
     if wipe_dsh {
         let dsh_home = home.join(".dsh");
         if dsh_home.exists() {
             // 用户明确要求删除 ~/.dsh：失败必须如实报告
-            remove_dir_all_retry(&dsh_home).map_err(|e| format!("删除 ~/.dsh 失败: {e}"))?;
+            remove_dir_all_retry(&dsh_home)
+                .map_err(|e| crate::i18n::tr_args("err_remove_dsh_home", &[("e", &e.to_string())]))?;
         }
     }
     Ok(())
@@ -2771,9 +3028,11 @@ fn main() {
         .setup(|app| {
             // 托盘最小集：显示主窗口 / 退出（左键点击即显示主窗口；
             // 「管理台」与「显示主窗口」功能重复，已移除）。
-            let show = MenuItem::with_id(app, "show", "显示主窗口", true, None::<&str>)?;
-            let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&show, &quit])?;
+            // 注意：托盘/主菜单只在启动时构建一次（`MenuItem` 没有运行期改文案的接口），
+            // 所以在这里改了 `locale.preference` 之后**必须重启 App** 才能看到新语言的
+            // 托盘菜单：构建抽成 build_tray_menu()，语种热切换时用同一个函数重建
+            // （托盘菜单只在启动时建一次，不重建的话切语言后它一直是旧语言）。
+            let menu = build_tray_menu(app.handle())?;
             let _tray = TrayIconBuilder::with_id("tray")
                 .icon(app.default_window_icon().unwrap().clone())
                 // 悬停提示 app 名称（Windows/Linux 生效；macOS 状态项无 tooltip，忽略）
@@ -2806,6 +3065,15 @@ fn main() {
                 })
                 .build(app)?;
 
+            // 语种热切换：主链路 = 工作台事件（即时）；兜底 = 低频元数据比对（App 外改设置）
+            //
+            // 先把 LIVE 缓存按磁盘初始化一次：否则工作台注入脚本的「首次上报当前语种」
+            // 会被 set_locale() 判成"变化"，导致每次启动都白重建一次托盘菜单，
+            // 并在日志里打一行其实没发生的"语种切换为 zh"（审查发现的启动瑕疵）。
+            crate::i18n::refresh_locale();
+            listen_locale_events(app.handle());
+            spawn_locale_reconcile(app.handle().clone());
+
             let handle = app.handle().clone();
             init_log(&paths_from_app(app.handle()));
             // 清扫更新器遗留的安装包（Windows 上「装完即删」执行不到，靠这里兜底）
@@ -2817,54 +3085,9 @@ fn main() {
             // 「退出」→ 与托盘一致（先停 dsh）；Windows/Linux 不设主菜单。
             #[cfg(target_os = "macos")]
             {
-                // 原生 About：PredefinedMenuItem::about 点击直接弹系统关于面板
-                // （不依赖菜单事件链——此前自定义项「点击没反应」的回归根因）。
-                let about_item = PredefinedMenuItem::about(
-                    app,
-                    Some("关于 DeepSeek Harness Desktop"),
-                    Some(AboutMetadata {
-                        name: Some("DeepSeek Harness Desktop".into()),
-                        version: Some(app.package_info().version.to_string()),
-                        copyright: Some("© 2026 Jedeiah · MIT License".into()),
-                        credits: Some(
-                            "作者 Jedeiah\n项目主页 github.com/Jedeiah/dsh-desktop".into(),
-                        ),
-                        ..Default::default()
-                    }),
-                )?;
-                let quit_item =
-                    MenuItem::with_id(app, "menu-quit", "退出", true, Some("CmdOrCtrl+Q"))?;
-                let app_menu = SubmenuBuilder::new(app, "DeepSeek Harness Desktop")
-                    .item(&about_item)
-                    .separator()
-                    .item(&quit_item)
-                    .build()?;
-                // 标准 Edit 菜单（macOS 文本编辑必需）——缺它时 Cmd+C/V/X/A
-                // 被菜单系统吞掉，壳页/输入框内快捷键复制粘贴全部失效（实测反馈）。
-                let edit_menu = SubmenuBuilder::new(app, "编辑")
-                    .undo()
-                    .redo()
-                    .separator()
-                    .cut()
-                    .copy()
-                    .paste()
-                    .select_all()
-                    .build()?;
-                // 「视图」菜单：⌘K 打开管理面板。壳页的 window keydown 只在壳页有
-                // 焦点时收到——焦点在工作台（独立 webview）时按键不会冒泡过来
-                // （shell.js 里对 ⌘C 的注释已记录同一限制），所以 ⌘K 必须挂到
-                // 系统菜单快捷键（系统级触发，不受 webview 焦点影响），由 Rust 转发
-                // 给壳页的全局函数（不新增 IPC 命令/事件）。
-                let manage_item = MenuItem::with_id(
-                    app,
-                    "menu-manage",
-                    "管理面板",
-                    true,
-                    Some("CmdOrCtrl+K"),
-                )?;
-                let view_menu = SubmenuBuilder::new(app, "视图").item(&manage_item).build()?;
-                let main_menu = Menu::with_items(app, &[&app_menu, &edit_menu, &view_menu])?;
-                app.set_menu(main_menu)?;
+                // 菜单构建抽成 build_app_menu()：语种热切换时用同一个函数重建
+                // （macOS 菜单栏同样只在启动时建一次）。
+                app.set_menu(build_app_menu(app.handle())?)?;
                 app.on_menu_event(move |app, event| match event.id.as_ref() {
                     "menu-quit" => {
                         kill_dsh();
@@ -3301,6 +3524,38 @@ mod tests {
         // 没有匹配时 tasklist 输出的是提示文本，不是 CSV
         assert!(tasklist_pids("INFO: No tasks are running which match the specified criteria.\r\n", 1).is_empty());
         assert!(tasklist_pids("", 1).is_empty());
+    }
+
+    /// 语种来源：`<home>/.dsh/settings.yaml` 的 `locale.preference` 优先（dsh 写、壳读），
+    /// 只有读不到时才回退系统语言；子键缩进段结束后不再属于 `locale:`。
+    #[test]
+    fn locale_watch_only_fires_on_real_change() {
+        let mut w = LocaleWatch::new("zh");
+        assert!(!w.observe("zh"), "语种没变不应触发重建");
+        assert!(w.observe("en"), "语种变化应触发一次重建");
+        assert!(!w.observe("en"), "同一语种不应重复触发");
+        assert!(w.observe("zh"), "切回来应再次触发");
+    }
+
+    #[test]
+    fn resolve_locale_reads_dsh_settings() {
+        let home = std::env::temp_dir().join(format!("dsh-locale-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(home.join(".dsh")).unwrap();
+        std::fs::write(
+            home.join(".dsh/settings.yaml"),
+            "theme: dark\nlocale:\n  preference: en\n",
+        )
+        .unwrap();
+        assert_eq!(resolve_locale(&home), "en");
+        // 同一文件切成 zh：语种跟着设置走
+        std::fs::write(
+            home.join(".dsh/settings.yaml"),
+            "locale:\n  preference: zh\nmodel: x\n",
+        )
+        .unwrap();
+        assert_eq!(resolve_locale(&home), "zh");
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     #[test]

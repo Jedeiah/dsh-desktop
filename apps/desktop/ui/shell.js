@@ -132,7 +132,7 @@
       ? '<span class="spinner"></span><span>' + escapeHtml(head.label) + (head.detail ? ' · ' + escapeHtml(head.detail) : '') + '</span>'
       : (head.state === 'ok'
           ? '<span class="tick">' + ICON.check + '</span><span>' + escapeHtml(head.detail || head.label) + '</span>'
-          : '<span class="warn">' + ICON.alert + '</span><span>' + escapeHtml(head.detail || head.label + ' 未完成') + '</span>');
+          : '<span class="warn">' + ICON.alert + '</span><span>' + escapeHtml(head.detail || head.label + DSH_I18N.t('incomplete_suffix')) + '</span>');
     list.innerHTML = '';
     tasks.forEach((t) => {
       const row = document.createElement('div');
@@ -194,13 +194,14 @@
   (async () => {
     try {
       const st = await invoke('get_shell_state');
+      applyLocale(st);
       if (st) window.__onWindowSize(st.window_small);
       const url = await invoke('get_dsh_url');
       const port = url ? (String(url).match(/:([0-9]+)/) || [])[1] : '';
       const parts = [];
       if (st && st.app_version) parts.push('App v' + st.app_version);
-      if (st && st.dsh_version && st.dsh_version !== '未知') parts.push('dsh ' + st.dsh_version);
-      if (port) parts.push('工作台 :' + port);
+      if (st && st.dsh_version && st.dsh_version !== DSH_I18N.t('unknown')) parts.push('dsh ' + st.dsh_version);
+      if (port) parts.push('' + DSH_I18N.t('workbench') + ' :' + port);
       const el = $('startupMeta');
       if (el) el.textContent = parts.join('  ·  ');
     } catch (e) { /* 忽略 */ }
@@ -295,64 +296,97 @@
   }
 
   // ---------------- 区域 / 抽屉 ----------------
-  const REGIONS = [
-    { id: 'workbench', label: '工作台', hint: '关闭浮层，回到 dsh 工作台', icon: ICON.layers },
-    { id: 'dsh', label: 'dsh 版本', hint: '版本、更新与 Registry 源', icon: ICON.terminal },
-    { id: 'plugins', label: '插件', hint: '安装 / 卸载插件，查看输出', icon: ICON.folder },
-    { id: 'about', label: '关于', hint: 'App 版本、更新与卸载', icon: ICON.info },
-  ];
-  const COMMANDS = [
-    { id: 'refresh', label: '刷新工作台', hint: '重新加载 dsh 工作台', icon: ICON.refresh, run: () => invoke('workbench_reload_cmd').catch(() => {}) },
-    { id: 'openBrowser', label: '在浏览器打开工作台', hint: '用系统默认浏览器打开当前 dsh 地址', icon: ICON.external, run: () => { invoke('open_workbench_url_cmd').catch(() => {}); } },
-    { id: 'checkDsh', label: '检查 dsh 更新', hint: '立即检查 dsh 运行时新版本', icon: ICON.terminal, run: () => { openDrawer('dsh'); checkDsh(); } },
+  // label/hint 在**渲染时才求值**：语种可能在运行期变化（dsh 里切语言），
+  // 若在模块加载期就把 t() 求成字符串，标签会永久冻结在初始语言（实测 Bug）。
+  function buildRegions() {
+    return [
+    { id: 'workbench', label: DSH_I18N.t('workbench'), hint: DSH_I18N.t('close_overlay_hint'), icon: ICON.layers },
+    { id: 'dsh', label: 'dsh ' + DSH_I18N.t('version') + '', hint: DSH_I18N.t('about_section_hint'), icon: ICON.terminal },
+    { id: 'plugins', label: DSH_I18N.t('plugins'), hint: DSH_I18N.t('plugins_section_hint'), icon: ICON.folder },
+    { id: 'about', label: DSH_I18N.t('about'), hint: DSH_I18N.t('about_hint'), icon: ICON.info },
+    ];
+  }
+  let REGIONS = buildRegions();
+
+  /// 语种变化时重建「加载期数组」里的标签（命令面板的区域与命令列表）。
+  function refreshI18nLabels() {
+    REGIONS = buildRegions();
+    COMMANDS = buildCommands();
+  }
+
+  /// 统一入口：把 Rust 下发的语种应用到壳页（静态 data-i18n 节点 + 上述数组）。
+  /// 加「语种没变就直接返回」的门闸：状态拉取很频繁（每次开抽屉等），
+  /// 而 applyStatic 要刷 100+ 个节点——没变就一个 DOM 都不该碰。
+  let localeApplied = false;
+  function applyLocale(st) {
+    if (!st || !st.locale) return;
+    var want = String(st.locale).toLowerCase().indexOf('en') === 0 ? 'en' : 'zh';
+    if (localeApplied && DSH_I18N.locale === want) return;
+    localeApplied = true;
+    DSH_I18N.setLocale(want);
+    refreshI18nLabels();
+  }
+
+  // 语种热切换：Rust 侧轮询 ~/.dsh/settings.yaml，语种变了就发这个事件。
+  // 事件只当"加速"用——本项目 T.event.listen 曾实测丢失/挂起，所以上面各处
+  // 拉状态时的 applyLocale 仍然保留，事件丢了也能自愈。
+  T.event.listen('locale:changed', (e) => applyLocale({ locale: e.payload })).catch(() => {});
+  function buildCommands() {
+    return [
+    { id: 'refresh', label: DSH_I18N.t('reload_workbench'), hint: DSH_I18N.t('reload_workbench_hint'), icon: ICON.refresh, run: () => invoke('workbench_reload_cmd').catch(() => {}) },
+    { id: 'openBrowser', label: DSH_I18N.t('open_workbench_in_browser'), hint: DSH_I18N.t('open_browser_hint'), icon: ICON.external, run: () => { invoke('open_workbench_url_cmd').catch(() => {}); } },
+    { id: 'checkDsh', label: DSH_I18N.t('check_dsh_update'), hint: DSH_I18N.t('check_runtime_now'), icon: ICON.terminal, run: () => { openDrawer('dsh'); checkDsh(); } },
     // 重启 dsh：结束 dsh 子进程并重新拉起（端口会变、工作台重连）。用在「终端里改过插件/配置」
     // 之后让 App 里的运行时重新加载；会中断正在运行的任务，故二次确认。
     {
       id: 'restartDsh',
-      label: '重启 dsh',
-      hint: '重新拉起 dsh 运行时（在终端改过插件或配置后用）',
+      label: DSH_I18N.t('restart_dsh'),
+      hint: DSH_I18N.t('restart_runtime_hint'),
       icon: ICON.refresh,
       run: () => openModal({
-        title: '重启 dsh',
-        message: '将结束当前 dsh 进程并重新启动：正在运行的任务会中断，工作台会重新加载（端口会变）。',
-        okLabel: '重启', danger: false,
+        title: DSH_I18N.t('restart_dsh'),
+        message: DSH_I18N.t('restart_explainer'),
+        okLabel: DSH_I18N.t('restart'), danger: false,
         onAccept: () => {
-          if (appUpdating) { toast('应用正在更新，请稍候再操作', 'err'); return; }
+          if (appUpdating) { toast(DSH_I18N.t('app_updating_wait'), 'err'); return; }
           invoke('dsh_restart_cmd')
-            .then(() => toast('dsh 已重启', 'ok'))
-            .catch((e) => toast('重启失败：' + ((e && e.message) || e), 'err'));
+            .then(() => toast(DSH_I18N.t('dsh_restarted'), 'ok'))
+            .catch((e) => toast(DSH_I18N.t('restart_failed') + ((e && e.message) || e), 'err'));
         },
       }),
     },
-    { id: 'checkApp', label: '检查应用更新', hint: '检查 DeepSeek Harness Desktop 更新', icon: ICON.info, run: () => { openDrawer('about'); checkApp(); } },
+    { id: 'checkApp', label: DSH_I18N.t('check_app_updates'), hint: DSH_I18N.t('check_app_update_hint'), icon: ICON.info, run: () => { openDrawer('about'); checkApp(); } },
     // label/hint 用 getter：命令面板每次渲染都会取到当前折叠态对应的文案
     // （展开时显示「收起导航栏」，已收起时显示「展开导航栏」），点击即切换。
     {
       id: 'toggleChrome',
-      get label() { return chromeCollapsed ? '展开导航栏' : '收起导航栏'; },
-      get hint() { return chromeCollapsed ? '恢复顶栏与导航区' : '折叠顶栏以扩展工作区'; },
+      get label() { return chromeCollapsed ? DSH_I18N.t('expand_nav') : DSH_I18N.t('collapse_nav'); },
+      get hint() { return chromeCollapsed ? DSH_I18N.t('restore_topbar') : DSH_I18N.t('collapse_nav_hint'); },
       icon: ICON.chevron,
       run: () => {
         // 只挡「收起」：抽屉占用工作区时折叠会让顶栏消失、抽屉顶到窗口最上沿
         // （`.chrome-collapsed .drawer { top: 0 }`），观感像"导航栏里显示了抽屉内容"（实测）；
         // 「展开」必须放行——顶部把手此时本来就点得动，命令不能比它更严（用户实测）。
         if (!chromeCollapsed && $('drawer').classList.contains('open')) {
-          toast('请先收起管理抽屉', 'err');
+          toast(DSH_I18N.t('collapse_drawer_first'), 'err');
           return;
         }
         setChromeCollapsed(!chromeCollapsed);
       },
     },
-  ];
+    ];
+  }
+  let COMMANDS = buildCommands();
   let region = 'workbench';
 
   // 氛围信息块（抽屉/面板打开时露出）：工作台地址 + dsh 版本
   async function refreshAmbientInfo() {
     try {
       const st = await invoke('get_shell_state');
+      applyLocale(st);
       const url = await invoke('get_dsh_url');
       const u = $('aiUrl');
-      if (u) u.textContent = url ? String(url).replace(/\?token=[^&]*/, '') : '未就绪';
+      if (u) u.textContent = url ? String(url).replace(/\?token=[^&]*/, '') : DSH_I18N.t('not_ready');
       const d = $('aiDsh');
       if (d && st && st.dsh_version) d.textContent = st.dsh_version;
     } catch (e) { /* 忽略 */ }
@@ -565,7 +599,7 @@
     const list = $('paletteList');
     list.innerHTML = '';
     if (!paletteItems.length) {
-      list.innerHTML = '<div class="palette-empty">没有匹配的区域或命令</div>';
+      list.innerHTML = '<div class="palette-empty">' + DSH_I18N.t('palette_no_match') + '</div>';
       return;
     }
     if (paletteSel >= paletteItems.length) paletteSel = 0;
@@ -575,7 +609,7 @@
         lastKind = it.kind;
         const g = document.createElement('div');
         g.className = 'palette-group';
-        g.textContent = it.kind === 'region' ? '区域' : '命令';
+        g.textContent = it.kind === 'region' ? DSH_I18N.t('section_group') : DSH_I18N.t('command_group');
         list.appendChild(g);
       }
       const row = document.createElement('div');
@@ -662,13 +696,13 @@
     // 移回窗口并把壳页裁到 36pt（顶栏），弹窗就只剩那一条、看不见也点不到（实测定位）。
     // 因此弹窗和抽屉/命令面板一样是「占用工作区」的浮层：打开时让位，关闭时再归位。
     invoke('hide_workbench_cmd').catch(() => {});
-    $('modalTitle').textContent = opts.title || '确认操作';
+    $('modalTitle').textContent = opts.title || DSH_I18N.t('confirm_action');
     $('modalMsg').textContent = opts.message || '';
     $('modalIcon').className = 'modal-icon' + (opts.danger ? ' danger' : '');
     $('modalIcon').innerHTML = opts.danger ? ICON.trash : ICON.alert;
-    $('modalOk').textContent = opts.okLabel || '确定';
+    $('modalOk').textContent = opts.okLabel || DSH_I18N.t('ok');
     $('modalOk').className = 'btn' + (opts.danger ? ' danger' : '');
-    $('modalNo').textContent = opts.noLabel || '取消';
+    $('modalNo').textContent = opts.noLabel || DSH_I18N.t('cancel');
     modalAccept = opts.onAccept || null;
     modalEl.hidden = false;
     $('modalOk').focus({ preventScroll: true });
@@ -701,7 +735,7 @@
       const text = sel ? sel.toString() : '';
       if (!text) return;
       e.preventDefault();
-      navigator.clipboard.writeText(text).then(() => toast('已复制', 'ok')).catch(() => {});
+      navigator.clipboard.writeText(text).then(() => toast(DSH_I18N.t('copied'), 'ok')).catch(() => {});
       return;
     }
     // ⌘K / ⌘1–4（Windows 为 Ctrl+K / Ctrl+1–4）
@@ -793,7 +827,7 @@
   }
 
   async function loadSetupVersions(registry) {
-    setupVerLabel.textContent = '加载中…';
+    setupVerLabel.textContent = DSH_I18N.t('loading');
     let list = [];
     try {
       list = await invoke('list_dsh_versions_cmd', { registry: registry || null });
@@ -817,9 +851,9 @@
       setupVerMenu.innerHTML = '';
       const li = document.createElement('li');
       li.className = 'cselect-option cselect-empty';
-      li.textContent = '未获取到版本列表（检查网络后重试）';
+      li.textContent = DSH_I18N.t('no_version_list_retry');
       setupVerMenu.appendChild(li);
-      setupVerLabel.textContent = '未获取到版本列表';
+      setupVerLabel.textContent = DSH_I18N.t('no_version_list');
     }
   }
 
@@ -883,7 +917,7 @@
     const ver = inputVer || setupVerValue;
     if (!ver) {
       setupStarting = false;
-      showSetupError('无法开始安装', '版本列表为空，或未输入版本号。请检查网络连接或更换 Registry 源后重试。');
+      showSetupError(DSH_I18N.t('cannot_start_install'), DSH_I18N.t('version_list_empty'));
       return;
     }
     if (inputVer) {
@@ -891,12 +925,12 @@
         const exists = await invoke('version_exists_cmd', { ver: inputVer });
         if (!exists) {
           setupStarting = false;
-          showSetupError('版本不存在', '版本 ' + inputVer + ' 不存在，请检查后重试。');
+          showSetupError(DSH_I18N.t('version_not_exist'), '' + DSH_I18N.t('version') + ' ' + inputVer + DSH_I18N.t('not_exist_retry'));
           return;
         }
       } catch (e) {
         setupStarting = false;
-        showSetupError('版本校验失败', (typeof e === 'string' ? e : (e && e.message) || String(e)));
+        showSetupError(DSH_I18N.t('version_check_failed'), (typeof e === 'string' ? e : (e && e.message) || String(e)));
         return;
       }
     }
@@ -905,7 +939,7 @@
     // 先等它复位再真正发起，否则新 run 会撞「已有一个安装正在进行中」，
     // 且旧 run 的 catch 会串台覆盖新 run 的 UI（「取消后再装不显示进度」根因）。
     btnSetupInstall.disabled = true;
-    setupStage.textContent = '正在等待上次安装收尾…';
+    setupStage.textContent = DSH_I18N.t('waiting_previous_install');
     for (let i = 0; i < 20; i++) {
       try {
         const st = await invoke('setup_state_cmd');
@@ -919,15 +953,15 @@
     // 每次安装重置进度状态（fetch 计数/去重/元信息），取消重装不残留旧值
     setupFetchCount = 0;
     setupLastProgress = null;
-    setupMeta.textContent = '首次安装需下载约 300MB 依赖包，通常需要几分钟，请耐心等待（可随时取消）';
+    setupMeta.textContent = DSH_I18N.t('setup_wait_cancellable');
     // 进入进行中态：进度条 + 取消按钮出现，安装按钮锁定
     setupProgress.hidden = false;
     btnSetupInstall.disabled = true;
     btnSetupCancel.hidden = false;
     btnSetupCancel.disabled = false;
-    btnSetupCancel.textContent = '取消安装';
+    btnSetupCancel.textContent = DSH_I18N.t('cancel_install');
     setupAdv.open = false;
-    setupStage.textContent = '正在连接 registry…';
+    setupStage.textContent = DSH_I18N.t('connecting_registry');
     startSetupProgressPolling();
     try {
       await invoke('setup_dsh_cmd', { ver, registry });
@@ -945,16 +979,16 @@
       if (setupCancelled) {
         // 用户主动取消：回到初始引导页（可重新安装），不显示错误态
         resetSetupInitial();
-      } else if (msg.includes('已有一个安装正在进行中')) {
+      } else if (msg.includes(DSH_I18N.t('install_already_running'))) {
         // 并发保护误报：安装其实仍在进行（上次取消/安装未收尾、BUSY 仍 true）。
         // 不是失败——回到进行中态继续等真正结束（轮询已重启）；
         // 若它最终只是取消收尾（installing 变 false 且无 URL），轮询会回初始页。
         setSetupPhase('stage');
-        setupStage.textContent = '安装正在进行中…';
+        setupStage.textContent = DSH_I18N.t('install_in_progress');
         waitBusyReset = true;
         startSetupProgressPolling();
       } else {
-        showSetupError('安装失败', msg);
+        showSetupError(DSH_I18N.t('install_failed'), msg);
       }
     }
   }
@@ -999,12 +1033,12 @@
     clearInterval(setupProgressTimer); // 幂等：所有回初始的路径都停轮询，防空转泄漏
     setupProgress.hidden = true;
     setSetupPhase('stage');            // 隐藏错误/完成视图，显示 stage 区
-    setupStage.textContent = '准备安装 dsh 运行时';
-    setupMeta.textContent = '首次安装需下载约 300MB 依赖包，通常需要几分钟，请耐心等待；可展开高级选项选择版本与 Registry 源';
+    setupStage.textContent = DSH_I18N.t('prepare_install_runtime');
+    setupMeta.textContent = DSH_I18N.t('setup_wait_advanced');
     btnSetupInstall.disabled = false;  // 安装按钮恢复可点
     btnSetupCancel.hidden = true;      // 取消按钮收回
     btnSetupCancel.disabled = false;
-    btnSetupCancel.textContent = '取消安装';
+    btnSetupCancel.textContent = DSH_I18N.t('cancel_install');
     setupAdv.open = false;
     setupFetchCount = 0;
     setupLastProgress = null;
@@ -1036,7 +1070,7 @@
         setupActive = true;
         setupOverlay.hidden = false;
         hidePlaceholder();
-        showSetupError('工作台未能启动', 'dsh 已安装，但工作台长时间未就绪。可点「重试」再试，或关闭应用后重新打开。');
+        showSetupError(DSH_I18N.t('workbench_failed'), DSH_I18N.t('workbench_not_ready'));
       }
     })();
   });
@@ -1044,10 +1078,10 @@
   // 高级区：Registry 源右侧「刷新版本」→ 按当前输入值重新获取可用版本
   btnRefreshVer.addEventListener('click', async () => {
     btnRefreshVer.disabled = true;
-    btnRefreshVer.textContent = '刷新中…';
+    btnRefreshVer.textContent = DSH_I18N.t('refreshing');
     await loadSetupVersions(setupReg.value.trim() || null);
     btnRefreshVer.disabled = false;
-    btnRefreshVer.textContent = '刷新版本';
+    btnRefreshVer.textContent = DSH_I18N.t('refresh_versions');
   });
 
   btnSetupInstall.addEventListener('click', () => runSetup());
@@ -1083,8 +1117,8 @@
     if (waitBusyReset) { resetSetupInitial(); return; }
     setupCancelled = true;
     btnSetupCancel.disabled = true;
-    btnSetupCancel.textContent = '正在取消…';
-    setupStage.textContent = '正在取消安装…';
+    btnSetupCancel.textContent = DSH_I18N.t('cancelling');
+    setupStage.textContent = DSH_I18N.t('cancelling_install');
     invoke('setup_cancel_cmd').catch(() => {});
   });
 
@@ -1097,8 +1131,8 @@
     // pnpm --reporter=append-only 的进度行：只显示解析/复用/下载计数，不刷屏
     const pm = text.match(/Progress: resolved (\d+), reused (\d+), downloaded (\d+)/);
     if (pm) {
-      setupStage.textContent = '正在安装依赖…';
-      setupMeta.textContent = '已解析 ' + pm[1] + ' 个依赖（复用缓存 ' + pm[2] + '，下载 ' + pm[3] + '）';
+      setupStage.textContent = DSH_I18N.t('installing_deps');
+      setupMeta.textContent = DSH_I18N.t('resolved_') + pm[1] + DSH_I18N.t('deps_reused') + pm[2] + DSH_I18N.t('comma_downloading') + pm[3] + '）';
       return;
     }
     // npm --loglevel=info 的 fetch 行形如 "npm http fetch GET 200 <url> <ms>"：
@@ -1106,8 +1140,8 @@
     // 推进到「正在下载依赖包」（否则 stage 滞留旧文案与 meta 计数矛盾）。
     if (/^npm (http )?fetch/.test(text)) {
       setupFetchCount += 1;
-      setupStage.textContent = '正在下载依赖包…';
-      setupMeta.textContent = '已获取 ' + setupFetchCount + ' 个依赖包（约 300MB）';
+      setupStage.textContent = DSH_I18N.t('downloading_deps');
+      setupMeta.textContent = DSH_I18N.t('fetched_') + setupFetchCount + DSH_I18N.t('dep_packages');
       return;
     }
     setupStage.textContent = text;
@@ -1149,13 +1183,13 @@
 
   async function refreshDsh() {
     // 切到该分段立即给反馈：先显示 loading，数据到达后渲染（网络慢时不白屏）
-    setDshStatus('正在加载…', 'run');
+    setDshStatus(DSH_I18N.t('loading_ellipsis'), 'run');
     const tb = $('versionRows');
-    tb.innerHTML = '<tr><td colspan="3"><div class="empty">正在获取版本列表…</div></td></tr>';
+    tb.innerHTML = '<tr><td colspan="3"><div class="empty">' + DSH_I18N.t('loading_versions') + '</div></td></tr>';
     try {
       const st = await invoke('get_dsh_state');
       // st: { current, latest, versions, installing, installed }
-      const current = st.current || '未安装';
+      const current = st.current || DSH_I18N.t('not_installed');
       dshLatestVer = st.latest || null;
       // 版本列表里的最大版本（不假定后端顺序，自己按 cmpVer 取最大；列表为空时回退 dist-tag）
       const versions = st.versions || [];
@@ -1169,35 +1203,35 @@
       dshCurrentEl.textContent = current;
       // 未安装时不要显示「当前」徽标（否则出现「未安装 + 当前」自相矛盾）
       const curBadge = $('dshCurrentBadge');
-      if (curBadge) curBadge.hidden = !st.current || st.current === '未安装';
+      if (curBadge) curBadge.hidden = !st.current || st.current === DSH_I18N.t('not_installed');
 
       // 用 semver 比较而不是「字符串不等」：dist-tag 落后时不能把旧版本当成「新版本」
-      const hasUpdate = !!dshNewestVer && current !== '未安装' && cmpVer(dshNewestVer, current) > 0;
+      const hasUpdate = !!dshNewestVer && current !== DSH_I18N.t('not_installed') && cmpVer(dshNewestVer, current) > 0;
       dshUpdateBanner.hidden = !hasUpdate;
       if (hasUpdate) dshLatestEl.textContent = 'v' + dshNewestVer;
       // 「安装中」或「App 更新中」都要禁用——refreshDsh 会在切分段时重渲染，
       // 若只按 st.installing 判断，更新期间切到 dsh 分段会把刚锁上的按钮放出来。
       btnUpdateDshEl.disabled = !!st.installing || appUpdating;
       btnCheckDshEl.disabled = !!st.installing || appUpdating;
-      btnCheckDshEl.textContent = st.installing ? '安装中…' : '检查更新';
+      btnCheckDshEl.textContent = st.installing ? DSH_I18N.t('installing') : DSH_I18N.t('check_updates');
 
       // 第 3 个参数是「哪一行打『最新』徽标」——传 semver 最大值（不是 dist-tag）
       renderVersions(versions, current, dshNewestVer, !!st.installing || appUpdating, st.installed || []);
 
       if (st.installing) {
-        setDshStatus('正在安装新版本…安装完成后工作台自动重启', 'run');
+        setDshStatus(DSH_I18N.t('installing_new_version'), 'run');
       } else if (hasUpdate) {
-        setDshStatus('发现新版本 v' + dshNewestVer + '，可更新', 'acc');
-      } else if (current === '未安装') {
-        setDshStatus('尚未安装 dsh，可安装 v' + dshNewestVer + '（或指定版本）', 'acc');
+        setDshStatus('' + DSH_I18N.t('update_found') + ' v' + dshNewestVer + DSH_I18N.t('update_available_suffix'), 'acc');
+      } else if (current === DSH_I18N.t('not_installed')) {
+        setDshStatus(DSH_I18N.t('dsh_not_installed_can_install') + dshNewestVer + DSH_I18N.t('or_specific_version'), 'acc');
       } else if (!dshNewestVer) {
         // 版本列表为空（离线或检查失败）时无法判断，如实提示
-        setDshStatus('暂无法确认最新版本（离线或启动时检查失败）', 'warn');
+        setDshStatus(DSH_I18N.t('latest_unknown'), 'warn');
       } else {
-        setDshStatus('已是最新版本', 'ok');
+        setDshStatus(DSH_I18N.t('already_latest'), 'ok');
       }
     } catch (e) {
-      setDshStatus('读取 dsh 状态失败：' + (e.message || e), 'err');
+      setDshStatus(DSH_I18N.t('read_dsh_state_failed') + (e.message || e), 'err');
     }
   }
 
@@ -1243,7 +1277,7 @@
     if (!versions.length) {
       const tr = document.createElement('tr');
       tr.className = 'empty-row';
-      tr.innerHTML = '<td colspan="3"><div class="empty">未获取到可用版本（检查网络或 Registry 源）</div></td>';
+      tr.innerHTML = '<td colspan="3"><div class="empty">' + DSH_I18N.t('no_versions') + '</div></td>';
       tb.appendChild(tr);
       return;
     }
@@ -1256,10 +1290,10 @@
       const isInst = installed.includes(v);
 
       let st = '';
-      if (v === latest) st += '<span class="badge badge-latest">最新</span> ';
-      if (isCur) st += '<span class="badge badge-current">当前</span> ';
-      if (isInst && !isCur) st += '<span class="badge badge-installed">已安装</span>';
-      if (!st) st = '<span class="v-none">未安装</span>';
+      if (v === latest) st += '<span class="badge badge-latest">' + DSH_I18N.t('latest') + '</span> ';
+      if (isCur) st += '<span class="badge badge-current">' + DSH_I18N.t('current') + '</span> ';
+      if (isInst && !isCur) st += '<span class="badge badge-installed">' + DSH_I18N.t('installed') + '</span>';
+      if (!st) st = '<span class="v-none">' + DSH_I18N.t('not_installed') + '</span>';
       // 版本号来自 registry（用户可配置源，不可信）——用 textContent 而非 innerHTML
       const tdVer = document.createElement('td');
       tdVer.className = 'v-ver mono';
@@ -1273,24 +1307,24 @@
       ops.className = 'ops';
       if (isCur) {
         const b = document.createElement('button');
-        b.className = 'btn ghost sm'; b.disabled = true; b.textContent = '当前版本';
+        b.className = 'btn ghost sm'; b.disabled = true; b.textContent = DSH_I18N.t('current_version');
         ops.appendChild(b);
       } else {
         const op = isInst ? (v === rb ? 'rollback' : 'switch') : 'install';
         const b = document.createElement('button');
         b.className = 'btn ghost sm';
-        b.textContent = op === 'rollback' ? '回滚' : op === 'switch' ? '切换' : '安装';
+        b.textContent = op === 'rollback' ? DSH_I18N.t('rollback') : op === 'switch' ? DSH_I18N.t('switch') : DSH_I18N.t('install');
         b.disabled = installing; // 后端安装中：全表操作锁定
         b.addEventListener('click', () => {
           const OP_MSG = {
-            install: '将下载并安装 dsh v' + v + '，安装完成后工作台自动重启。',
-            switch: '已安装 dsh v' + v + '，切换后工作台自动重启。',
-            rollback: '将回滚到最近一个已安装旧版本 v' + v + '，回滚后工作台自动重启。',
+            install: DSH_I18N.t('will_download_install') + v + DSH_I18N.t('install_restarts'),
+            switch: '' + DSH_I18N.t('installed') + ' dsh v' + v + DSH_I18N.t('switch_restarts'),
+            rollback: DSH_I18N.t('will_rollback') + v + DSH_I18N.t('rollback_restarts'),
           };
           openModal({
-            title: op === 'rollback' ? '回滚到 v' + v : op === 'switch' ? '切换到 v' + v : '安装 dsh v' + v,
+            title: op === 'rollback' ? DSH_I18N.t('rollback') + ' v' + v : op === 'switch' ? DSH_I18N.t('switch') + ' v' + v : DSH_I18N.t('install_dsh') + ' v' + v,
             message: OP_MSG[op],
-            okLabel: op === 'rollback' ? '回滚' : op === 'switch' ? '切换' : '安装',
+            okLabel: op === 'rollback' ? DSH_I18N.t('rollback') : op === 'switch' ? DSH_I18N.t('switch') : DSH_I18N.t('install'),
             danger: false,
             onAccept: () => applyVersion(v, b, op),
           });
@@ -1309,27 +1343,27 @@
   // 显示中）时同步引导进度态（旧 updateDsh syncSetup 语义）。
   async function applyVersion(ver, btn, op) {
     // App 更新进行中：dsh 的装/切/回滚会与更新后的重启抢状态，直接拒绝
-    if (appUpdating) { toast('应用正在更新，请稍候再操作', 'err'); return; }
-    const opCn = op === 'rollback' ? '回滚' : op === 'switch' ? '切换' : op === 'update' ? '更新' : '安装';
-    const doing = op === 'rollback' ? '回滚中…' : op === 'switch' ? '切换中…' : op === 'update' ? '更新中…' : '安装中…';
+    if (appUpdating) { toast(DSH_I18N.t('app_updating_wait'), 'err'); return; }
+    const opCn = op === 'rollback' ? DSH_I18N.t('rollback') : op === 'switch' ? DSH_I18N.t('switch') : op === 'update' ? DSH_I18N.t('update') : DSH_I18N.t('install');
+    const doing = op === 'rollback' ? DSH_I18N.t('rolling_back') : op === 'switch' ? DSH_I18N.t('switching') : op === 'update' ? DSH_I18N.t('updating') : DSH_I18N.t('installing');
     // 记下原按钮文案：结束后回写它而不是 opCn —— 抽屉「更新到最新」按钮的文案是
     // 「更新到最新」，用 opCn（"更新"）回写会让它在任何一次更新结束后静默变短。
     const btnLabel = btn ? btn.textContent : null;
     if (btn) { btn.disabled = true; btn.textContent = doing; }
     const tid = 'dsh-' + ver;
     taskStart(tid, opCn + ' dsh v' + ver);
-    setDshStatus('正在' + opCn + ' dsh v' + ver + '…', 'run');
+    setDshStatus(DSH_I18N.t('running_prefix') + opCn + ' dsh v' + ver + '…', 'run');
     const syncSetup = !workbenchReady && !setupOverlay.hidden;
     if (syncSetup) {
       setupActive = true;
       setSetupPhase('stage');
-      setupStage.textContent = '正在安装 dsh v' + ver + '…';
-      setupMeta.textContent = '首次安装需下载约 300MB 依赖包，通常需要几分钟，请耐心等待（可随时取消）';
+      setupStage.textContent = DSH_I18N.t('installing_dsh') + ver + '…';
+      setupMeta.textContent = DSH_I18N.t('setup_wait_cancellable');
       setupProgress.hidden = false;
       btnSetupInstall.disabled = true; // 锁定引导页安装按钮，防与抽屉安装并发（runSetup 同款保护）
       btnSetupCancel.hidden = false;
       btnSetupCancel.disabled = false;
-      btnSetupCancel.textContent = '取消安装';
+      btnSetupCancel.textContent = DSH_I18N.t('cancel_install');
       setupCancelled = false;
       setupFetchCount = 0;
       setupLastProgress = null;
@@ -1360,22 +1394,22 @@
         if (setupCancelled) {
           clearInterval(setupProgressTimer);
           resetSetupInitial();
-          setDshStatus('已取消安装', '');
-          taskFinish(tid, 'err', '已取消');
+          setDshStatus(DSH_I18N.t('install_cancelled'), '');
+          taskFinish(tid, 'err', DSH_I18N.t('cancelled'));
           return;
         }
         markSetupInstalled(ver);
-        setDshStatus('工作台正在启动，请稍候…', 'ok');
-        taskFinish(tid, 'ok', 'dsh v' + ver + ' 已就绪');
-        toast('dsh v' + ver + ' 已就绪', 'ok');
+        setDshStatus(DSH_I18N.t('workbench_starting'), 'ok');
+        taskFinish(tid, 'ok', 'dsh v' + ver + ' ' + DSH_I18N.t('ready') + '');
+        toast('dsh v' + ver + ' ' + DSH_I18N.t('ready') + '', 'ok');
       } else {
         // 非 syncSetup（工作台已在使用）：装完主动轮询 get_dsh_url（restart_dsh
         // 已清 DSH_URL，新 dsh 写入后命中）确认新进程就绪——新 URL 出现即说明
         // 工作台正在重新加载，重置就绪态让占位层盖住旧内容，等 workbench:ready 再撤。
         // 窗口会被 restart_dsh 隐藏但不销毁，此轮询在隐藏窗口内继续运行。
-        setDshStatus('工作台正在启动，请稍候…', 'ok');
-        taskFinish(tid, 'ok', 'dsh v' + ver + ' 已就绪');
-        toast('dsh v' + ver + ' 已就绪', 'ok');
+        setDshStatus(DSH_I18N.t('workbench_starting'), 'ok');
+        taskFinish(tid, 'ok', 'dsh v' + ver + ' ' + DSH_I18N.t('ready') + '');
+        toast('dsh v' + ver + ' ' + DSH_I18N.t('ready') + '', 'ok');
         (async () => {
           for (let i = 0; i < 38; i++) {
             try {
@@ -1389,7 +1423,7 @@
             await new Promise((r) => setTimeout(r, 800));
           }
           // 轮询耗尽（≈30s）仍无 url：提示可重试，不无限等（窗口隐藏，回到抽屉可见）
-          setDshStatus('工作台启动超时，可点击「更新到最新」重试', 'err');
+          setDshStatus(DSH_I18N.t('workbench_timeout'), 'err');
         })();
       }
     } catch (e) {
@@ -1399,15 +1433,15 @@
       if (syncSetup && setupCancelled) {
         clearInterval(setupProgressTimer);
         resetSetupInitial();
-        setDshStatus('已取消安装', '');
-        taskFinish(tid, 'err', '已取消');
+        setDshStatus(DSH_I18N.t('install_cancelled'), '');
+        taskFinish(tid, 'err', DSH_I18N.t('cancelled'));
         return;
       }
       // 首次安装同步过引导时，失败要停引导进度轮询并恢复引导页，否则
       // setupProgressTimer 永久空转、引导浮层卡"安装中"。
       if (syncSetup) { clearInterval(setupProgressTimer); resetSetupInitial(); }
       const msg = (e && e.message) || String(e);
-      setDshStatus('安装失败：' + msg, 'err');
+      setDshStatus(DSH_I18N.t('install_failed_prefix') + msg, 'err');
       taskFinish(tid, 'err', msg);
       toast(msg, 'err');
     } finally {
@@ -1422,9 +1456,9 @@
     if (!dshNewestVer) return;
     const v = dshNewestVer; // 装「版本列表里的最大值」，别装可能落后的 dist-tag
     openModal({
-      title: '更新到最新',
-      message: '将把 dsh 运行时更新到 v' + v + '，更新过程中工作台会重启。',
-      okLabel: '更新', danger: false,
+      title: DSH_I18N.t('update_to_latest'),
+      message: DSH_I18N.t('will_update_runtime') + v + DSH_I18N.t('update_restarts'),
+      okLabel: DSH_I18N.t('update'), danger: false,
       onAccept: () => applyVersion(v, btnUpdateDshEl, 'update'),
     });
   });
@@ -1432,19 +1466,19 @@
   // 输入版本号安装：先校验版本存在（避免不存在的版本白白触发大下载），再弹窗确认
   btnInstallVerEl.addEventListener('click', async () => {
     const v = verInputEl.value.trim();
-    if (!v) { setDshStatus('请输入版本号', 'err'); return; }
+    if (!v) { setDshStatus(DSH_I18N.t('enter_version'), 'err'); return; }
     btnInstallVerEl.disabled = true;
     try {
       const exists = await invoke('version_exists_cmd', { ver: v });
-      if (!exists) { setDshStatus('版本 ' + v + ' 不存在', 'err'); return; }
+      if (!exists) { setDshStatus('' + DSH_I18N.t('version') + ' ' + v + ' ' + DSH_I18N.t('not_exist') + '', 'err'); return; }
       openModal({
-        title: '安装 dsh v' + v,
-        message: '将下载并安装 dsh v' + v + '，安装完成后工作台自动重启。',
-        okLabel: '安装', danger: false,
+        title: DSH_I18N.t('install_dsh') + ' v' + v,
+        message: DSH_I18N.t('will_download_install') + v + DSH_I18N.t('install_restarts'),
+        okLabel: DSH_I18N.t('install'), danger: false,
         onAccept: () => applyVersion(v, null, 'install'),
       });
     } catch (e) {
-      setDshStatus('版本校验失败：' + (e.message || e), 'err');
+      setDshStatus(DSH_I18N.t('version_check_failed_prefix') + (e.message || e), 'err');
     } finally {
       btnInstallVerEl.disabled = false;
     }
@@ -1457,6 +1491,7 @@
     const input = $('registryInput');
     try {
       const st = await invoke('get_shell_state');
+      applyLocale(st);
       if (st && st.registry) { currentRegistry = st.registry; input.value = st.registry; }
     } catch (e) { /* 读取失败：保留当前值 */ }
     input.focus({ preventScroll: true });
@@ -1465,24 +1500,25 @@
   function closeRegistryModal() { $('registryModal').hidden = true; }
   async function saveRegistry() {
     const val = $('registryInput').value.trim();
-    if (!val) { toast('Registry 源不能为空', 'err'); return; }
+    if (!val) { toast(DSH_I18N.t('registry_empty'), 'err'); return; }
     const btn = $('registrySave');
     btn.disabled = true;
-    btn.textContent = '保存中…';
+    btn.textContent = DSH_I18N.t('saving');
     try {
       await invoke('save_registry_cmd', { registry: val });
       // 回显规范化后的地址（如去掉尾部斜杠）
       try {
         const st = await invoke('get_shell_state');
+        applyLocale(st);
         if (st && st.registry) currentRegistry = st.registry;
       } catch (e) { currentRegistry = val; }
       closeRegistryModal();
-      toast('Registry 源已保存', 'ok');
+      toast(DSH_I18N.t('registry_saved'), 'ok');
     } catch (e) {
-      toast('保存失败：' + (e.message || e), 'err');
+      toast(DSH_I18N.t('save_failed') + (e.message || e), 'err');
     } finally {
       btn.disabled = false;
-      btn.textContent = '保存';
+      btn.textContent = DSH_I18N.t('save');
     }
   }
   btnRegistryEl.addEventListener('click', openRegistryModal);
@@ -1516,7 +1552,7 @@
     // 单行也封顶：有些包（postinstall / 打包日志）一次就打出一行几十 KB——行数虽有上限，
     // 超长单行仍会让节点文本与重排代价无界增长。
     const MAX_LINE = 2000;
-    if (text.length > MAX_LINE) text = text.slice(0, MAX_LINE) + ` …（本行过长已截断，原长 ${text.length}）`;
+    if (text.length > MAX_LINE) text = text.slice(0, MAX_LINE) + ` …${DSH_I18N.t('line_truncated_full', { n: text.length })}`;
     const line = document.createElement('div');
     const t = document.createElement('span');
     t.className = 'l-time';
@@ -1563,7 +1599,7 @@
     const btn = $('btnCheckPluginUpdates');
     const old = btn.textContent;
     btn.disabled = true;
-    btn.textContent = '检查中…';
+    btn.textContent = DSH_I18N.t('checking');
     try {
       const gen = ++pluginCheckGen;
       const list = await invoke('plugin_check_updates_cmd');
@@ -1572,16 +1608,16 @@
       const upd = [...pluginUpdates.values()].filter((u) => u.updatable);
       const errs = [...pluginUpdates.values()].filter((u) => u.error);
       if (upd.length) {
-        logLine('发现 ' + upd.length + ' 个插件可更新：' + upd.map((u) => u.name + ' ' + (u.installed || '?') + ' → ' + u.latest).join('；'), 'l-acc');
+        logLine(DSH_I18N.t('found_') + upd.length + DSH_I18N.t('plugin_updates_available') + upd.map((u) => u.name + ' ' + (u.installed || '?') + ' → ' + u.latest).join('；'), 'l-acc');
       } else if (pluginUpdates.size === 0) {
-        logLine('没有可检查的 npm 来源插件（Git / 本地来源不比对版本）', 'l-ok');
+        logLine(DSH_I18N.t('no_npm_plugins_to_check'), 'l-ok');
       } else if (errs.length === 0) {
-        logLine('已安装的 npm 插件均为最新', 'l-ok');
+        logLine(DSH_I18N.t('npm_plugins_uptodate'), 'l-ok');
       }
-      if (errs.length) logLine('有 ' + errs.length + ' 个插件查询失败（不影响其它）：' + errs.map((u) => u.name).join('、'), 'l-warn');
+      if (errs.length) logLine(DSH_I18N.t('found_suffix') + errs.length + DSH_I18N.t('plugin_check_failed_count') + errs.map((u) => u.name).join('、'), 'l-warn');
       refreshPlugins();
     } catch (e) {
-      logLine('检查插件更新失败：' + ((e && e.message) || e), 'l-warn');
+      logLine(DSH_I18N.t('plugin_check_failed') + ((e && e.message) || e), 'l-warn');
     } finally {
       // App 更新期间该按钮已被 setAppUpdating 锁定 → 不能在这里无条件点亮
       if (!appUpdating) btn.disabled = false;
@@ -1609,11 +1645,11 @@
     if (pluginBusy || appUpdating) return;
     const breaking = isBreakingUpgrade(from, to);
     openModal({
-      title: breaking ? '更新插件（跨不兼容版本）' : '更新插件',
+      title: breaking ? DSH_I18N.t('update_plugin_incompatible') : DSH_I18N.t('update_plugin'),
       message: breaking
-        ? name + '：' + (from || '?') + ' → ' + to + '\n\n不在同一个兼容范围内（0.x 的次版本升级同样可能不兼容），更新后工作台会自动重启。'
-        : name + '：' + (from || '?') + ' → ' + to + '\n\n更新后工作台会自动重启。',
-      okLabel: '更新', danger: breaking,
+        ? name + '：' + (from || '?') + ' → ' + to + DSH_I18N.t('incompatible_note')
+        : name + '：' + (from || '?') + ' → ' + to + DSH_I18N.t('update_restarts_note'),
+      okLabel: DSH_I18N.t('update'), danger: breaking,
       onAccept: () => doUpdatePlugin(name, to),
     });
   }
@@ -1621,22 +1657,22 @@
   async function doUpdatePlugin(name, to) {
     setPluginBusy(true);
     const tid = 'pkg-' + name;
-    taskStart(tid, '更新插件');
+    taskStart(tid, DSH_I18N.t('update_plugin'));
     taskUpdate(tid, name + ' → ' + to);
-    logLine('正在更新 ' + name + ' → ' + to + '…');
+    logLine(DSH_I18N.t('updating_prefix') + name + ' → ' + to + '…');
     try {
       // op 仍走 add：`<name>@latest` 让 pnpm 把依赖重写到最新（后端白名单与校验都已支持）
       const text = await invoke('plugin_op', { op: 'add', pkg: name + '@latest' });
       if (text) logTail(text, 5);
-      logLine(name + ' 已更新，工作台正在重启…', 'l-ok');
-      taskFinish(tid, 'ok', name + ' 已更新');
-      toast('插件已更新', 'ok');
+      logLine(name + ' ' + DSH_I18N.t('updated_restarting') + '', 'l-ok');
+      taskFinish(tid, 'ok', name + ' ' + DSH_I18N.t('updated') + '');
+      toast(DSH_I18N.t('plugin_updated'), 'ok');
       pluginUpdates.delete(name); // 结论已过期，等下次检查
     } catch (e) {
       const msg = typeof e === 'string' ? e : (e && e.message) || String(e);
-      logLine('更新失败：' + msg, 'l-warn');
+      logLine(DSH_I18N.t('update_failed_prefix') + msg, 'l-warn');
       taskFinish(tid, 'err', msg);
-      toast('更新失败', 'err');
+      toast(DSH_I18N.t('update_failed'), 'err');
     } finally {
       setPluginBusy(false);
       refreshPlugins();
@@ -1648,7 +1684,7 @@
       const list = await invoke('plugin_list_cmd');
       const arr = Array.isArray(list) ? list : [];
       pluginListEl.innerHTML = '';
-      pluginCountEl.textContent = arr.length + ' 个插件';
+      pluginCountEl.textContent = arr.length + DSH_I18N.t('plugin_count');
       pluginEmptyEl.hidden = arr.length > 0;
       arr.forEach((p) => {
         const row = document.createElement('div');
@@ -1664,7 +1700,7 @@
         if (p.installed) {
           const b = document.createElement('span');
           b.className = 'badge badge-installed';
-          b.textContent = '已安装';
+          b.textContent = DSH_I18N.t('installed');
           grow.appendChild(b);
         }
         row.appendChild(grow);
@@ -1684,7 +1720,7 @@
           meta.title = meta.textContent;
           const up = document.createElement('button');
           up.className = 'btn sm';
-          up.textContent = '更新';
+          up.textContent = DSH_I18N.t('update');
           up.disabled = appUpdating || pluginBusy;
           up.addEventListener('click', () => updatePlugin(p.name, upd.installed, upd.latest));
           row.appendChild(up);
@@ -1692,14 +1728,14 @@
         if (p.installed) {
           const btn = document.createElement('button');
           btn.className = 'btn danger-ghost sm';
-          btn.textContent = '卸载';
+          btn.textContent = DSH_I18N.t('uninstall');
           btn.disabled = appUpdating; // 重渲染出来的按钮也要继承"更新中"的锁定
           // 卸载二次确认改 modal（删除旧「行内 3 秒确认」按钮逻辑）
           btn.addEventListener('click', () => {
             openModal({
-              title: '卸载插件',
-              message: '将卸载 ' + p.name + '，操作完成后工作台自动重启。',
-              okLabel: '卸载', danger: true,
+              title: DSH_I18N.t('uninstall_plugin'),
+              message: DSH_I18N.t('will_uninstall') + p.name + DSH_I18N.t('op_restarts'),
+              okLabel: DSH_I18N.t('uninstall'), danger: true,
               onAccept: () => doRemovePlugin(p.name),
             });
           });
@@ -1708,30 +1744,30 @@
         pluginListEl.appendChild(row);
       });
     } catch (e) {
-      pluginCountEl.textContent = '读取失败';
-      logLine('读取插件列表失败：' + (e.message || e), 'l-warn');
+      pluginCountEl.textContent = DSH_I18N.t('read_failed');
+      logLine(DSH_I18N.t('read_plugins_failed') + (e.message || e), 'l-warn');
     }
   }
 
   // 卸载执行（modal 确认后调用，列表行与输入框旁按钮共用）；执行期间锁全局安装入口
   async function doRemovePlugin(pkg) {
-    if (appUpdating) { toast('应用正在更新，请稍候再操作', 'err'); return; }
+    if (appUpdating) { toast(DSH_I18N.t('app_updating_wait'), 'err'); return; }
     setPluginBusy(true);
     const tid = 'pkg-' + pkg;
-    taskStart(tid, '卸载插件');
+    taskStart(tid, DSH_I18N.t('uninstall_plugin'));
     taskUpdate(tid, pkg);
-    logLine('正在卸载 ' + pkg + '…');
+    logLine(DSH_I18N.t('uninstalling_prefix') + pkg + '…');
     try {
       const text = await invoke('plugin_op', { op: 'remove', pkg });
       if (text) logTail(text, 5);
-      logLine(pkg + ' 已卸载，工作台正在重启…', 'l-ok');
-      taskFinish(tid, 'ok', pkg + ' 已卸载');
-      toast(pkg + ' 已卸载', 'ok');
+      logLine(pkg + ' ' + DSH_I18N.t('uninstalled_restarting') + '', 'l-ok');
+      taskFinish(tid, 'ok', pkg + ' ' + DSH_I18N.t('uninstalled') + '');
+      toast(pkg + ' ' + DSH_I18N.t('uninstalled') + '', 'ok');
     } catch (e) {
       const msg = typeof e === 'string' ? e : (e && e.message) || String(e);
-      logLine('卸载失败：' + msg, 'l-warn');
+      logLine(DSH_I18N.t('uninstall_failed_prefix') + msg, 'l-warn');
       taskFinish(tid, 'err', msg);
-      toast('卸载失败', 'err');
+      toast(DSH_I18N.t('uninstall_failed'), 'err');
     } finally {
       setPluginBusy(false);
       refreshPlugins();
@@ -1739,26 +1775,26 @@
   }
 
   async function runPlugin() {
-    if (appUpdating) { toast('应用正在更新，请稍候再操作', 'err'); return; }
+    if (appUpdating) { toast(DSH_I18N.t('app_updating_wait'), 'err'); return; }
     const name = pkgInputEl.value.trim();
-    if (!name) { toast('请输入包名', 'err'); return; }
+    if (!name) { toast(DSH_I18N.t('enter_package'), 'err'); return; }
     setPluginBusy(true);
     const tid = 'pkg-' + name;
-    taskStart(tid, '安装插件');
+    taskStart(tid, DSH_I18N.t('install_plugin'));
     taskUpdate(tid, name);
-    logLine('正在解析 ' + name + '…');
+    logLine(DSH_I18N.t('resolving_prefix') + name + '…');
     try {
       const text = await invoke('plugin_op', { op: 'add', pkg: name });
       if (text) logTail(text, 5);
-      logLine(name + ' 已安装，工作台正在重启…', 'l-ok');
-      taskFinish(tid, 'ok', name + ' 已安装');
-      toast('插件已安装', 'ok');
+      logLine(name + ' ' + DSH_I18N.t('installed_restarting') + '', 'l-ok');
+      taskFinish(tid, 'ok', name + ' ' + DSH_I18N.t('installed') + '');
+      toast(DSH_I18N.t('plugin_installed'), 'ok');
       pkgInputEl.value = '';
     } catch (e) {
       const msg = typeof e === 'string' ? e : (e && e.message) || String(e);
-      logLine('安装失败：' + msg, 'l-warn');
+      logLine(DSH_I18N.t('install_failed_prefix') + msg, 'l-warn');
       taskFinish(tid, 'err', msg);
-      toast('安装失败', 'err');
+      toast(DSH_I18N.t('install_failed'), 'err');
     } finally {
       setPluginBusy(false);
       refreshPlugins();
@@ -1768,11 +1804,11 @@
   $('btnCheckPluginUpdates').addEventListener('click', checkPluginUpdates);
   btnRemovePkgEl.addEventListener('click', () => {
     const name = pkgInputEl.value.trim();
-    if (!name) { toast('请输入包名', 'err'); return; }
+    if (!name) { toast(DSH_I18N.t('enter_package'), 'err'); return; }
     openModal({
-      title: '卸载插件',
-      message: '将卸载 ' + name + '，操作完成后工作台自动重启。',
-      okLabel: '卸载', danger: true,
+      title: DSH_I18N.t('uninstall_plugin'),
+      message: DSH_I18N.t('will_uninstall') + name + DSH_I18N.t('op_restarts'),
+      okLabel: DSH_I18N.t('uninstall'), danger: true,
       onAccept: () => doRemovePlugin(name),
     });
   });
@@ -1808,9 +1844,10 @@
   async function refreshApp() {
     try {
       const st = await invoke('get_shell_state');
+      applyLocale(st);
       appVersionEl.textContent = 'v' + st.app_version;
     } catch (e) {
-      appVersionEl.textContent = '未知';
+      appVersionEl.textContent = DSH_I18N.t('unknown');
     }
   }
 
@@ -1851,7 +1888,7 @@
       appUpdateLockedEls.forEach(({ el }) => { el.disabled = true; });
       if (prog) { prog.hidden = false; }
       if (fill) { fill.style.width = '0%'; }
-      if (txt) { txt.hidden = false; txt.textContent = '准备下载…'; }
+      if (txt) { txt.hidden = false; txt.textContent = DSH_I18N.t('preparing_download'); }
       renderAppUpdateNotice(); // 更新中：隐藏红点与横幅（进度条已在关于面板显示）
     } else {
       // 逐个恢复"锁之前的禁用状态"（否则会把本该禁用的按钮放出来，例如已是最新时的下载按钮）
@@ -1880,8 +1917,8 @@
       if (prog) prog.hidden = true;
       // Windows：应用会**自己先退出**、由更新助手在退出后安装（退出是预期行为，不是崩溃）；
       // macOS：装完延迟重启。文案要如实说明，避免用户以为要守着窗口。
-      txt.textContent = '正在安装…应用即将自动退出，安装完成后会自动重启';
-      setAppStatus('正在安装…', 'run');
+      txt.textContent = DSH_I18N.t('installing_quit_restart');
+      setAppStatus(DSH_I18N.t('installing_ellipsis'), 'run');
       return;
     }
     const total = typeof p.total === 'number' && p.total > 0 ? p.total : null;
@@ -1889,12 +1926,12 @@
       const pct = Math.min(100, Math.round((Number(p.downloaded) / total) * 100));
       if (prog) { prog.hidden = false; prog.setAttribute('aria-valuenow', String(pct)); }
       if (fill) fill.style.width = pct + '%';
-      txt.textContent = '正在下载更新… ' + pct + '%（' + mb(p.downloaded) + ' / ' + mb(total) + '）';
-      setAppStatus('正在下载更新… ' + pct + '%', 'run');
+      txt.textContent = DSH_I18N.t('downloading_update_') + pct + '%（' + mb(p.downloaded) + ' / ' + mb(total) + '）';
+      setAppStatus(DSH_I18N.t('downloading_update_') + pct + '%', 'run');
     } else {
       if (prog) prog.hidden = true;
-      txt.textContent = '正在下载更新… 已下载 ' + mb(p.downloaded);
-      setAppStatus('正在下载更新…', 'run');
+      txt.textContent = DSH_I18N.t('downloading_update_done') + mb(p.downloaded);
+      setAppStatus(DSH_I18N.t('downloading_update'), 'run');
     }
   }).catch(() => {});
 
@@ -1902,28 +1939,28 @@
     if (appUpdating) return; // 更新进行中：按钮已禁用，这里再兜一层
     const btn = btnCheckAppEl;
     btn.disabled = true;
-    btn.textContent = '检查中…';
-    setAppStatus('正在检查更新…');
+    btn.textContent = DSH_I18N.t('checking');
+    setAppStatus(DSH_I18N.t('checking_updates'));
     try {
       const v = await invoke('check_app_update_cmd');
       if (v) {
         appLatest = v;
         btnDownloadAppEl.disabled = false;
-        btnDownloadAppEl.textContent = '下载并安装 v' + v;
-        setAppStatus('发现新版本 v' + v, 'acc');
+        btnDownloadAppEl.textContent = '' + DSH_I18N.t('download_and_install') + ' v' + v;
+        setAppStatus('' + DSH_I18N.t('update_found') + ' v' + v, 'acc');
       renderAppUpdateNotice();
       } else {
         appLatest = null;
         btnDownloadAppEl.disabled = true;
-        btnDownloadAppEl.textContent = '下载并安装更新';
-        setAppStatus('已是最新版本', 'ok');
+        btnDownloadAppEl.textContent = DSH_I18N.t('download_and_install_update');
+        setAppStatus(DSH_I18N.t('already_latest'), 'ok');
       renderAppUpdateNotice();
       }
     } catch (e) {
-      setAppStatus('检查更新失败：' + (e.message || e), 'err');
+      setAppStatus(DSH_I18N.t('update_check_failed') + (e.message || e), 'err');
     } finally {
       btn.disabled = false;
-      btn.textContent = '检查更新';
+      btn.textContent = DSH_I18N.t('check_updates');
     }
   }
   btnCheckAppEl.addEventListener('click', checkApp);
@@ -1941,29 +1978,29 @@
   async function startAppInstall() {
     if (appUpdating) return; // 双保险：按钮此时已禁用
     setAppUpdating(true);
-    setAppStatus('正在下载并安装更新…安装完成后应用将自动重启');
+    setAppStatus(DSH_I18N.t('downloading_app_update'));
     const tid = 'app-update';
-    taskStart(tid, '下载应用更新');
-    taskUpdate(tid, '正在下载并安装…');
+    taskStart(tid, DSH_I18N.t('download_app_update'));
+    taskUpdate(tid, DSH_I18N.t('downloading_installing'));
     try {
       await invoke('app_update_cmd');
       // 成功即退出当前实例（安装器/新版负责启动）；任务态到此为止
-      taskFinish(tid, 'ok', '更新包已就绪，应用即将退出并安装');
+      taskFinish(tid, 'ok', DSH_I18N.t('update_ready'));
     } catch (e) {
       setAppUpdating(false);
       taskFinish(tid, 'err', (e && e.message) || String(e));
-      setAppStatus('更新失败：' + ((e && e.message) || e), 'err');
+      setAppStatus(DSH_I18N.t('update_failed_prefix') + ((e && e.message) || e), 'err');
       btnDownloadAppEl.disabled = !appLatest;
     }
   }
   btnDownloadAppEl.addEventListener('click', startAppInstall);
   $('btnAppUpdateNow').addEventListener('click', startAppInstall);
   $('btnOpenReleases').addEventListener('click', () => {
-    invoke('open_browser_cmd').catch((e) => setAppStatus('打开下载页失败：' + (e.message || e), 'err'));
+    invoke('open_browser_cmd').catch((e) => setAppStatus(DSH_I18N.t('open_download_failed') + (e.message || e), 'err'));
   });
   $('repoLink').addEventListener('click', (e) => {
     e.preventDefault();
-    invoke('open_repo_cmd').catch((e) => setAppStatus('打开项目主页失败：' + (e.message || e), 'err'));
+    invoke('open_repo_cmd').catch((e) => setAppStatus(DSH_I18N.t('open_repo_failed') + (e.message || e), 'err'));
   });
 
   // 卸载（两档）：面板默认收起，点「卸载应用…」展开两行卡片；二次确认由后端
@@ -1972,31 +2009,31 @@
   const btnUninstallWipe = $('btnUninstallWipe');
   const uninstallStatus = $('uninstallStatus');
   $('btnToggleUninstall').addEventListener('click', function () {
-    if (appUpdating) { toast('应用正在更新，请稍候再操作', 'err'); return; }
+    if (appUpdating) { toast(DSH_I18N.t('app_updating_wait'), 'err'); return; }
     const zone = $('uninstallZone');
     const open = zone.hidden;
     zone.hidden = !open;
-    this.textContent = open ? '收起卸载选项' : '卸载应用…';
+    this.textContent = open ? DSH_I18N.t('collapse_uninstall') : DSH_I18N.t('uninstall_app_ellipsis');
   });
   function runUninstall(wipe) {
-    uninstallStatus.textContent = '正在卸载…';
+    uninstallStatus.textContent = DSH_I18N.t('uninstalling');
     uninstallStatus.className = 'status';
     [btnUninstallKeep, btnUninstallWipe].forEach((b) => { b.disabled = true; });
-    taskStart('uninstall', '卸载应用');
-    taskUpdate('uninstall', '等待系统确认…');
+    taskStart('uninstall', DSH_I18N.t('uninstall_app'));
+    taskUpdate('uninstall', DSH_I18N.t('awaiting_confirmation'));
     invoke('confirm_uninstall_cmd', { wipe })
       .then(() => {
         // 成功返回 = 用户取消（确认后真正卸载会退出 App，此处复位仅影响取消路径）
         [btnUninstallKeep, btnUninstallWipe].forEach((b) => { b.disabled = false; });
         uninstallStatus.textContent = '';
         uninstallStatus.className = 'status';
-        taskFinish('uninstall', 'err', '已取消卸载');
+        taskFinish('uninstall', 'err', DSH_I18N.t('uninstall_cancelled'));
       })
       .catch((e) => {
-        uninstallStatus.textContent = '卸载未完成：' + (e.message || e);
+        uninstallStatus.textContent = DSH_I18N.t('uninstall_incomplete_prefix') + (e.message || e);
         uninstallStatus.className = 'status err';
         [btnUninstallKeep, btnUninstallWipe].forEach((b) => { b.disabled = false; });
-        taskFinish('uninstall', 'err', '卸载未完成');
+        taskFinish('uninstall', 'err', DSH_I18N.t('uninstall_incomplete'));
       });
   }
   btnUninstallKeep.addEventListener('click', () => runUninstall(false));

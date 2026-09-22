@@ -118,14 +118,17 @@ fn classify_source(name: &str, spec: &str) -> (String, String) {
         || looks_like_local_path(spec);
     if spec_is_local || looks_like_local_path(name) {
         let raw = if spec_is_local { spec } else { name };
-        return ("local".to_string(), format!("本地 · {}", clean_local_spec(raw)));
+        return (
+            "local".to_string(),
+            crate::i18n::tr_args("plugin_source_local", &[("path", &clean_local_spec(raw))]),
+        );
     }
     if lower.starts_with("github:")
         || lower.starts_with("gitlab:")
         || lower.starts_with("bitbucket:")
         || lower.starts_with("git+")
     {
-        return ("git".to_string(), "Git 源".to_string());
+        return ("git".to_string(), crate::i18n::tr("plugin_source_git"));
     }
     if lower.starts_with("https://") || lower.starts_with("http://") {
         return ("url".to_string(), "URL".to_string());
@@ -135,7 +138,7 @@ fn classify_source(name: &str, spec: &str) -> (String, String) {
     // 而 CHANGELOG 承诺的是「Git / URL / 本地来源不参与比对」。判据：带斜杠且不是
     // `@scope/pkg`（scoped 包名以 @ 开头）。
     if spec.contains('/') && !spec.starts_with('@') && !spec.starts_with('.') {
-        return ("git".to_string(), "Git 源".to_string());
+        return ("git".to_string(), crate::i18n::tr("plugin_source_git"));
     }
     ("registry".to_string(), format!("npm · {spec}"))
 }
@@ -353,7 +356,10 @@ fn tail_text(s: &str, max: usize) -> String {
         s.to_string()
     } else {
         let kept: String = chars[chars.len() - max..].iter().collect();
-        format!("…（输出过长，截断前 {} 字符）\n{kept}", chars.len())
+        crate::i18n::tr_args(
+            "output_too_long_truncated",
+            &[("n", &chars.len().to_string()), ("kept", &kept)],
+        )
     }
 }
 
@@ -392,7 +398,9 @@ fn run_dsh_plugin(
     let p = crate::paths_from_app(app);
     let node = crate::node_bin(&p.resources);
     let closure = crate::dsh::current_closure(&p)
-        .ok_or_else(|| format!("dsh 闭包未找到：{}", p.resources.display()))?;
+        .ok_or_else(|| {
+            crate::i18n::tr_args("err_dsh_closure_not_found", &[("path", &p.resources.display().to_string())])
+        })?;
     let bin = closure.join("node_modules/@deepseek-ai/dsh/lib/bin.js");
     let home = crate::home_dir();
     let profile = home.join(".dsh/profiles/web");
@@ -400,15 +408,15 @@ fn run_dsh_plugin(
     // pnpm shim，Windows 产出 pnpm.cmd）；缺失时给明确错误
     let pnpm_bin = p.resources.join("pnpm-bin").join(bundled_pnpm_file_name());
     if !pnpm_bin.exists() {
-        return Err(format!(
-            "内置 pnpm 缺失：{}\n请重新安装 App（或自行安装 pnpm 后重试）",
-            pnpm_bin.display()
+        return Err(crate::i18n::tr_args(
+            "err_bundled_pnpm_missing_hint",
+            &[("path", &pnpm_bin.display().to_string())],
         ));
     }
     // 插件操作串行化（ensure 的读-改-写与 dsh reconcile 非原子）
     let _guard = crate::mlock(&PLUGIN_LOCK);
     ensure_pnpm_workspace(&profile, extra_builds)
-        .map_err(|e| format!("写入 pnpm-workspace.yaml 失败：{e}"))?;
+        .map_err(|e| crate::i18n::tr_args("err_write_pnpm_workspace", &[("e", &e.to_string())]))?;
 
     let mut cmd = std::process::Command::new(&node);
     #[cfg(target_os = "windows")]
@@ -441,15 +449,15 @@ fn run_dsh_plugin(
     // pnpm 可能运行数分钟，一次性 output() 会让前端长时间只有静态"正在…"。
     let mut child = cmd
         .spawn()
-        .map_err(|e| format!("执行 dsh plugin 失败：{e}"))?;
+        .map_err(|e| crate::i18n::tr_args("err_run_dsh_plugin", &[("e", &e.to_string())]))?;
     let stdout = child
         .stdout
         .take()
-        .ok_or_else(|| "无法读取 dsh plugin stdout".to_string())?;
+        .ok_or_else(|| crate::i18n::tr("err_read_plugin_stdout"))?;
     let stderr = child
         .stderr
         .take()
-        .ok_or_else(|| "无法读取 dsh plugin stderr".to_string())?;
+        .ok_or_else(|| crate::i18n::tr("err_read_plugin_stderr"))?;
     let emit_app = app.clone();
     let out_thread = std::thread::spawn(move || {
         let reader = std::io::BufReader::new(stdout);
@@ -489,7 +497,7 @@ fn run_dsh_plugin(
             // wait 失败（罕见）：先回收读线程再返回，避免瞬时线程泄漏
             let _ = out_thread.join();
             let _ = err_thread.join();
-            return Err(format!("等待 dsh plugin 退出失败：{e}"));
+            return Err(crate::i18n::tr_args("err_wait_dsh_plugin", &[("e", &e.to_string())]));
         }
     };
     let success = status.success();
@@ -504,7 +512,13 @@ fn run_dsh_plugin(
         "[plugin] dsh plugin {op} {} -> exit {status}",
         crate::redact_url(pkg)
     ));
-    Ok((format!("退出码 {status}\n\n{}", tail_text(&text, 60000)), success))
+    Ok((
+        crate::i18n::tr_args(
+            "plugin_exit_code",
+            &[("status", &status.to_string()), ("output", &tail_text(&text, 60000))],
+        ),
+        success,
+    ))
 }
 
 /// 前端插件管理 command：安装(add)/卸载(remove) 插件。
@@ -529,15 +543,15 @@ pub async fn plugin_op(
     pkg: String,
 ) -> Result<String, String> {
     if !matches!(webview.label(), crate::WINDOW_LABEL) {
-        return Err("该操作仅限壳页使用".to_string());
+        return Err(crate::i18n::tr("err_shell_webview_only"));
     }
     if op != "add" && op != "remove" {
-        return Err(format!("不支持的插件操作：{op}（仅支持 add / remove）"));
+        return Err(crate::i18n::tr_args("err_unsupported_plugin_op", &[("op", &op)]));
     }
     // App 更新期间拒绝：收尾阶段安装器会覆盖 $INSTDIR，插件操作会拉起内置 node，
     // 把刚释放的 node.exe 映像锁占回去（详见 appupdate::update_in_progress）
     if crate::appupdate::update_in_progress() {
-        return Err("应用正在更新，请稍后再试".to_string());
+        return Err(crate::i18n::tr("app_updating_wait"));
     }
     // 本地目录与 npm/Git spec 分流校验：dsh 把参数原样转发 pnpm，绝对路径不受 cwd 影响
     let ok = if looks_like_local_path(&pkg) {
@@ -546,7 +560,7 @@ pub async fn plugin_op(
         valid_pkg_name(&pkg)
     };
     if !ok {
-        return Err("安装目标不合法：支持 npm 包名（@scope/pkg）、Git/tarball 源（owner/repo、github:owner/repo、git+ssh://…、git+https://…、https://…tgz）或本地插件目录的绝对路径（如 D:\\plugins\\my-plugin）；路径不能含引号/通配符等特殊字符，任何形式都不能以 - 开头，也不支持相对路径".to_string());
+        return Err(crate::i18n::tr("err_invalid_plugin_target"));
     }
     // pnpm 可能运行数分钟：移到阻塞线程池执行，避免占用 Tauri 主线程
     // （否则安装期间 App UI / 托盘冻结）。PLUGIN_LOCK 在阻塞线程内获取释放。
@@ -583,7 +597,7 @@ pub async fn plugin_op(
         Ok(output)
     })
     .await
-    .map_err(|e| format!("插件操作线程异常：{e}"))?
+    .map_err(|e| crate::i18n::tr_args("err_plugin_thread", &[("e", &e.to_string())]))?
 }
 
 /// 插件操作的输出上限（每个流各一份）：超出后**保留末尾**并加一行说明。
@@ -593,7 +607,10 @@ pub async fn plugin_op(
 /// **后端内存与 IPC 载荷**这一侧。
 const MAX_PLUGIN_OUTPUT: usize = 256 * 1024;
 /// 截断说明行（保留在末尾而不是开头：用户最关心最后的报错）。
-const TRUNCATED_NOTE: &str = "…（输出过长，仅保留末尾部分；完整日志见 launcher.log）";
+/// 文案随语种走：下面要拿它做 `starts_with` 比较，所以用 `tr_static`（`&'static str`）。
+fn truncated_note() -> &'static str {
+    crate::i18n::tr_static("plugin_output_capped")
+}
 
 /// 把一行追加进受上限约束的缓冲；超出时从**开头**丢弃（纯函数便于单测）。
 fn push_capped(buf: &mut String, line: &str) {
@@ -608,8 +625,8 @@ fn push_capped(buf: &mut String, line: &str) {
             .last()
             .unwrap_or(0);
         buf.drain(..cut);
-        if !buf.starts_with(TRUNCATED_NOTE) {
-            buf.insert_str(0, &format!("{TRUNCATED_NOTE}\n"));
+        if !buf.starts_with(truncated_note()) {
+            buf.insert_str(0, &format!("{}\n", truncated_note()));
         }
     }
 }
@@ -682,7 +699,7 @@ pub async fn plugin_check_updates_cmd(app: tauri::AppHandle) -> Result<Vec<Plugi
         Ok(out)
     })
     .await
-    .map_err(|e| format!("检查插件更新线程异常：{e}"))?
+    .map_err(|e| crate::i18n::tr_args("err_plugin_update_thread", &[("e", &e.to_string())]))?
 }
 
 /// 前端插件列表 command：读 `~/.dsh/profiles/web` 的 package.json。
@@ -744,11 +761,11 @@ mod tests {
         // 上界 = 上限 + 注记 + 少量余量：drain 后可能残留一个跨切割点的多字节字符（≤4B），
         // 注记自身约 80B。断言留 8B 余量，避免换个行长/模板就变成边界脆弱测试。
         assert!(
-            big.len() <= MAX_PLUGIN_OUTPUT + TRUNCATED_NOTE.len() + 8,
+            big.len() <= MAX_PLUGIN_OUTPUT + truncated_note().len() + 8,
             "未封顶: {}",
             big.len()
         );
-        assert!(big.starts_with(TRUNCATED_NOTE), "缺少截断说明");
+        assert!(big.starts_with(truncated_note()), "缺少截断说明");
         assert!(big.trim_end().ends_with(&format!("行 1999 中文内容 {}", "x".repeat(200))), "末尾被丢了");
         assert!(std::str::from_utf8(big.as_bytes()).is_ok(), "破坏了 UTF-8");
     }
@@ -767,21 +784,27 @@ mod tests {
         // 本地目录安装：pnpm 把绝对路径写进依赖 spec（用户看到 k:/D: 盘符即此形态）
         let (s, l) = classify_source("my-plugin", r"file:D:\plugins\my-plugin");
         assert_eq!(s, "local");
-        assert_eq!(l, r"本地 · D:\plugins\my-plugin");
+        assert_eq!(l, crate::i18n::tr_args("plugin_source_local", &[("path", r"D:\plugins\my-plugin")]));
         let (s, l) = classify_source("my-plugin", "link:/Users/x/plugins/my-plugin");
         assert_eq!(s, "local");
-        assert_eq!(l, "本地 · /Users/x/plugins/my-plugin");
+        assert_eq!(
+            l,
+            crate::i18n::tr_args("plugin_source_local", &[("path", "/Users/x/plugins/my-plugin")])
+        );
         // file:///D:/… 的多余前导斜杠与 verbatim 前缀都要清掉
         assert_eq!(clean_local_spec("file:///D:/p/x"), "D:/p/x");
         assert_eq!(clean_local_spec(r"\\?\D:\p\x"), r"D:\p\x");
         // registry / Git / URL
         assert_eq!(classify_source("a", "^1.2.0"), ("registry".into(), "npm · ^1.2.0".into()));
-        assert_eq!(classify_source("a", "github:o/r#v1"), ("git".into(), "Git 源".into()));
+        assert_eq!(
+            classify_source("a", "github:o/r#v1"),
+            ("git".into(), crate::i18n::tr("plugin_source_git"))
+        );
         assert_eq!(classify_source("a", "https://x/y.tgz"), ("url".into(), "URL".into()));
         // 依赖 key 本身是路径的罕见形态：按路径归类
         let (s, l) = classify_source(r"D:\plugins\my-plugin", "");
         assert_eq!(s, "local");
-        assert_eq!(l, r"本地 · D:\plugins\my-plugin");
+        assert_eq!(l, crate::i18n::tr_args("plugin_source_local", &[("path", r"D:\plugins\my-plugin")]));
     }
 
     #[test]
@@ -963,7 +986,15 @@ mod tests {
         assert_eq!(tail_text("short", 100), "short");
         let long = "x".repeat(1000);
         let t = tail_text(&long, 100);
-        assert!(t.contains("截断"));
+        // 截断说明随语种走：期望值用同一个取词函数构造（断言「说明 + 保留的尾部」，
+        // 而不是写死中文或英文文案）。
+        assert_eq!(
+            t,
+            crate::i18n::tr_args(
+                "output_too_long_truncated",
+                &[("n", "1000"), ("kept", &"x".repeat(100))],
+            )
+        );
         assert!(t.ends_with("x".repeat(100).as_str()));
         // char 边界安全（中文）
         let cn = "中".repeat(500);

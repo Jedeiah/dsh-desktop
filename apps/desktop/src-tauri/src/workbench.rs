@@ -126,6 +126,26 @@ window.addEventListener('keydown',function(e){
 });
 }catch(_){}})();"#;
 
+/// 注入 dsh 页面的**语种转发**：dsh 切语种时会把 `<html lang>` 设为 `zh-CN` / `en`
+/// （`dsh-client-locale` 的标准行为，不是私有 API）。
+///
+/// 这是语种热切换的**事件源**——改语言这件事就发生在工作台 webview 里，所以由它直接
+/// 通知壳页与 Rust，而不是让壳去轮询 `settings.yaml` 猜（文件只是持久化细节）。
+/// 只在值真的变化时发；注入时先发一次当前值，顺带覆盖"注入前就已经是 en"的情况。
+/// 事件名复用 `shell:shortcut` 那条 allow-emit 权限，**不新增任何能力面**。
+const LOCALE_FORWARD_JS: &str = r#"(function(){try{
+var last=null;
+function norm(v){return String(v||'').toLowerCase().indexOf('en')===0?'en':'zh';}
+function send(){try{
+  var v=norm(document.documentElement&&document.documentElement.lang);
+  if(v===last)return;
+  last=v;
+  window.__TAURI__&&window.__TAURI__.event&&window.__TAURI__.event.emit('locale:changed',v);
+}catch(_){}}
+try{new MutationObserver(send).observe(document.documentElement,{attributes:true,attributeFilter:['lang']});}catch(_){}
+if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',send);else send();
+}catch(_){}})();"#;
+
 /// 注入 dsh 页面 document-start 的 WebKit 语义对齐垫片（仅 macOS 注入，见下），两件事：
 ///
 /// **一、让浮层在「按下菜单项」时不被误关**（功能修复）
@@ -173,7 +193,11 @@ s.textContent='html[data-dsh-modality="pointer"] :focus-visible:not(input):not(t
 /// child webview 标签（同时作为降级窗口的 label）。
 pub const LABEL: &str = "workbench";
 /// 降级窗口标题。
-const FALLBACK_TITLE: &str = "DeepSeek Harness 工作台";
+/// （`title()` 要 `impl Into<String>`，但这份文案同时被断言/比较用得太散，
+/// 直接用 `tr_static` 保持 `&'static str`，语种见 i18n.rs。）
+fn fallback_title() -> &'static str {
+    crate::i18n::tr_static("workbench_window_title")
+}
 
 /// 顶栏折叠态（shell.js 经 workbench_set_collapsed_cmd 同步）。
 static COLLAPSED: AtomicBool = AtomicBool::new(false);
@@ -332,7 +356,8 @@ fn ensure_ready_on_main(app: &AppHandle, url: &str) -> bool {
     }
     let builder = WebviewBuilder::new(LABEL, WebviewUrl::External(parsed))
         .initialization_script(DARK_BG_JS)
-        .initialization_script(SHORTCUT_FORWARD_JS);
+        .initialization_script(SHORTCUT_FORWARD_JS)
+        .initialization_script(LOCALE_FORWARD_JS);
     // WebKit 语义对齐垫片只在 macOS 注入：Windows（WebView2/Blink）本就是 Chrome 语义，
     // 无需注入，也就不去依赖「WebView2 接受空脚本」这种未验证的行为。
     #[cfg(target_os = "macos")]
@@ -686,11 +711,12 @@ fn open_fallback_window(app: &AppHandle, url: &str) {
         return;
     }
     let built = WebviewWindowBuilder::new(app, LABEL, WebviewUrl::External(parsed))
-        .title(FALLBACK_TITLE)
+        .title(fallback_title())
         .inner_size(1280.0, 820.0)
         .min_inner_size(800.0, 560.0)
         .theme(Some(tauri::Theme::Dark))
-        .initialization_script(SHORTCUT_FORWARD_JS); // 降级窗口同样是独立 webview，快捷键同样需要转发
+        .initialization_script(SHORTCUT_FORWARD_JS)
+        .initialization_script(LOCALE_FORWARD_JS); // 降级窗口同样是独立 webview，快捷键同样需要转发
     #[cfg(target_os = "macos")]
     let built = built.initialization_script(WEBKIT_MENU_SHIM_JS);
     let built = built
@@ -733,12 +759,12 @@ pub fn dsh_restart_cmd(app: AppHandle, webview: tauri::Webview) -> Result<(), St
     // 安装/更新进行中时拒绝：此刻重启会杀掉正在跑的 pnpm、并让 v<ver>-tmp 留在半成品状态
     // （后端安装流程有 SETUP_BUSY 门，重启命令此前没有，是新增入口带来的窗口）。
     if crate::setup_busy() {
-        return Err("正在安装/更新 dsh，请稍后再试".to_string());
+        return Err(crate::i18n::tr("err_dsh_busy"));
     }
     // App 更新期间同样拒绝：收尾阶段安装器会覆盖 $INSTDIR，重启会把刚释放的
     // node.exe 映像锁占回去（详见 appupdate::update_in_progress）
     if crate::appupdate::update_in_progress() {
-        return Err("应用正在更新，请稍后再试".to_string());
+        return Err(crate::i18n::tr("app_updating_wait"));
     }
     crate::restart_dsh(&app);
     Ok(())

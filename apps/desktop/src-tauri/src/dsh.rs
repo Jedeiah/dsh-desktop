@@ -255,7 +255,10 @@ fn install_and_verify(
         .join("pnpm-bin")
         .join(crate::plugin::bundled_pnpm_file_name());
     if !pnpm.is_file() {
-        return Err(format!("内置 pnpm 缺失: {}", pnpm.display()));
+        return Err(crate::i18n::tr_args(
+            "err_bundled_pnpm_missing",
+            &[("path", &pnpm.display().to_string())],
+        ));
     }
     let store = p.app_data.join("dsh/pnpm-store");
     let mut cmd = Command::new(&pnpm);
@@ -290,7 +293,7 @@ fn install_and_verify(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|e| format!("运行内置 pnpm 失败: {e}"))?;
+        .map_err(|e| crate::i18n::tr_args("err_run_bundled_pnpm", &[("e", &e.to_string())]))?;
     // 记录子进程 PID 供 setup_cancel_cmd 取消；无论 wait 成败都先清空
     *SETUP_CHILD.lock().unwrap() = Some(child.id());
     // stderr 必须**持续 drain**（管道缓冲 ~64KB，pnpm 警告堆积超限会阻塞子进程
@@ -338,7 +341,8 @@ fn install_and_verify(
     let wait = child.wait();
     *SETUP_CHILD.lock().unwrap() = None;
     let err_out = stderr_handle.join().unwrap_or_default();
-    let status = wait.map_err(|e| format!("等待内置 pnpm 失败: {e}"))?;
+    let status = wait
+        .map_err(|e| crate::i18n::tr_args("err_wait_bundled_pnpm", &[("e", &e.to_string())]))?;
     if !status.success() {
         // 失败时 stderr（警告/错误）已由 drain 线程收集
         let err_tail = err_out.trim();
@@ -346,9 +350,10 @@ fn install_and_verify(
         if !err_tail.is_empty() {
             install_log(&format!("pnpm stderr: {err_tail}"));
         }
-        return Err(format!(
-            "pnpm install @deepseek-ai/dsh@{ver} 失败 (exit {status}){}",
-            if err_tail.is_empty() { String::new() } else { format!(": {err_tail}") }
+        let tail = if err_tail.is_empty() { String::new() } else { format!(": {err_tail}") };
+        return Err(crate::i18n::tr_args(
+            "err_pnpm_install_failed",
+            &[("ver", ver), ("status", &status.to_string()), ("tail", &tail)],
         ));
     }
     install_log("pnpm install 完成，开始自检…");
@@ -362,11 +367,14 @@ fn install_and_verify(
         .arg(&bin)
         .arg("--version")
         .output()
-        .map_err(|e| format!("校验新闭包版本失败: {e}"))?;
+        .map_err(|e| crate::i18n::tr_args("err_verify_closure_version", &[("e", &e.to_string())]))?;
     let got = String::from_utf8_lossy(&out.stdout).trim().to_string();
     install_log(&format!("自检 --version => {got:?}"));
     if got != ver {
-        return Err(format!("新闭包版本校验失败: 期望 {ver}, 实际 {got}"));
+        return Err(crate::i18n::tr_args(
+            "err_closure_version_mismatch",
+            &[("ver", ver), ("got", &got)],
+        ));
     }
     let mut comp_cmd = Command::new(&node);
     #[cfg(target_os = "windows")]
@@ -381,9 +389,9 @@ fn install_and_verify(
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
-        .map_err(|e| format!("校验 web profile 组合失败: {e}"))?;
+        .map_err(|e| crate::i18n::tr_args("err_verify_web_profile", &[("e", &e.to_string())]))?;
     if !composed.success() {
-        return Err("新闭包无法组合 web profile".into());
+        return Err(crate::i18n::tr("err_web_profile_compose"));
     }
     Ok(())
 }
@@ -402,9 +410,9 @@ fn activate_closure(dsh_dir: &Path, ver: &str) -> Result<(), String> {
     // 别人的版本（甚至 rename 失败报"切换失败"）。pid 后缀让各自的写-改-名自成一体。
     let tmp_marker = dsh_dir.join(format!("current.{}.tmp", std::process::id()));
     std::fs::write(&tmp_marker, format!("v{ver}\n"))
-        .map_err(|e| format!("写 current 标记失败: {e}"))?;
+        .map_err(|e| crate::i18n::tr_args("err_write_current_marker", &[("e", &e.to_string())]))?;
     std::fs::rename(&tmp_marker, &cur_marker)
-        .map_err(|e| format!("切换 current 标记失败: {e}"))?;
+        .map_err(|e| crate::i18n::tr_args("err_switch_current_marker", &[("e", &e.to_string())]))?;
 
     // GC: keep the new version + the previous one (rollback), drop older ones.
     if let Ok(entries) = std::fs::read_dir(dsh_dir) {
@@ -443,10 +451,11 @@ pub fn install_version(
     // `--self-apply-update <ver>`（main.rs 的 CLI 钩子）把命令行参数直接透传进来，
     // 未校验的 `../../x` 会把写入/删除解析到 app data 之外。
     if !crate::registry::valid_version(ver) {
-        return Err(format!("版本号不合法：{ver}"));
+        return Err(crate::i18n::tr_args("err_invalid_version_value", &[("ver", ver)]));
     }
     let dsh_dir = p.app_data.join("dsh");
-    std::fs::create_dir_all(&dsh_dir).map_err(|e| format!("创建目录失败: {e}"))?;
+    std::fs::create_dir_all(&dsh_dir)
+        .map_err(|e| crate::i18n::tr_args("err_create_dir", &[("e", &e.to_string())]))?;
 
     // 安装日志：**追加模式**（保留多次安装历史——覆盖写会丢上次失败原因；
     // 每次安装写段落头 + 分隔线）。路径 `<app-data>/logs/install.log`——
@@ -479,9 +488,9 @@ pub fn install_version(
     // 只切换 current，不重跑 npm install——切回已安装版本是秒切，也避免超大依赖树
     // 全量 resolve 极慢。校验不过 fall through 到下方 npm install（不静默跳过一次重装）。
     if closure_is_usable(&final_dir, ver) {
-        progress(&format!("dsh v{ver} 已存在，直接切换…"));
+        progress(&crate::i18n::tr_args("progress_switching_existing", &[("ver", ver)]));
         activate_closure(&dsh_dir, ver)?;
-        progress("完成");
+        progress(&crate::i18n::tr("progress_done"));
         return Ok(());
     }
 
@@ -490,14 +499,16 @@ pub fn install_version(
     // 先到者正在写入的内容，双双失败或装出半成品。
     let tmp = dsh_dir.join(format!("v{ver}-{}.tmp", std::process::id()));
     if tmp.exists() {
-        std::fs::remove_dir_all(&tmp).map_err(|e| format!("清理临时目录失败: {e}"))?;
+        std::fs::remove_dir_all(&tmp)
+            .map_err(|e| crate::i18n::tr_args("err_clean_tmp", &[("e", &e.to_string())]))?;
     }
-    std::fs::create_dir_all(&tmp).map_err(|e| format!("创建临时目录失败: {e}"))?;
+    std::fs::create_dir_all(&tmp)
+        .map_err(|e| crate::i18n::tr_args("err_create_tmp", &[("e", &e.to_string())]))?;
 
-    progress(&format!("正在下载并安装 dsh v{ver}（约 300MB，首次可能需要几分钟）…"));
+    progress(&crate::i18n::tr_args("progress_downloading_dsh", &[("ver", ver)]));
     // 安装（下载）文案覆盖 install_and_verify 内的 npm install 阶段；
     // 自检在安装成功后进行，故先提示再进入双重自检。
-    progress("正在校验新版本…");
+    progress(&crate::i18n::tr("progress_verifying_new_version"));
     if let Err(e) = install_and_verify(p, &tmp, ver, registry, progress) {
         let _ = std::fs::remove_dir_all(&tmp);
         return Err(e);
@@ -505,7 +516,7 @@ pub fn install_version(
 
     if let Err(e) = std::fs::write(tmp.join("VERSION"), ver) {
         let _ = std::fs::remove_dir_all(&tmp); // 写标记失败即放弃本次安装：不留 tmp 残骸
-        return Err(format!("写版本标记失败: {e}"));
+        return Err(crate::i18n::tr_args("err_write_version_marker", &[("e", &e.to_string())]));
     }
 
     // promote tmp -> v<ver> with overwrite safety: the existing dir is moved
@@ -514,7 +525,8 @@ pub fn install_version(
     let old = dsh_dir.join(format!("v{ver}.old"));
     if final_dir.exists() {
         let _ = std::fs::remove_dir_all(&old);
-        std::fs::rename(&final_dir, &old).map_err(|e| format!("移开旧版本目录失败: {e}"))?;
+        std::fs::rename(&final_dir, &old)
+            .map_err(|e| crate::i18n::tr_args("err_move_old_version", &[("e", &e.to_string())]))?;
     }
     if let Err(e) = std::fs::rename(&tmp, &final_dir) {
         // 恢复被移开的旧目录，保证当前版本仍然可用
@@ -523,7 +535,7 @@ pub fn install_version(
         }
         // 本次装好的 tmp 也不再有用（下一次安装会重下）：删掉，避免数百 MB 残骸
         let _ = std::fs::remove_dir_all(&tmp);
-        return Err(format!("发布新版本目录失败: {e}"));
+        return Err(crate::i18n::tr_args("err_publish_new_version", &[("e", &e.to_string())]));
     }
 
     // 切 current 标记 + GC（与「复用已存在版本目录」共用同一逻辑）。
@@ -534,7 +546,7 @@ pub fn install_version(
     if old.exists() {
         let _ = std::fs::remove_dir_all(&old);
     }
-    progress("完成");
+    progress(&crate::i18n::tr("progress_done"));
     Ok(())
 }
 

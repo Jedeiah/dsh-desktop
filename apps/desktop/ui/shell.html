@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
     <title>DeepSeek Harness Desktop</title>
-    <link rel="stylesheet" href="theme.css?v=0.5.8" />
+    <link rel="stylesheet" href="theme.css?v=0.6.0" />
   </head>
   <body>
 
@@ -17,9 +17,9 @@
   <div class="ambient-grid"></div>
   <div class="ambient-info" aria-hidden="true">
     <div class="ai-brand">DeepSeek Harness Desktop</div>
-    <div class="ai-row"><span>工作台</span><b id="aiUrl">—</b></div>
+    <div class="ai-row"><span data-i18n="workbench">工作台</span><b id="aiUrl">—</b></div>
     <div class="ai-row"><span>dsh</span><b id="aiDsh">—</b></div>
-    <div class="ai-keys"><kbd data-modkey="MODK">⌘K</kbd> 管理面板 · <kbd data-modkey="MOD1–4">⌘1–4</kbd> 切换区域 · <kbd>Esc</kbd> 关闭浮层</div>
+    <div class="ai-keys"><kbd data-modkey="MODK">⌘K</kbd> <span data-i18n="manage_panel_dot">管理面板 ·</span> <kbd data-modkey="MOD1–4">⌘1–4</kbd> <span data-i18n="switch_section_dot">切换区域 ·</span> <kbd>Esc</kbd> <span data-i18n="close_overlay">关闭浮层</span></div>
   </div>
 
   <img class="ambient-mark" src="icon.png" alt="" />
@@ -34,32 +34,32 @@
     <img class="startup-mark" src="icon.png" alt="" />
     <div class="startup-title">DeepSeek Harness Desktop</div>
     <div class="spinner"></div>
-    <div class="startup-stage">正在启动 dsh 工作台…</div>
+    <div class="startup-stage"><span data-i18n="starting_workbench">正在启动 dsh 工作台…</span></div>
     <div class="startup-meta" id="startupMeta"></div>
-    <div class="startup-hint">dsh 就绪后自动进入，首次启动约需 10-30 秒</div>
-    <div class="startup-keys">按 <kbd data-modkey="MODK">⌘K</kbd> 可随时打开管理面板</div>
+    <div class="startup-hint"><span data-i18n="dsh_ready_hint">dsh 就绪后自动进入，首次启动约需 10-30 秒</span></div>
+    <div class="startup-keys"><span data-i18n="press">按</span> <kbd data-modkey="MODK">⌘K</kbd> <span data-i18n="can_open_manage">可随时打开管理面板</span></div>
   </div>
 </div>
 
 <!-- ===================== 顶栏 ===================== -->
 <header class="chrome" id="chrome">
-  <button class="brand" id="brand" title="单击刷新工作台 · 双击在默认浏览器打开"
-          aria-label="工作台：单击刷新，双击在默认浏览器打开">
+  <button class="brand" id="brand" title="单击刷新工作台 · 双击在默认浏览器打开" data-i18n-title="workbench_click_hint"
+          aria-label="工作台：单击刷新，双击在默认浏览器打开" data-i18n-aria-label="workbench_title_hint">
     <img class="brand-mark" src="icon.png" alt="" />
-    工作台
+    <span data-i18n="workbench">工作台</span>
   </button>
 
   <span class="chrome-spacer"></span>
 
-  <button class="task-pill" id="taskPill" hidden aria-label="任务中心"></button>
-  <button class="manage-btn" id="btnManage">管理 <kbd data-modkey="MODK">⌘K</kbd><span class="dot-breath" id="manageDot" hidden aria-hidden="true"></span></button>
-  <button class="icon-btn" id="btnCollapseChrome" title="收起导航栏" aria-label="收起导航栏">
+  <button class="task-pill" id="taskPill" hidden aria-label="任务中心" data-i18n-aria-label="task_center"></button>
+  <button class="manage-btn" id="btnManage"><span data-i18n="manage">管理</span> <kbd data-modkey="MODK">⌘K</kbd><span class="dot-breath" id="manageDot" hidden aria-hidden="true"></span></button>
+  <button class="icon-btn" id="btnCollapseChrome" title="收起导航栏" data-i18n-title="collapse_nav" aria-label="收起导航栏" data-i18n-aria-label="collapse_nav">
     <svg class="ic" viewBox="0 0 20 20"><path d="M5 12.5l5-5 5 5"/></svg>
   </button>
 
   <!-- 任务详情 -->
   <div class="task-pop" id="taskPop" hidden>
-    <div class="task-pop-title">任务</div>
+    <div class="task-pop-title"><span data-i18n="tasks">任务</span></div>
     <div id="taskList"></div>
   </div>
 </header>
@@ -68,21 +68,21 @@
      bug 修复：折叠态工作台从 8px 把手条下方开始渲染（workbench.rs
      HANDLE_H_LOGICAL 与 CSS --h-handle 同步），把手不再被层级更高的原生工作台
      盖住——此前「折叠后看不到展开按钮」的根因。 -->
-<button class="chrome-restore" id="chromeRestore" aria-hidden="true" title="展开导航栏" aria-label="展开导航栏">
+<button class="chrome-restore" id="chromeRestore" aria-hidden="true" title="展开导航栏" data-i18n-title="expand_nav" aria-label="展开导航栏" data-i18n-aria-label="expand_nav">
   <svg class="ic" viewBox="0 0 20 20"><path d="M5 7.5l5 5 5-5"/></svg>
 </button>
 
 <!-- ===================== 管理抽屉 ===================== -->
-<aside class="drawer" id="drawer" role="dialog" aria-modal="true" aria-label="管理">
+<aside class="drawer" id="drawer" role="dialog" aria-modal="true" aria-label="管理" data-i18n-aria-label="manage">
   <div class="drawer-resize" id="drawerResize" role="separator" aria-orientation="vertical"
-       tabindex="0" aria-label="拖动调整抽屉宽度" title="拖动调整宽度 · 双击复位"></div>
+       tabindex="0" aria-label="拖动调整抽屉宽度" data-i18n-aria-label="drag_drawer_width" title="拖动调整宽度 · 双击复位" data-i18n-title="drag_width_hint"></div>
     <div class="drawer-head">
-    <div class="segmented" role="tablist" aria-label="管理分区">
+    <div class="segmented" role="tablist" aria-label="管理分区" data-i18n-aria-label="manage_sections">
       <button role="tab" data-section="dsh" class="active" aria-selected="true">dsh</button>
-      <button role="tab" data-section="plugins" aria-selected="false">插件</button>
-      <button role="tab" data-section="about" aria-selected="false">关于<span class="dot-breath dot-inline" id="aboutTabDot" hidden aria-hidden="true"></span></button>
+      <button role="tab" data-section="plugins" aria-selected="false"><span data-i18n="plugins">插件</span></button>
+      <button role="tab" data-section="about" aria-selected="false"><span data-i18n="about">关于</span><span class="dot-breath dot-inline" id="aboutTabDot" hidden aria-hidden="true"></span></button>
     </div>
-    <button class="icon-btn drawer-close" id="drawerClose" title="关闭" aria-label="关闭">
+    <button class="icon-btn drawer-close" id="drawerClose" title="关闭" data-i18n-title="close" aria-label="关闭" data-i18n-aria-label="close">
       <svg class="ic" viewBox="0 0 20 20"><path d="M5.5 5.5l9 9M14.5 5.5l-9 9"/></svg>
     </button>
   </div>
@@ -93,73 +93,73 @@
       <div class="panel">
         <div class="panel-head">
           <div>
-            <div class="panel-label">当前版本</div>
+            <div class="panel-label"><span data-i18n="current_version">当前版本</span></div>
             <div class="ver-row">
               <span class="ver-num mono" id="dshCurrent">—</span>
-              <span class="badge badge-current" id="dshCurrentBadge" hidden>当前</span>
+              <span class="badge badge-current" id="dshCurrentBadge" hidden data-i18n="current">当前</span>
             </div>
             <div class="status" id="dshStatus" role="status" aria-live="polite"></div>
           </div>
-          <button class="btn ghost sm" id="btnCheckDsh">检查更新</button>
+          <button class="btn ghost sm" id="btnCheckDsh"><span data-i18n="check_updates">检查更新</span></button>
         </div>
         <div class="update-banner" id="dshUpdateBanner" hidden>
-          <div class="ub-text">发现新版本 <b class="mono" id="dshLatest">—</b></div>
-          <button class="btn sm" id="btnUpdateDsh">更新到最新</button>
+          <div class="ub-text"><span data-i18n="update_found">发现新版本</span> <b class="mono" id="dshLatest">—</b></div>
+          <button class="btn sm" id="btnUpdateDsh"><span data-i18n="update_to_latest">更新到最新</span></button>
         </div>
       </div>
 
       <div class="panel">
         <div class="panel-head">
-          <div class="panel-title">版本列表</div>
-          <button class="link-btn" id="btnRegistry">Registry 源设置</button>
+          <div class="panel-title"><span data-i18n="version_list">版本列表</span></div>
+          <button class="link-btn" id="btnRegistry"><span data-i18n="registry_settings">Registry 源设置</span></button>
         </div>
-        <div class="panel-hint">已安装的历史版本可直接切换；「回滚」回到上一版本</div>
+        <div class="panel-hint"><span data-i18n="version_switch_hint">已安装的历史版本可直接切换；「回滚」回到上一版本</span></div>
         <table class="table">
-          <thead><tr><th>版本</th><th>状态</th><th class="ta-r">操作</th></tr></thead>
+          <thead><tr><th><span data-i18n="version">版本</span></th><th><span data-i18n="status">状态</span></th><th class="ta-r"><span data-i18n="actions">操作</span></th></tr></thead>
           <tbody id="versionRows"></tbody>
         </table>
         <div class="inline-form">
-          <input class="input mono" id="verInput" type="text" placeholder="输入版本号安装，如 0.1.1-rc.2" autocomplete="off" spellcheck="false" maxlength="32" />
-          <button class="btn ghost" id="btnInstallVer">安装</button>
+          <input class="input mono" id="verInput" type="text" placeholder="输入版本号安装，如 0.1.1-rc.2" data-i18n-placeholder="version_input_placeholder" autocomplete="off" spellcheck="false" maxlength="32" />
+          <button class="btn ghost" id="btnInstallVer"><span data-i18n="install">安装</span></button>
         </div>
-        <div class="panel-hint">列表默认只显示最近 5 个版本；如需安装其它版本，直接在上方输入版本号。</div>
+        <div class="panel-hint"><span data-i18n="version_list_hint_a">列表默认只显示最近 5 个版本；如需安装其它版本，直接在上方输入版本号。</span></div>
       </div>
     </section>
 
     <!-- ---------- 插件 ---------- -->
     <section class="drawer-section" data-section="plugins">
       <div class="panel">
-        <div class="panel-title">安装插件</div>
-        <div class="panel-hint">支持以下来源；装/卸完成后工作台自动重启：</div>
+        <div class="panel-title"><span data-i18n="install_plugin">安装插件</span></div>
+        <div class="panel-hint"><span data-i18n="plugin_sources_hint">支持以下来源；装/卸完成后工作台自动重启：</span></div>
         <ul class="hint-list">
-          <li>npm 包名：<span class="mono">@scope/pkg</span></li>
+          <li><span data-i18n="npm_package_label">npm 包名：</span><span class="mono">@scope/pkg</span></li>
           <li>Git / tarball：<span class="mono">owner/repo</span>、<span class="mono">github:…</span>、<span class="mono">git+https://…</span>、<span class="mono">https://…tgz</span></li>
-          <li>本地插件目录的<b>绝对路径</b>：<span class="mono">D:\plugins\my-plugin</span></li>
-          <li>指定版本（npm / Git）：<span class="mono">#ref</span>、<span class="mono">#semver:^1</span>、<span class="mono">#path:sub</span></li>
+          <li><span data-i18n="local_plugin_dir">本地插件目录的</span><b><span data-i18n="absolute_path">绝对路径</span></b>：<span class="mono">D:\plugins\my-plugin</span></li>
+          <li><span data-i18n="pin_version_label">指定版本（npm / Git）：</span><span class="mono">#ref</span>、<span class="mono">#semver:^1</span>、<span class="mono">#path:sub</span></li>
         </ul>
         <div class="inline-form">
-          <input class="input mono" id="pkgInput" type="text" placeholder="npm 包名 / Git 源 / 本地绝对路径" spellcheck="false" maxlength="1024" />
-          <button class="btn" id="btnInstallPkg">安装</button>
-          <button class="btn danger-ghost" id="btnRemovePkg">卸载</button>
+          <input class="input mono" id="pkgInput" type="text" placeholder="npm 包名 / Git 源 / 本地绝对路径" data-i18n-placeholder="plugin_input_placeholder" spellcheck="false" maxlength="1024" />
+          <button class="btn" id="btnInstallPkg"><span data-i18n="install">安装</span></button>
+          <button class="btn danger-ghost" id="btnRemovePkg"><span data-i18n="uninstall">卸载</span></button>
         </div>
       </div>
 
       <div class="panel">
         <div class="panel-head">
-          <div class="panel-title">已安装插件</div>
+          <div class="panel-title"><span data-i18n="installed_plugins">已安装插件</span></div>
           <span class="panel-hint" id="pluginCount" style="margin-top:0">—</span>
-          <button class="btn ghost sm" id="btnCheckPluginUpdates" title="对 npm 来源的插件查 registry 最新版（Git/本地来源不比对版本）">检查更新</button>
+          <button class="btn ghost sm" id="btnCheckPluginUpdates" title="对 npm 来源的插件查 registry 最新版（Git/本地来源不比对版本）" data-i18n-title="plugin_update_hint"><span data-i18n="check_updates">检查更新</span></button>
         </div>
         <div class="list" id="pluginList"></div>
-        <div class="empty" id="pluginEmpty" hidden>尚未安装插件 · 在上方输入包名开始安装</div>
+        <div class="empty" id="pluginEmpty" hidden><span data-i18n="no_plugins">尚未安装插件 · 在上方输入包名开始安装</span></div>
       </div>
 
       <div class="panel">
         <div class="panel-head">
-          <div class="panel-title">输出</div>
-          <button class="link-btn" id="btnClearLog">清空</button>
+          <div class="panel-title"><span data-i18n="output">输出</span></div>
+          <button class="link-btn" id="btnClearLog"><span data-i18n="clear">清空</span></button>
         </div>
-        <div class="empty" id="pluginLogEmpty">暂无操作记录 · 安装或卸载插件后显示实时输出</div>
+        <div class="empty" id="pluginLogEmpty"><span data-i18n="no_output">暂无操作记录 · 安装或卸载插件后显示实时输出</span></div>
         <pre class="log" id="pluginLog" role="log" aria-live="polite" hidden></pre>
       </div>
     </section>
@@ -168,8 +168,8 @@
     <section class="drawer-section" data-section="about">
       <!-- App 自身有新版本时的横幅（启动探测 / 手动检查后显示；更新进行中自动隐藏） -->
       <div class="update-banner" id="appUpdateBanner" hidden>
-        <div class="ub-text">App 有新版本 <b class="mono" id="appUpdateLatest">—</b></div>
-        <button class="btn sm" id="btnAppUpdateNow">下载并安装</button>
+        <div class="ub-text"><span data-i18n="app_update_available">App 有新版本</span> <b class="mono" id="appUpdateLatest">—</b></div>
+        <button class="btn sm" id="btnAppUpdateNow"><span data-i18n="download_and_install">下载并安装</span></button>
       </div>
 
       <div class="panel">
@@ -177,45 +177,45 @@
           <img class="about-mark" src="icon.png" alt="" />
           <div>
             <div class="about-name">DeepSeek Harness Desktop</div>
-            <div class="about-meta">版本 <span class="mono" id="appVersion">—</span> · stable · 桌面壳（Tauri）</div>
-            <div class="about-meta">作者 Jedeiah · MIT License</div>
-            <a class="link" id="repoLink" href="#" title="在浏览器打开项目主页">项目主页 github.com/Jedeiah/dsh-desktop ↗</a>
+            <div class="about-meta"><span data-i18n="version">版本</span> <span class="mono" id="appVersion">—</span> <span data-i18n="about_meta">· stable · 桌面壳（Tauri）</span></div>
+            <div class="about-meta"><span data-i18n="about_author">作者 Jedeiah · MIT License</span></div>
+            <a class="link" id="repoLink" href="#" title="在浏览器打开 GitHub 仓库，给项目点一个 Star" data-i18n-title="about_star_title" data-i18n="about_star">⭐ github.com/Jedeiah/dsh-desktop · 顺手点个 Star 支持一下 ↗</a>
           </div>
         </div>
         <div class="btn-row">
-          <button class="btn ghost" id="btnCheckApp">检查更新</button>
-          <button class="btn" id="btnDownloadApp" disabled>下载并安装更新</button>
-          <button class="btn ghost" id="btnOpenReleases">在浏览器打开下载页</button>
+          <button class="btn ghost" id="btnCheckApp"><span data-i18n="check_updates">检查更新</span></button>
+          <button class="btn" id="btnDownloadApp" disabled><span data-i18n="download_and_install_update">下载并安装更新</span></button>
+          <button class="btn ghost" id="btnOpenReleases"><span data-i18n="open_download_page">在浏览器打开下载页</span></button>
         </div>
         <div class="status" id="appStatus" role="status" aria-live="polite"></div>
-        <div class="progress" id="appProgress" hidden role="progressbar" aria-label="更新下载进度" aria-valuemin="0" aria-valuemax="100">
+        <div class="progress" id="appProgress" hidden role="progressbar" aria-label="更新下载进度" data-i18n-aria-label="update_progress" aria-valuemin="0" aria-valuemax="100">
           <div class="progress-fill" id="appProgressFill" style="width:0%"></div>
         </div>
         <div class="panel-hint" id="appProgressText" hidden></div>
       </div>
 
       <div class="panel">
-        <div class="panel-title" style="color:var(--danger)">卸载</div>
-        <div class="panel-hint">卸载操作不可撤销，请谨慎选择</div>
+        <div class="panel-title" style="color:var(--danger)"><span data-i18n="uninstall">卸载</span></div>
+        <div class="panel-hint"><span data-i18n="uninstall_caution">卸载操作不可撤销，请谨慎选择</span></div>
         <div class="btn-row" style="margin-top:10px">
-          <button class="btn danger-ghost" id="btnToggleUninstall">卸载应用…</button>
+          <button class="btn danger-ghost" id="btnToggleUninstall"><span data-i18n="uninstall_app_ellipsis">卸载应用…</span></button>
         </div>
         <div id="uninstallZone" hidden>
           <div class="uninstall-row">
             <span class="opt-icon"><svg class="ic" viewBox="0 0 20 20"><circle cx="10" cy="10" r="7.5"/><path d="M10 6v5M10 13.5v.5"/></svg></span>
             <div class="grow">
-              <div class="opt-title">仅卸载应用</div>
-              <div class="opt-desc">保留 ~/.dsh 配置与数据，便于将来重装</div>
+              <div class="opt-title"><span data-i18n="uninstall_app_only">仅卸载应用</span></div>
+              <div class="opt-desc"><span data-i18n="uninstall_keep_hint">保留 ~/.dsh 配置与数据，便于将来重装</span></div>
             </div>
-            <button class="btn danger-ghost sm" id="btnUninstallKeep">卸载（保留数据）</button>
+            <button class="btn danger-ghost sm" id="btnUninstallKeep"><span data-i18n="uninstall_keep_data">卸载（保留数据）</span></button>
           </div>
           <div class="uninstall-row">
             <span class="opt-icon"><svg class="ic" viewBox="0 0 20 20"><path d="M4 6h12M8.5 6V4.5h3V6"/><path d="M6 6l.7 8.8a1.6 1.6 0 0 0 1.6 1.5h3.4a1.6 1.6 0 0 0 1.6-1.5L14 6"/></svg></span>
             <div class="grow">
-              <div class="opt-title">完整卸载</div>
-              <div class="opt-desc">同时删除 ~/.dsh 中全部配置、插件与版本数据，不可恢复</div>
+              <div class="opt-title"><span data-i18n="uninstall_full">完整卸载</span></div>
+              <div class="opt-desc"><span data-i18n="uninstall_full_hint">同时删除 ~/.dsh 中全部配置、插件与版本数据，不可恢复</span></div>
             </div>
-            <button class="btn danger-ghost sm" id="btnUninstallWipe">完全卸载</button>
+            <button class="btn danger-ghost sm" id="btnUninstallWipe"><span data-i18n="uninstall_full_b">完全卸载</span></button>
           </div>
           <div class="status" id="uninstallStatus" role="status" aria-live="polite"></div>
         </div>
@@ -225,60 +225,60 @@
 </aside>
 
 <!-- ===================== 命令面板 ===================== -->
-<div class="palette-overlay" id="paletteOverlay" role="dialog" aria-modal="true" aria-label="命令面板" hidden>
-  <div class="palette" role="dialog" aria-modal="true" aria-label="命令面板">
-    <input class="palette-input" id="paletteInput" type="text" placeholder="搜索区域或命令…" autocomplete="off" spellcheck="false" maxlength="64" />
+<div class="palette-overlay" id="paletteOverlay" role="dialog" aria-modal="true" aria-label="命令面板" data-i18n-aria-label="command_palette" hidden>
+  <div class="palette" role="dialog" aria-modal="true" aria-label="命令面板" data-i18n-aria-label="command_palette">
+    <input class="palette-input" id="paletteInput" type="text" placeholder="搜索区域或命令…" data-i18n-placeholder="palette_placeholder" autocomplete="off" spellcheck="false" maxlength="64" />
     <div class="palette-list" id="paletteList"></div>
   </div>
 </div>
 
 <!-- ===================== 首次引导 ===================== -->
-<div class="setup-overlay" id="setupOverlay" role="dialog" aria-modal="true" aria-label="首次安装引导" hidden>
+<div class="setup-overlay" id="setupOverlay" role="dialog" aria-modal="true" aria-label="首次安装引导" data-i18n-aria-label="setup_guide" hidden>
   <div class="setup-card">
     <div class="setup-head">
       <img class="setup-mark" src="icon.png" alt="" />
       <div>
-        <h1>准备 dsh 运行时</h1>
-        <p>DeepSeek Harness Desktop 桌面壳 · 首次启动</p>
+        <h1><span data-i18n="prepare_runtime">准备 dsh 运行时</span></h1>
+        <p><span data-i18n="setup_subtitle">DeepSeek Harness Desktop 桌面壳 · 首次启动</span></p>
       </div>
     </div>
 
     <!-- 待开始 / 安装中 -->
     <div id="setupStageArea">
-      <div class="stage-line" id="setupStage">准备安装 dsh 运行时</div>
-      <div class="panel-hint" id="setupVerDisplay" style="margin-top:0">将安装版本 <b class="mono" id="setupVerShow">—</b> · 可在高级选项更改</div>
-      <div class="progress" id="setupProgress" hidden role="progressbar" aria-label="安装进度"><div class="progress-fill"></div></div>
-      <div class="panel-hint" id="setupMeta">首次安装需下载约 300MB 依赖包，通常需要几分钟。可在下方「高级选项」选择版本与 Registry 源。</div>
+      <div class="stage-line" id="setupStage"><span data-i18n="prepare_install_runtime">准备安装 dsh 运行时</span></div>
+      <div class="panel-hint" id="setupVerDisplay" style="margin-top:0"><span data-i18n="will_install_version">将安装版本</span> <b class="mono" id="setupVerShow">—</b> <span data-i18n="change_in_advanced">· 可在高级选项更改</span></div>
+      <div class="progress" id="setupProgress" hidden role="progressbar" aria-label="安装进度" data-i18n-aria-label="install_progress"><div class="progress-fill"></div></div>
+      <div class="panel-hint" id="setupMeta"><span data-i18n="setup_body">首次安装需下载约 300MB 依赖包，通常需要几分钟。可在下方「高级选项」选择版本与 Registry 源。</span></div>
       <div class="setup-actions">
-        <button class="btn" id="btnSetupInstall">安装 dsh</button>
-        <button class="btn ghost" id="btnSetupCancel" hidden>取消安装</button>
+        <button class="btn" id="btnSetupInstall"><span data-i18n="install_dsh">安装 dsh</span></button>
+        <button class="btn ghost" id="btnSetupCancel" hidden><span data-i18n="cancel_install">取消安装</span></button>
       </div>
 
       <details class="adv" id="setupAdv">
         <summary>
           <svg class="chev" width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><path d="M3.5 1.5L7 5 3.5 8.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
-          高级选项
+          <span data-i18n="advanced_options">高级选项</span>
         </summary>
         <div class="adv-body">
           <div class="field">
-            <span>Registry 源</span>
+            <span data-i18n="registry_source">Registry 源</span>
             <div class="row">
               <input class="input mono" id="setupReg" type="text" value="https://registry.npmmirror.com" spellcheck="false" maxlength="400" />
-              <button class="btn ghost sm" id="btnRefreshVer" title="按当前 Registry 源重新获取可用版本">刷新版本</button>
+              <button class="btn ghost sm" id="btnRefreshVer" title="按当前 Registry 源重新获取可用版本" data-i18n-title="refresh_versions_hint"><span data-i18n="refresh_versions">刷新版本</span></button>
             </div>
           </div>
           <div class="field">
-            <span>版本</span>
+            <span data-i18n="version">版本</span>
             <div class="cselect" id="setupVerWrap">
               <button class="cselect-trigger" id="setupVerTrigger" type="button" aria-haspopup="listbox" aria-expanded="false">
-                <span id="setupVerLabel">加载中…</span>
+                <span id="setupVerLabel" data-i18n="loading">加载中…</span>
                 <span class="cselect-caret" aria-hidden="true"></span>
               </button>
               <ul class="cselect-menu" id="setupVerMenu" role="listbox" hidden></ul>
             </div>
-            <input class="input mono" id="verManual" type="text" placeholder="或输入指定版本号（如 0.1.1-rc.2）" spellcheck="false" maxlength="32" />
+            <input class="input mono" id="verManual" type="text" placeholder="或输入指定版本号（如 0.1.1-rc.2）" data-i18n-placeholder="version_input_hint" spellcheck="false" maxlength="32" />
           </div>
-          <p class="adv-note">列表默认只显示最近 5 个版本，其它版本请直接在上方版本号输入框输入。<br />更改将应用于本次下载；Registry 源建议保持默认，改动后点「刷新版本」重新获取列表。</p>
+          <p class="adv-note"><span data-i18n="version_list_hint_b">列表默认只显示最近 5 个版本，其它版本请直接在上方版本号输入框输入。</span><br /><span data-i18n="registry_note">更改将应用于本次下载；Registry 源建议保持默认，改动后点「刷新版本」重新获取列表。</span></p>
         </div>
       </details>
     </div>
@@ -288,20 +288,20 @@
       <div class="err-box">
         <svg class="ic" viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="7.5"/><path d="M10 6v5M10 13.5v.5"/></svg>
         <div>
-          <div class="err-title" id="setupErrTitle">安装失败</div>
+          <div class="err-title" id="setupErrTitle"><span data-i18n="install_failed">安装失败</span></div>
           <div class="err-msg" id="setupErrMsg"></div>
         </div>
       </div>
-      <div class="setup-actions"><button class="btn" id="btnSetupRetry">重试</button></div>
+      <div class="setup-actions"><button class="btn" id="btnSetupRetry"><span data-i18n="retry">重试</span></button></div>
     </div>
 
     <!-- 完成 -->
     <div id="setupDone" hidden>
       <div class="done-view">
         <div class="done-icon"><svg class="ic" viewBox="0 0 20 20"><path d="M5 10.5l3.2 3.2L15 6.5"/></svg></div>
-        <div class="done-title">dsh 已就绪</div>
+        <div class="done-title"><span data-i18n="dsh_ready">dsh 已就绪</span></div>
         <div class="done-msg mono" id="setupDoneVer">—</div>
-        <div class="setup-actions"><button class="btn" id="btnEnterWorkbench">进入工作台</button></div>
+        <div class="setup-actions"><button class="btn" id="btnEnterWorkbench"><span data-i18n="enter_workbench">进入工作台</span></button></div>
       </div>
     </div>
   </div>
@@ -310,19 +310,19 @@
 <!-- ===================== 确认弹窗 ===================== -->
 <div class="modal-overlay" id="modal" hidden>
   <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
-    <button class="icon-btn modal-close" id="modalClose" title="关闭" aria-label="关闭">
+    <button class="icon-btn modal-close" id="modalClose" title="关闭" data-i18n-title="close" aria-label="关闭" data-i18n-aria-label="close">
       <svg class="ic" viewBox="0 0 20 20"><path d="M5.5 5.5l9 9M14.5 5.5l-9 9"/></svg>
     </button>
     <div class="modal-head">
       <div class="modal-icon" id="modalIcon">
         <svg class="ic" viewBox="0 0 20 20"><circle cx="10" cy="10" r="7.5"/><path d="M10 9v4.5M10 6.2v.5"/></svg>
       </div>
-      <div class="modal-title" id="modalTitle">确认操作</div>
+      <div class="modal-title" id="modalTitle"><span data-i18n="confirm_action">确认操作</span></div>
     </div>
     <div class="modal-msg" id="modalMsg"></div>
     <div class="modal-foot">
-      <button class="btn ghost" id="modalNo">取消</button>
-      <button class="btn" id="modalOk">确定</button>
+      <button class="btn ghost" id="modalNo"><span data-i18n="cancel">取消</span></button>
+      <button class="btn" id="modalOk"><span data-i18n="ok">确定</span></button>
     </div>
   </div>
 </div>
@@ -330,22 +330,22 @@
 <!-- ===================== Registry 源设置弹窗 ===================== -->
 <div class="modal-overlay" id="registryModal" hidden>
   <div class="modal" role="dialog" aria-modal="true" aria-labelledby="registryTitle">
-    <button class="icon-btn modal-close" id="registryClose" title="关闭" aria-label="关闭">
+    <button class="icon-btn modal-close" id="registryClose" title="关闭" data-i18n-title="close" aria-label="关闭" data-i18n-aria-label="close">
       <svg class="ic" viewBox="0 0 20 20"><path d="M5.5 5.5l9 9M14.5 5.5l-9 9"/></svg>
     </button>
     <div class="modal-head">
       <div class="modal-icon">
         <svg class="ic" viewBox="0 0 20 20"><circle cx="10" cy="10" r="7.5"/><path d="M10 9v4.5M10 6.2v.5"/></svg>
       </div>
-      <div class="modal-title" id="registryTitle">Registry 源设置</div>
+      <div class="modal-title" id="registryTitle"><span data-i18n="registry_settings">Registry 源设置</span></div>
     </div>
-    <div class="modal-msg" style="margin-top:4px">安装与更新 dsh 时使用的下载源，保存后立即生效。</div>
+    <div class="modal-msg" style="margin-top:4px"><span data-i18n="registry_hint">安装与更新 dsh 时使用的下载源，保存后立即生效。</span></div>
     <div style="margin-top:12px">
       <input class="input mono" id="registryInput" type="text" value="https://registry.npmmirror.com" spellcheck="false" maxlength="400" />
     </div>
     <div class="modal-foot">
-      <button class="btn ghost" id="registryCancel">取消</button>
-      <button class="btn" id="registrySave">保存</button>
+      <button class="btn ghost" id="registryCancel"><span data-i18n="cancel">取消</span></button>
+      <button class="btn" id="registrySave"><span data-i18n="save">保存</span></button>
     </div>
   </div>
 </div>
@@ -354,7 +354,8 @@
 <div class="toasts" id="toasts" aria-live="polite"></div>
 
 <!-- 氛围背景鼠标交互（方案 7）；独立文件：壳页脚本异常也不影响它 -->
-<script src="ambient.js?v=0.5.8"></script>
-<script src="shell.js?v=0.5.8"></script>
+<script src="ambient.js?v=0.6.0"></script>
+<script src="i18n.js?v=0.6.0"></script>
+<script src="shell.js?v=0.6.0"></script>
   </body>
 </html>

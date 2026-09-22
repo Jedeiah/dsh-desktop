@@ -1,6 +1,6 @@
 {
   "identifier": "workbench-shortcut",
-  "description": "仅授予工作台（远程 dsh 页面，webview label = workbench）发送 shell:shortcut 事件的权限：工作台是独立原生 webview，壳页收不到它的按键，需要它把 Ctrl/⌘+K、Ctrl/⌘+1–4 转发回壳页。不授予其它任何权限——远程来源的普通命令仍被 Tauri 默认拒绝（远程 origin 必须显式授权），且本 capability 不含 app 命名空间权限，主窗自定义命令的既有行为不变。",
+  "description": "仅授予工作台（远程 dsh 页面，webview label = workbench）发送 shell:shortcut 事件的权限：工作台是独立原生 webview，壳页收不到它的按键，需要它把 Ctrl/⌘+K、Ctrl/⌘+1–4 转发回壳页。不授予其它任何权限——远程来源的普通命令仍被 Tauri 默认拒绝（远程 origin 必须显式授权），且本 capability 不含 app 命名空间权限，主窗自定义命令的既有行为不变。 另：同一 allow-emit 权限也承载 `locale:changed`（工作台把 `<html lang>` 的变化转发给壳页与 Rust，用于语种热切换）——不新增权限项，Rust 侧对 payload 做 zh/en 白名单校验。",
   "local": false,
   "remote": {
     "urls": ["http://127.0.0.1:*", "http://localhost:*"]

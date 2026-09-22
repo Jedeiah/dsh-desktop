@@ -74,10 +74,10 @@ pub fn latest_app_version() -> Result<String, String> {
     let resp = ureq::get(&url)
         .timeout(Duration::from_secs(20))
         .call()
-        .map_err(|e| format!("查询 {url} 失败: {e}"))?;
+        .map_err(|e| crate::i18n::tr_args("err_query_failed", &[("url", &url), ("e", &e.to_string())]))?;
     let final_url = resp.get_url().to_string();
     parse_tag_from_effective_url(&final_url)
-        .ok_or_else(|| format!("无法从响应 URL 解析版本：{final_url}"))
+        .ok_or_else(|| crate::i18n::tr_args("err_parse_version_from_url", &[("url", &final_url)]))
 }
 
 /// SHA-256 校验和（十六进制小写）——发布流程在 release.yml 为每个安装包生成
@@ -99,14 +99,18 @@ fn expected_sha256(url: &str) -> Result<String, String> {
     let body = ureq::get(&sha_url)
         .timeout(Duration::from_secs(30))
         .call()
-        .map_err(|e| format!("下载校验和 {sha_url} 失败: {e}"))?
+        .map_err(|e| {
+            crate::i18n::tr_args("err_download_checksum", &[("url", &sha_url), ("e", &e.to_string())])
+        })?
         .into_string()
-        .map_err(|e| format!("读取校验和失败: {e}"))?;
+        .map_err(|e| crate::i18n::tr_args("err_read_checksum", &[("e", &e.to_string())]))?;
     body.split_whitespace()
         .next()
         .filter(|h| h.len() == 64 && h.chars().all(|c| c.is_ascii_hexdigit()))
         .map(|h| h.to_ascii_lowercase())
-        .ok_or_else(|| format!("校验和文件格式异常: {body:?}"))
+        .ok_or_else(|| {
+            crate::i18n::tr_args("err_checksum_format", &[("body", &format!("{body:?}"))])
+        })
 }
 
 /// Stream-download `url` to `dest`; verifies size against Content-Length when
@@ -118,12 +122,13 @@ pub fn download_installer(url: &str, dest: &Path, app: &tauri::AppHandle) -> Res
     let resp = ureq::get(url)
         .timeout(Duration::from_secs(1800))
         .call()
-        .map_err(|e| format!("下载失败: {e}"))?;
+        .map_err(|e| crate::i18n::tr_args("err_download_failed", &[("e", &e.to_string())]))?;
     let expected = resp
         .header("Content-Length")
         .and_then(|s| s.parse::<u64>().ok());
     let mut reader = resp.into_reader().take(2 << 30);
-    let mut f = std::fs::File::create(dest).map_err(|e| format!("创建临时文件失败: {e}"))?;
+    let mut f = std::fs::File::create(dest)
+        .map_err(|e| crate::i18n::tr_args("err_create_temp_file", &[("e", &e.to_string())]))?;
     // 手动分块拷贝（原 std::io::copy 无法统计进度）：统计字节数 → 只在**整数百分比
     // 变化**时向壳页发一次进度事件（每 64KB 发一次会把 IPC 打满）。
     let mut buf = vec![0u8; 64 * 1024];
@@ -133,11 +138,14 @@ pub fn download_installer(url: &str, dest: &Path, app: &tauri::AppHandle) -> Res
     let mut last_pct: i64 = i64::MIN;
     let mut last_emit: u64 = 0;
     loop {
-        let read = reader.read(&mut buf).map_err(|e| format!("读取失败: {e}"))?;
+        let read = reader
+            .read(&mut buf)
+            .map_err(|e| format!("{}: {e}", crate::i18n::tr("read_failed")))?;
         if read == 0 {
             break;
         }
-        f.write_all(&buf[..read]).map_err(|e| format!("写入失败: {e}"))?;
+        f.write_all(&buf[..read])
+            .map_err(|e| crate::i18n::tr_args("err_write_failed", &[("e", &e.to_string())]))?;
         n += read as u64;
         let pct = match expected {
             Some(t) if t > 0 => (n.saturating_mul(100) / t) as i64,
@@ -157,7 +165,10 @@ pub fn download_installer(url: &str, dest: &Path, app: &tauri::AppHandle) -> Res
     if let Some(exp) = expected {
         if n != exp {
             let _ = std::fs::remove_file(dest);
-            return Err(format!("下载不完整: 期望 {exp} 字节, 实际 {n}"));
+            return Err(crate::i18n::tr_args(
+                "err_download_incomplete",
+                &[("exp", &exp.to_string()), ("n", &n.to_string())],
+            ));
         }
     }
     // 进入校验/安装阶段：没有可用的百分比，告知壳页切成"不确定"文案
@@ -166,11 +177,15 @@ pub fn download_installer(url: &str, dest: &Path, app: &tauri::AppHandle) -> Res
         serde_json::json!({ "phase": "install", "downloaded": n, "total": expected }),
     );
     // SHA-256 校验（发布流程生成 `<asset>.sha256`）
-    let got = sha256_of_file(dest).map_err(|e| format!("计算安装包 SHA-256 失败: {e}"))?;
+    let got = sha256_of_file(dest)
+        .map_err(|e| crate::i18n::tr_args("err_hash_installer", &[("e", &e.to_string())]))?;
     let want = expected_sha256(url)?;
     if got != want {
         let _ = std::fs::remove_file(dest);
-        return Err(format!("安装包校验失败: SHA-256 不符(期望 {want}, 实际 {got})"));
+        return Err(crate::i18n::tr_args(
+            "err_installer_checksum_mismatch",
+            &[("want", &want), ("got", &got)],
+        ));
     }
     Ok(n)
 }
@@ -204,7 +219,7 @@ pub async fn check_app_update_cmd(app: tauri::AppHandle) -> Result<Option<String
     // 网络检查离开主线程（见 check_app_update_blocking 注释）。
     let latest = tauri::async_runtime::spawn_blocking(check_app_update_blocking)
         .await
-        .map_err(|e| format!("检查更新线程异常：{e}"))??;
+        .map_err(|e| crate::i18n::tr_args("err_update_check_thread", &[("e", &e.to_string())]))??;
     // 只有**查成功**才进缓存并广播（失败时保持上一次的结论不动：断网不该熄灭已有的红点）
     store_app_latest(&app, latest.clone());
     Ok(latest)
@@ -238,7 +253,7 @@ pub async fn app_update_cmd(
     // 先做所有可能失败的校验（版本查询 / 平台产物 / 文件名拼装）：这些失败不必占用并发门，
     // 门一旦置位就只允许从下面那个唯一出口复位，避免"卡在更新中"的永久锁定。
     let ver = latest_app_version()?;
-    let url = asset_url(&ver).ok_or_else(|| "当前平台暂不支持自动安装".to_string())?;
+    let url = asset_url(&ver).ok_or_else(|| crate::i18n::tr("err_auto_install_unsupported"))?;
     // 文件名显式拼装，**不要**用 Path::with_extension：它会把 "0.4.2" 的 ".2" 当扩展名
     // 替换掉，生成 dsh-desktop-update-0.4.dmg（版本号被截断，且 0.4.2 / 0.4.3 会撞名）。
     let installer = if url.ends_with(".dmg") {
@@ -246,13 +261,13 @@ pub async fn app_update_cmd(
     } else if url.ends_with(".exe") {
         std::env::temp_dir().join(format!("dsh-desktop-update-{ver}.exe"))
     } else {
-        return Err("未知安装包类型".to_string());
+        return Err(crate::i18n::tr("err_unknown_installer_type"));
     };
     let _ = std::fs::remove_file(&installer); // 清掉同版本的历史残留
 
     // 并发门：第二次调用直接拒绝（否则会下载两份安装包、拉起两次安装器）
     if UPDATING.swap(true, Ordering::SeqCst) {
-        return Err("已有更新任务在进行中，请稍候".to_string());
+        return Err(crate::i18n::tr("err_update_in_progress"));
     }
     // 安装包路径的副本：**只有 macOS 分支会用它**（装完即删）；Windows 分支不删（要留给
     // 更新助手在退出后使用），所以这个绑定也必须跟着 cfg——否则 Windows 上 clippy
@@ -276,7 +291,7 @@ pub async fn app_update_cmd(
     .await
     // 线程 panic（JoinError）与安装/下载失败并入同一条出口——**不能用 `?` 提前返回**，
     // 否则并发门不复位，UI 会永久停在"更新中"（点不了检查更新，只能重启 App）。
-    .map_err(|e| format!("更新线程异常：{e}"))
+    .map_err(|e| crate::i18n::tr_args("err_update_thread", &[("e", &e.to_string())]))
     .and_then(|r| r);
 
     // 安装包用完即删（macOS）：此前每次更新都把整个包留在临时区（DMG ≈54MB；用户实测
@@ -399,16 +414,15 @@ fn install_macos(dmg: &Path) -> Result<(), String> {
         .args(["attach", "-plist", "-nobrowse", "-readonly"])
         .arg(dmg)
         .output()
-        .map_err(|e| format!("挂载 DMG 失败: {e}"))?;
+        .map_err(|e| crate::i18n::tr_args("err_mount_dmg", &[("e", &e.to_string())]))?;
     if !out.status.success() {
-        return Err(format!(
-            "挂载 DMG 失败: {}",
-            String::from_utf8_lossy(&out.stderr).trim()
-        ));
+        let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        return Err(crate::i18n::tr_args("err_mount_dmg", &[("e", &err)]));
     }
     let stdout = String::from_utf8_lossy(&out.stdout);
-    let mount = parse_mount_point(&stdout)
-        .ok_or_else(|| format!("无法解析挂载点:\n{stdout}"))?;
+    let mount = parse_mount_point(&stdout).ok_or_else(|| {
+        crate::i18n::tr_args("err_parse_mount_point", &[("out", stdout.as_ref())])
+    })?;
     // 2/3. 取 .app 并复制到 /Applications。用闭包包住：**挂载之后的每条失败路径都必须
     // detach**，否则每次失败的更新都在 /Volumes 下留一个挂载点（累积成 "名称 1/2/3"，
     // 卷名冲突还会改变后续挂载点解析）。旧实现在 read_dir / 未找到 .app / 复制失败三处
@@ -416,11 +430,11 @@ fn install_macos(dmg: &Path) -> Result<(), String> {
     let copy_in = || -> Result<std::path::PathBuf, String> {
         // 2. find .app
         let app_name = std::fs::read_dir(&mount)
-            .map_err(|e| format!("读取 DMG 内容失败: {e}"))?
+            .map_err(|e| crate::i18n::tr_args("err_read_dmg", &[("e", &e.to_string())]))?
             .flatten()
             .find(|e| e.path().extension().map(|x| x == "app").unwrap_or(false))
             .map(|e| e.file_name().to_string_lossy().to_string())
-            .ok_or_else(|| "DMG 中未找到 .app".to_string())?;
+            .ok_or_else(|| crate::i18n::tr("err_dmg_no_app"))?;
         let src = std::path::Path::new(&mount).join(&app_name);
         let dst = std::path::Path::new("/Applications").join(&app_name);
         // 3. copy (plain first; escalate via osascript if permission denied)
@@ -446,7 +460,7 @@ fn install_macos(dmg: &Path) -> Result<(), String> {
                 .map(|s| s.success())
                 .unwrap_or(false);
             if !ok {
-                return Err("复制到 /Applications 失败（无写入权限且提权被取消）".to_string());
+                return Err(crate::i18n::tr("err_copy_to_applications"));
             }
         }
         Ok(dst)
@@ -551,9 +565,9 @@ fn spawn_update_helper(app: &tauri::AppHandle, installer: &Path) -> Result<(), S
     use std::process::Command;
     // 安装包必须先还在：被安全软件删掉/隔离时给出明确错误，而不是让助手白跑一趟
     if !installer.is_file() {
-        return Err(format!(
-            "安装包不存在（可能被杀毒软件隔离）：{}",
-            installer.display()
+        return Err(crate::i18n::tr_args(
+            "err_installer_missing",
+            &[("path", &installer.display().to_string())],
         ));
     }
     let marker = update_helper_marker(app);
@@ -590,7 +604,9 @@ fn spawn_update_helper(app: &tauri::AppHandle, installer: &Path) -> Result<(), S
     {
         cmd = crate::no_console(cmd); // 不闪控制台窗口
     }
-    let mut child = cmd.spawn().map_err(|e| format!("启动更新助手失败: {e}"))?;
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| crate::i18n::tr_args("err_spawn_update_helper", &[("e", &e.to_string())]))?;
     // 等握手（最多 10s）：出现=助手确实在跑，可以放心退出。
     // 超时必须**杀掉助手**再报错：否则它 30s 后照样安装，而我们已经告诉用户「已取消」，
     // 还会在 App 存活的情况下装（脚本内也有一道「本进程没退出就放弃」的保险）。
@@ -605,7 +621,7 @@ fn spawn_update_helper(app: &tauri::AppHandle, installer: &Path) -> Result<(), S
             let _ = child.wait();
             crate::logln("[update] 更新助手未就绪，已结束助手进程并取消本次更新");
             return Err(
-                "更新助手未就绪（PowerShell 可能被安全策略禁用），已取消本次更新；可到 Releases 手动下载安装"
+                crate::i18n::tr("err_update_helper_not_ready")
                     .to_string(),
             );
         }
@@ -789,13 +805,16 @@ pub fn note_boot_after_update_attempt(app: &tauri::AppHandle) {
         Some(UpdateAttempt::Failed) => {
             let _ = std::fs::remove_file(&p);
             let log = crate::paths_from_app(app).app_data.join("logs/launcher.log");
-            let msg = format!(
-                "上次更新到 {} 未生效（当前仍为 v{cur}）。可能是安装被安全软件拦下或安装包失效；可重试，或到 Releases 手动下载安装。\n日志：{}",
-                parse_update_attempt(&txt).unwrap_or_default(),
-                log.display()
+            let msg = crate::i18n::tr_args(
+                "err_update_not_applied",
+                &[
+                    ("ver", &parse_update_attempt(&txt).unwrap_or_default()),
+                    ("cur", cur),
+                    ("log", &log.display().to_string()),
+                ],
             );
             crate::logln(&format!("[update] {msg}"));
-            crate::notify("更新未生效", &msg);
+            crate::notify(&crate::i18n::tr("notify_update_not_applied"), &msg);
         }
     }
 }
