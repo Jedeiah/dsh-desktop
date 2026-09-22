@@ -2416,7 +2416,7 @@ async fn uninstall_run(app: AppHandle, webview: tauri::Webview, wipe: bool) -> R
                 };
                 return fail_uninstall(
                     &app,
-                    crate::i18n::tr("uninstall_incomplete"),
+                    &crate::i18n::tr("uninstall_incomplete"),
                     &crate::i18n::tr_args(
                         "err_spawn_uninstaller",
                         &[("e", &e.to_string()), ("wiped", &wiped)],
