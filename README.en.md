@@ -101,7 +101,7 @@ The two are not in conflict — they are two different roads. **One fuses everyt
 | **Clean uninstall** | Two modes: keep `~/.dsh`, or remove sessions and credentials too. macOS moves the app to Trash; Windows uses the system uninstall chain. Only exact paths named after the app's bundle id (plus its own temp packages) are touched |
 | **Native desktop behaviour** | Closing the window hides to tray, single instance, Dock/tray recall, automatic restart after a crash, system notifications |
 | **Keyboard-first** | Command palette (`⌘K` / `Ctrl+K`), `⌘1`–`⌘4` to jump between sections, `Esc` to dismiss layer by layer — these work even when focus is inside the workbench |
-| **English / 中文** | The UI language **follows dsh's locale** (`locale.preference` in `~/.dsh/settings.yaml`): switching updates the shell, tray and menu bar within about a second, **without a restart**; fallback chain `dsh setting → system LANG → zh` |
+| **English / 中文** | The UI language **follows dsh's locale** (`locale.preference` in `~/.dsh/profiles/web/cordis.patch.yml`; legacy `settings.yaml` still works): switching updates the shell, tray and menu bar within about a second, **without a restart**; fallback chain `dsh setting → system LANG → zh` |
 
 ---
 

@@ -940,7 +940,7 @@
         return;
       }
     }
-    const registry = setupReg.value.trim() || 'https://registry.npmmirror.com';
+    const registry = setupReg.value.trim() || 'https://registry.npmjs.org'; // 与 DEFAULT_REGISTRY 一致
     // 预检期锁定 + 给反馈：上次安装/取消可能还在后端收尾（SETUP_BUSY 仍 true）——
     // 先等它复位再真正发起，否则新 run 会撞「已有一个安装正在进行中」，
     // 且旧 run 的 catch 会串台覆盖新 run 的 UI（「取消后再装不显示进度」根因）。
@@ -1180,7 +1180,7 @@
   // —— 用 dist-tag 会导致
   // 列表首行没有「最新」徽标、甚至提示「发现新版本」把用户往旧版本上带（降级）。
   let dshNewestVer = null;
-  let currentRegistry = 'https://registry.npmmirror.com'; // 最近一次保存/读取的 Registry 源
+  let currentRegistry = 'https://registry.npmjs.org'; // 最近一次保存/读取的 Registry 源（与 DEFAULT_REGISTRY 一致）
 
   function setDshStatus(text, kind) {
     dshStatusEl.textContent = text;

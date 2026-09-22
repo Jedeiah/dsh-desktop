@@ -129,7 +129,7 @@ App **不内置 dsh**，只内置 Node 运行时 + npm + pnpm（macOS 安装包�
 | **干净的卸载** | 两档卸载：保留 `~/.dsh`（便于重装）或连会话凭据一起删；macOS 移入废纸篓、Windows 走系统卸载链；只清理以本 App bundle id 命名的精确路径与自产临时包（`dsh-desktop-update-*`） |
 | **标准桌面体验** | 关窗口收进托盘、单实例（不会开双托盘）、Dock / 托盘召回、崩溃自动重启、系统通知 |
 | **键鼠齐全** | 命令面板（`⌘K` / `Ctrl+K`）、`⌘1`–`⌘4` / `Ctrl+1`–`4` 直达区域、`Esc` 逐级关闭；焦点在工作台里也能用（按键由工作台转发回壳页） |
-| **中英双语** | 界面语言**跟随 dsh 的语种设置**（`~/.dsh/settings.yaml` 的 `locale.preference`）：切完约 1 秒内壳页、托盘、菜单栏一起变，**无需重启**；回退链 `dsh 设置 → 系统 LANG → zh` |
+| **中英双语** | 界面语言**跟随 dsh 的语种设置**（`~/.dsh/profiles/web/cordis.patch.yml` 的 `locale` 段 `preference`；旧版 `settings.yaml` 兼容）：切完 **≤0.5 秒**内壳页、托盘、菜单栏一起变，**无需重启**；回退链 `dsh 设置 → 系统 LANG → zh` |
 
 ---
 

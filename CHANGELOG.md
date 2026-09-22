@@ -6,7 +6,7 @@
 
 - **默认 Registry 源改为官方 `https://registry.npmjs.org`**（原为国内镜像 npmmirror）。壳页「Registry 源设置」仍可随时切换并持久化；引导页默认值与两版 README 同步更新，单测同步。
 
-- **启动页不再闪（根因实证修复）**：dsh 页面原始 HTML 是静态 `<html lang="en">`（curl 实证），客户端挂载后（实测 +1.4s）才改真语种，`/api/settings/describe` 异步返回还会再翻——抖动全部落在工作台加载后 5s 内（app 日志实测 en→zh→en→zh）。工作台注入脚本改为**只认稳定值**：启动静默窗 8s（窗口内只排队）+ 稳定期 700ms + 代际号只发最后稳定值；收尾值与壳页自身语种相同 → 壳页幂等跳过，**零视觉变化**。用户真实切换（单次稳定事件）最多 700ms 生效。
+- **启动页不再闪（根因实证修复）**：dsh 页面原始 HTML 是静态 `<html lang="en">`（curl 实证），客户端挂载后（实测 +1.4s）才改真语种，`/api/settings/describe` 异步返回还会再翻——抖动全部落在工作台加载后 5s 内（app 日志实测 en→zh→en→zh）。工作台注入脚本加 **8s 启动静默窗**（窗口内只排队不转发）+ 三重守卫（代际号作废旧定时器、发出前复核当前值、`last` 去重），窗口结束收尾一次；收尾值与壳页自身语种相同 → 幂等跳过，**零视觉变化**。**窗外零等待**（`setTimeout(0)` 即转发），切换路径与线上版逐字一致。另新增**文件权威通道**：盯 `profiles/web/cordis.patch.yml` 的元数据（可见 500ms / 隐藏 30s，只 stat 不读内容）——dsh 只在用户真选语言时写该文件，故此通道只被真实切换触发、且完全不受静默窗影响，任何时刻切换 ≤0.5s 生效。
 - **首帧即正确语种**：`resolve_locale` 改读**真实持久化位置** `~/.dsh/profiles/web/cordis.patch.yml` 的 `locale` 段（旧 `settings.yaml` 兼容；此前我读的 `$DSH_HOME/cordis.patch.yml` 是包 README 的措辞、路径不对）。未配置时注入 `auto`，壳页按 dsh 规则（navigator 匹配注册表、回退 en）定夺并 `sync_locale` 回报 Rust（托盘/菜单栏与壳页一致）；`</body>` 前同步填充保证首帧。
 
 ### 修复（英文排版：改为由布局自适应，不写死数值）
