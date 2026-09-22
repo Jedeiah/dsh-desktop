@@ -311,7 +311,11 @@ body.chrome-collapsed .chrome {
 
 /* 任务中心胶囊 */
 .task-pill {
-  display: inline-flex; align-items: center; gap: 7px; flex: none;
+  display: inline-flex; align-items: center; gap: 7px;
+  /* 任务文案长度随语言/进度变化：交给顶栏 flex 分配空间，放不下就截断（hover 见浮层），
+     而不是写死一个 max-width 去猜它有多长 */
+  flex: 0 1 auto; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   height: 26px; padding: 0 10px; border-radius: 999px;
   background: var(--surface-2); border: 1px solid var(--border-subtle);
   color: var(--fg-muted); font-size: var(--fs-aux); cursor: pointer;
@@ -325,6 +329,9 @@ body.chrome-collapsed .chrome {
 /* 任务详情浮层 */
 .task-pop {
   position: absolute; top: calc(var(--h-chrome) + 6px); right: 10px; z-index: 45;
+  /* 高度由视口决定：从顶栏一直可用到屏幕底部，超出即滚——任何语言/任务文案长度都成立 */
+  max-height: calc(100vh - var(--h-chrome) - 12px);
+  overflow-y: auto;
   width: 300px; padding: 6px;
   background: var(--surface-1); border: 1px solid var(--border);
   border-radius: var(--r-md); box-shadow: var(--shadow-md);
@@ -604,7 +611,7 @@ body.chrome-collapsed .drawer { top: 0; }
 /* 列表 */
 .list { margin-top: 6px; }
 .list-row {
-  display: flex; align-items: center; gap: 10px;
+  display: flex; flex-wrap: wrap; align-items: center; gap: 10px;
   padding: 8px; border-radius: var(--r-sm);
   transition: background var(--dur) var(--ease);
 }
