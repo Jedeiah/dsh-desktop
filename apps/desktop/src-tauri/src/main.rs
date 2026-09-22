@@ -1424,6 +1424,7 @@ pub(crate) fn reveal_main_window(app: &AppHandle, url: Option<&str>) {
         // 若这里被频繁走到，用户会看到「只有壳页背景、没有工作台」。
         logln("[main] reveal: 主窗不存在 → 重建壳页（工作台需重新创建）");
         if let Ok(w) = WebviewWindowBuilder::new(app, WINDOW_LABEL, WebviewUrl::App("shell.html".into()))
+              .initialization_script(format!("window.__DSH_LOCALE__={:?};", shell_locale_injection()))
             .title("DeepSeek Harness Desktop")
             .inner_size(1280.0, 820.0)
             .min_inner_size(800.0, 560.0)
@@ -1721,10 +1722,18 @@ fn listen_locale_events(app: &AppHandle) {
 /// 15s 一次 `stat`（窗口隐藏时 60s），成本可忽略；不再承担主链路。
 fn spawn_locale_reconcile(app: AppHandle) {
     std::thread::spawn(move || {
-        let settings = crate::home_dir().join(".dsh").join("settings.yaml");
+        // **切换即时性的权威路径**：dsh 源码写明「only Settings selections write
+        // locale.preference」——用户在 dsh 里切语言一定会写这份文件，而启动期的
+        // lang 抖动**不会**。所以盯文件 = 只被真实切换触发，且**完全不受注入脚本
+        // 静默窗的影响**（静默窗内的切换也能 ≤0.5s 生效）。
+        // 位置：0.1.7+ 在 profile（cordis.patch.yml），旧版在 settings.yaml。
+        let dsh_dir = crate::home_dir().join(".dsh");
+        let profile = dsh_dir.join("profiles/web/cordis.patch.yml");
+        let legacy = dsh_dir.join("settings.yaml");
         let stamp = |p: &Path| std::fs::metadata(p).ok().map(|m| (m.len(), m.modified().ok()));
-        crate::logln("[locale] 语种监听已就绪（主链路=工作台事件；兜底=15s/60s 元数据比对）");
-        let mut last = stamp(&settings);
+        let snap = |a: &Path, b: &Path| (stamp(a), stamp(b));
+        crate::logln("[locale] 语种监视就绪（权威来源=profile cordis.patch.yml 的 locale.preference；可见 500ms 元数据比对）");
+        let mut last = snap(&profile, &legacy);
         // 「上次给托盘/菜单栏用的语种」。必须独立于 i18n 的 LIVE 缓存：壳页每次拉状态都会
         // refresh_locale() 顺手更新 LIVE，若以 LIVE 变化为准会漏掉重建（审查发现的竞态）。
         let mut watch = LocaleWatch::new(crate::i18n::locale());
@@ -1733,12 +1742,14 @@ fn spawn_locale_reconcile(app: AppHandle) {
                 .get_webview_window(WINDOW_LABEL)
                 .and_then(|w| w.is_visible().ok())
                 .unwrap_or(false);
+            // 只 stat 不读内容：500ms × 2 个小文件的元数据比对成本可忽略；
+            // 隐藏时放宽到 30s（反正看不见，切了语言显示时也自然跟上）。
             std::thread::sleep(if visible {
-                Duration::from_secs(15)
+                Duration::from_millis(500)
             } else {
-                Duration::from_secs(60)
+                Duration::from_secs(30)
             });
-            let now = stamp(&settings);
+            let now = snap(&profile, &legacy);
             if now == last {
                 continue;
             }
@@ -1746,13 +1757,11 @@ fn spawn_locale_reconcile(app: AppHandle) {
             crate::i18n::refresh_locale();
             let current = crate::i18n::locale();
             if watch.observe(current) {
-                // 工作台没发事件（在 App 外改的设置）→ 需要通知壳页
                 apply_locale_change(&app, current, true);
             }
         }
     });
 }
-
 /// 语种变更判定：只在语种**真的**变了时返回 true 一次。
 /// 抽成纯状态机是为了可单测——它决定了"每秒轮询"是否会退化成"每秒重建菜单"。
 struct LocaleWatch {
@@ -1915,6 +1924,7 @@ fn open_modal_window(app: &AppHandle) -> bool {
         let _ = w.destroy();
     }
     match WebviewWindowBuilder::new(app, MODAL_LABEL, WebviewUrl::App("modal.html".into()))
+            .initialization_script(format!("window.__DSH_LOCALE__={:?};", shell_locale_injection()))
         .decorations(false)
         .resizable(false)
         .visible(false) // 定位后再显示，避免闪烁
@@ -2092,7 +2102,48 @@ struct ShellState {
 /// 这里只做极简的缩进感知解析：settings.yaml 是 dsh 自己生成的机器文件，顶层键不缩进、
 /// 子键缩进两格；为一个键引入 YAML 依赖不划算。
 fn dsh_locale_preference(home: &std::path::Path) -> Option<String> {
-    let text = std::fs::read_to_string(home.join(".dsh").join("settings.yaml")).ok()?;
+    let dsh = home.join(".dsh");
+    // 权威位置（dsh 0.1.7+）：profile 的 cordis.patch.yml——插件段列表，
+    //   - id: locale
+    //     config:
+    //       preference: zh
+    // （dsh-settings 会把旧 settings.yaml 迁进 profile 并改名 .imported。）
+    if let Some(v) = locale_preference_from_profile(&dsh.join("profiles/web/cordis.patch.yml")) {
+        return Some(v);
+    }
+    // 旧版（<0.1.7）：settings.yaml 的顶层 locale.preference
+    locale_preference_from_settings(&dsh.join("settings.yaml"))
+}
+
+/// 从 profile 的 `cordis.patch.yml` 取 `locale` 插件段里的 preference。
+/// 只认 `- id: locale` 段内出现的 `preference:` —— 其它插件段也有 preference
+/// （如 ui-theme: preference: dark），不能混。
+fn locale_preference_from_profile(path: &std::path::Path) -> Option<String> {
+    let text = std::fs::read_to_string(path).ok()?;
+    let mut in_locale = false;
+    for raw in text.lines() {
+        // 列表项形如 `- id: locale`：剥掉 "- " 再比对（整行比对永远不匹配，
+        // 单测 resolve_locale_reads_dsh_settings 曾当场抓到这个 bug）
+        if let Some(rest) = raw.strip_prefix("- ") {
+            in_locale = rest.trim() == "id: locale";
+            continue;
+        }
+        if !in_locale {
+            continue;
+        }
+        if let Some(v) = raw.trim().strip_prefix("preference:") {
+            let v = v.trim().trim_matches('"').trim_matches('\'');
+            if !v.is_empty() {
+                return Some(v.to_string());
+            }
+        }
+    }
+    None
+}
+
+/// 旧版 settings.yaml：顶层 `locale:` 段内的 preference。
+fn locale_preference_from_settings(path: &std::path::Path) -> Option<String> {
+    let text = std::fs::read_to_string(path).ok()?;
     let mut in_locale = false;
     for raw in text.lines() {
         if raw.starts_with("locale:") {
@@ -2117,22 +2168,53 @@ fn dsh_locale_preference(home: &std::path::Path) -> Option<String> {
 }
 
 /// 语种回退链：dsh 设置 → 系统语言（LANG/LC_ALL）→ zh。
-fn resolve_locale(home: &std::path::Path) -> String {
-    if let Some(pref) = dsh_locale_preference(home) {
-        return pref;
-    }
+/// 解析 dsh 里**配置过**的语种；没配置返回 `None`（不在这里硬编码默认值——
+/// 默认值由壳页按 dsh 的规则用 navigator 决定，再 `sync_locale` 回报；Rust 侧在
+/// 收到回报前先用 en 兜底，与 dsh 源码对非浏览器环境的默认一致，见 i18n::locale）。
+fn resolve_locale(home: &std::path::Path) -> Option<String> {
+    resolve_locale_with(home, locale_from_env)
+}
+
+/// 环境变量里的语种（GUI 启动时通常为空）。抽成独立函数以便单测传入 `|| None`，
+/// 不必改进程环境变量（Rust 2024 里那是 unsafe，且并行测试有竞态）。
+fn locale_from_env() -> Option<String> {
     for key in ["LC_ALL", "LC_MESSAGES", "LANG"] {
         if let Ok(v) = std::env::var(key) {
             let v = v.to_lowercase();
             if v.starts_with("en") {
-                return "en".into();
+                return Some("en".into());
             }
             if v.starts_with("zh") {
-                return "zh".into();
+                return Some("zh".into());
             }
         }
     }
-    "zh".into()
+    None
+}
+
+fn resolve_locale_with(home: &std::path::Path, env: impl Fn() -> Option<String>) -> Option<String> {
+    if let Some(pref) = dsh_locale_preference(home) {
+        return Some(pref);
+    }
+    env()
+}
+
+/// 注入给壳页的初始语种：有配置 → 归一化值；没配置 → `"auto"`（壳页按 dsh 规则
+/// 用 navigator 匹配注册表、回退 en，然后 sync_locale 回报）。
+fn shell_locale_injection() -> String {
+    match resolve_locale(&crate::home_dir()) {
+        Some(v) => crate::i18n::normalize(&v).to_string(),
+        None => "auto".into(),
+    }
+}
+
+/// 壳页回报它按 dsh 规则定下的语种（仅在 dsh **未配置**语种、注入值为 `"auto"` 时调用）：
+/// 让托盘 / macOS 菜单栏 / 原生弹窗与壳页一致，Rust 侧不再自己猜。
+#[tauri::command]
+fn sync_locale(app: AppHandle, locale: String) {
+    if crate::i18n::set_locale(&locale) {
+        apply_locale_change(&app, crate::i18n::locale(), false);
+    }
 }
 
 #[tauri::command]
@@ -2995,6 +3077,7 @@ fn main() {
             crate::reveal_main_window(app, mlock(&DSH_URL).as_deref());
         }))
         .invoke_handler(tauri::generate_handler![
+            sync_locale,
             plugin::plugin_op,
             plugin::plugin_list_cmd,
             plugin::plugin_check_updates_cmd,
@@ -3116,6 +3199,7 @@ fn main() {
                 WINDOW_LABEL,
                 WebviewUrl::App("shell.html".into()),
             )
+                .initialization_script(format!("window.__DSH_LOCALE__={:?};", shell_locale_injection()))
             .title("DeepSeek Harness Desktop")
             .inner_size(1280.0, 820.0)
             .min_inner_size(800.0, 560.0)
@@ -3542,19 +3626,32 @@ mod tests {
         let home = std::env::temp_dir().join(format!("dsh-locale-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&home);
         std::fs::create_dir_all(home.join(".dsh")).unwrap();
+        // 旧版位置（settings.yaml）仍要能读
         std::fs::write(
             home.join(".dsh/settings.yaml"),
             "theme: dark\nlocale:\n  preference: en\n",
         )
         .unwrap();
-        assert_eq!(resolve_locale(&home), "en");
-        // 同一文件切成 zh：语种跟着设置走
+        assert_eq!(resolve_locale_with(&home, || None).as_deref(), Some("en"));
         std::fs::write(
             home.join(".dsh/settings.yaml"),
             "locale:\n  preference: zh\nmodel: x\n",
         )
         .unwrap();
-        assert_eq!(resolve_locale(&home), "zh");
+        assert_eq!(resolve_locale_with(&home, || None).as_deref(), Some("zh"));
+        // 权威位置（profile 的 cordis.patch.yml）优先，且只认 - id: locale 段：
+        // ui-theme 段的 preference: dark 绝不能被当成语种
+        std::fs::create_dir_all(home.join(".dsh/profiles/web")).unwrap();
+        std::fs::write(
+            home.join(".dsh/profiles/web/cordis.patch.yml"),
+            "- id: ui-theme\n  config:\n    preference: dark\n- id: locale\n  name: x\n  config:\n    preference: en\n",
+        )
+        .unwrap();
+        assert_eq!(resolve_locale_with(&home, || None).as_deref(), Some("en"));
+        // 两个位置都没有 → None（由壳页按 dsh 规则定），不再硬编码
+        std::fs::remove_file(home.join(".dsh/profiles/web/cordis.patch.yml")).unwrap();
+        std::fs::remove_file(home.join(".dsh/settings.yaml")).unwrap();
+        assert_eq!(resolve_locale_with(&home, || None), None);
         let _ = std::fs::remove_dir_all(&home);
     }
 

@@ -318,6 +318,12 @@
   /// 加「语种没变就直接返回」的门闸：状态拉取很频繁（每次开抽屉等），
   /// 而 applyStatic 要刷 100+ 个节点——没变就一个 DOM 都不该碰。
   let localeApplied = false;
+
+  // dsh **未配置**语种时（注入值为 "auto"），壳页已按 dsh 规则定好 —— 回报 Rust，
+  // 让托盘 / macOS 菜单栏 / 原生弹窗与壳页一致（配置过语种时 Rust 自己读得到，无需回报）。
+  if (window.__DSH_LOCALE__ === 'auto') {
+    invoke('sync_locale', { locale: DSH_I18N.locale }).catch(() => {});
+  }
   function applyLocale(st) {
     if (!st || !st.locale) return;
     var want = String(st.locale).toLowerCase().indexOf('en') === 0 ? 'en' : 'zh';

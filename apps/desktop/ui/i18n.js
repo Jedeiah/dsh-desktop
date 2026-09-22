@@ -1,6 +1,6 @@
 // 壳页多语言（中/英）。**本文件就是运行时真源：加词条 / 改译文直接改这里**。
 // 当年那次批量迁移的一次性脚本已归档并移出仓库（promo/archive/，不入库），
-// 不存在会自动覆盖本文件的生成步骤——放心手改。语种跟随 dsh 的 locale 设置（~/.dsh/settings.yaml 的 locale.preference），
+// 不存在会自动覆盖本文件的生成步骤——放心手改。语种跟随 dsh 的持久化偏好（~/.dsh/profiles/web/cordis.patch.yml 的 locale.preference），
 // 由 Rust 在 get_shell_state 里带过来；这里是零构建链的静态字典，不引打包器。
 //
 // 用法：
@@ -512,7 +512,16 @@
     }
   };
 
-  var current = 'zh';
+  // 初始语种由 Rust 在壳页脚本前注入：有配置 = 归一化值；没配置 = "auto"。
+  // "auto" 按 **dsh 自己的规则**在壳页内定夺：navigator 语言命中注册表（zh）即用之，
+  // 否则回退英文——与 dsh 源码一致（detectBrowserLocale + FALLBACK_LOCALE="en"）。
+  var injected = (typeof window.__DSH_LOCALE__ === 'string') ? window.__DSH_LOCALE__ : '';
+  var current;
+  if (injected && injected !== 'auto') {
+    current = injected.toLowerCase().indexOf('en') === 0 ? 'en' : 'zh';
+  } else {
+    current = String(navigator.language || '').toLowerCase().indexOf('zh') === 0 ? 'zh' : 'en';
+  }
 
   function t(key, vars) {
     var table = DICT[current] || DICT.zh;

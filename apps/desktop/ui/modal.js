@@ -9,7 +9,9 @@
   const closeX = document.getElementById('closeX');
 
   // 弹窗是独立窗口，拿不到 shell state：按系统语言选语种（具体文案仍由 Rust 的 modal_spec 提供）
-  DSH_I18N.setLocale(navigator.language);
+  // 注入的持久化偏好优先（"auto" 或缺失时回退浏览器语言）
+  DSH_I18N.setLocale(window.__DSH_LOCALE__ && window.__DSH_LOCALE__ !== 'auto'
+    ? window.__DSH_LOCALE__ : navigator.language);
 
   let spec = null;
   let responded = false;

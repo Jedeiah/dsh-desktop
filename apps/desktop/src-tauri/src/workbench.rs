@@ -126,24 +126,38 @@ window.addEventListener('keydown',function(e){
 });
 }catch(_){}})();"#;
 
-/// 注入 dsh 页面的**语种转发**：dsh 切语种时会把 `<html lang>` 设为 `zh-CN` / `en`
-/// （`dsh-client-locale` 的标准行为，不是私有 API）。
+/// 语种转发（dsh 切语言 → `<html lang>` 变化 → 发 `locale:changed`）——**只认稳定值**。
 ///
-/// 这是语种热切换的**事件源**——改语言这件事就发生在工作台 webview 里，所以由它直接
-/// 通知壳页与 Rust，而不是让壳去轮询 `settings.yaml` 猜（文件只是持久化细节）。
-/// 只在值真的变化时发；注入时先发一次当前值，顺带覆盖"注入前就已经是 en"的情况。
-/// 事件名复用 `shell:shortcut` 那条 allow-emit 权限，**不新增任何能力面**。
+/// 为什么不直接转发（0.6.0 的行为，用户实测会闪）：
+/// dsh 页面的原始 HTML 是**静态** `<html lang="en">`（curl 实证），locale 客户端挂载后
+/// （实验 +1.4s）才改成真语种，随后 `/api/settings/describe` 异步返回还会经 `adopt()`
+/// 再翻几次——app 日志实测这些抖动**全部落在工作台加载后 5s 内**（en→zh→en→zh）。
+/// 直接转发 = 启动页跟着连闪。
+///
+/// 一道门闸 + 三重守卫（数字来自上述实测，不是拍的）：
+///   * `QUIET`：文档启动后 8s 内的变化**只排队不转发**，窗口结束统一收尾一次——防闪的
+///     承重墙就是它（启动抖动实测全落在 5s 内），**不靠任何延迟**；
+///   * 三重守卫：`gen` 让新值作废旧定时器、发出前复核当前值、`last` 去重。
+///
+/// **窗外零等待**：过窗后的变化 `setTimeout(0)` 即转发——切换路径与线上版逐字一致，
+/// 不引入任何新增延迟；启动抖动的收尾值与壳页当前语种相同 → 幂等跳过，**零视觉变化**。
+/// 若还有极晚的二次抖动（实测未出现），由文件监视那条权威通道以最终值收敛（见
+/// spawn_locale_reconcile：只被「用户真选语言」写下的偏好文件触发，完全不受本窗影响）。
 const LOCALE_FORWARD_JS: &str = r#"(function(){try{
-var last=null;
+var t0=Date.now(), QUIET=8000, gen=0, last=null;
 function norm(v){return String(v||'').toLowerCase().indexOf('en')===0?'en':'zh';}
-function send(){try{
-  var v=norm(document.documentElement&&document.documentElement.lang);
-  if(v===last)return;
-  last=v;
-  window.__TAURI__&&window.__TAURI__.event&&window.__TAURI__.event.emit('locale:changed',v);
-}catch(_){}}
-try{new MutationObserver(send).observe(document.documentElement,{attributes:true,attributeFilter:['lang']});}catch(_){}
-if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',send);else send();
+function cur(){return norm(document.documentElement&&document.documentElement.lang);}
+function emit(v){try{window.__TAURI__&&window.__TAURI__.event&&window.__TAURI__.event.emit('locale:changed',v);}catch(_){}}
+function schedule(){
+  var v=cur(), my=++gen;
+  var wait=Math.max(0, t0+QUIET-Date.now());   // 窗内=等到窗口收尾；窗外=0（下一宏任务即转）
+  setTimeout(function(){
+    if(my!==gen)return;                                // 已有更新的候选值 → 作废
+    if(cur()!==v)return;                               // 期间值又变 → 由那次负责
+    if(v===last)return; last=v; emit(v);
+  }, wait);
+}
+try{new MutationObserver(schedule).observe(document.documentElement,{attributes:true,attributeFilter:['lang']});}catch(_){}
 }catch(_){}})();"#;
 
 /// 注入 dsh 页面 document-start 的 WebKit 语义对齐垫片（仅 macOS 注入，见下），两件事：

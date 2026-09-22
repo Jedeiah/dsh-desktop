@@ -1,7 +1,10 @@
 //! 桌面壳（Rust 侧）的中/英文案表。
 //!
-//! 流程：语种只有一个来源——dsh 的 `~/.dsh/settings.yaml` 里的 `locale.preference`，
-//! 由 main.rs 的 `resolve_locale` 解析（读不到就回退系统语言、再回退 zh）。本模块把
+//! 流程：语种的权威来源是 dsh 的持久化偏好 `~/.dsh/profiles/web/cordis.patch.yml`
+//! 里 `locale` 段的 `preference`（<0.1.7 为 `~/.dsh/settings.yaml`），由 main.rs 的
+//! `resolve_locale` 解析。**没配置时**由壳页按 dsh 规则（navigator 匹配注册表、回退 en）
+//! 定夺并 `sync_locale` 回报；Rust 侧收到回报前先用 **en** 兜底（dsh 源码对非浏览器
+//! 环境的默认就是 en）。本模块把
 //! 解析结果缓存在进程内（`LOCALE` / `LIVE`），所有 Rust 侧的用户可见文案都走
 //! [`tr`] / [`tr_args`] / [`tr_static`] 取当前语种的字符串，壳页那半边的字典在
 //! `apps/desktop/ui/i18n.js`（同键同义同英文文案）。
@@ -154,9 +157,9 @@ static LOCALE: OnceLock<String> = OnceLock::new();
 /// `&'static str` 而不需要任何 leak/unsafe。
 static LIVE: Mutex<Option<&'static str>> = Mutex::new(None);
 
-/// 把 `resolve_locale` 的原始取值（`zh` / `en` / `en-US` 这类）归一到 `"zh"` / `"en"`，
+/// 把配置里的原始取值（`zh` / `en` / `en-US` 这类）归一到 `"zh"` / `"en"`，
 /// 判定与前端 `DSH_I18N.setLocale` 一致（`en` 开头即英文，其余中文）。
-fn normalize(raw: &str) -> &'static str {
+pub fn normalize(raw: &str) -> &'static str {
     if raw.to_ascii_lowercase().starts_with("en") { "en" } else { "zh" }
 }
 
@@ -175,7 +178,10 @@ pub fn locale() -> &'static str {
     if let Some(v) = *crate::mlock(&LIVE) {
         return v;
     }
-    let cached = LOCALE.get_or_init(|| crate::resolve_locale(&crate::home_dir()));
+    // 未配置（None）先用 en：与 dsh 对非浏览器环境的默认一致；壳页随后会
+    // 按 navigator 规则算出真值并 sync_locale 回报（那时托盘/菜单栏一起重建）。
+    let cached = LOCALE
+        .get_or_init(|| crate::resolve_locale(&crate::home_dir()).unwrap_or_else(|| "en".into()));
     normalize(cached)
 }
 
@@ -194,11 +200,19 @@ pub fn set_locale(raw: &str) -> bool {
 }
 
 pub fn refresh_locale() -> String {
-    let raw = crate::resolve_locale(&crate::home_dir());
-    // 首次访问顺手填充「只读一次盘」的缓存（之后 locale() 不再碰磁盘）。
-    let _ = LOCALE.get_or_init(|| raw.clone());
-    *crate::mlock(&LIVE) = Some(normalize(&raw));
-    raw
+    match crate::resolve_locale(&crate::home_dir()) {
+        Some(raw) => {
+            // 首次访问顺手填充「只读一次盘」的缓存（之后 locale() 不再碰磁盘）。
+            let _ = LOCALE.get_or_init(|| raw.clone());
+            *crate::mlock(&LIVE) = Some(normalize(&raw));
+            raw
+        }
+        // 未配置：**不动**当前生效值（可能是壳页 sync_locale 回报的），首次则 en 兜底。
+        None => match *crate::mlock(&LIVE) {
+            Some(v) => v.to_string(),
+            None => "en".into(),
+        },
+    }
 }
 
 /// 指定语种取词（纯函数，便于测试与排查）：命中英文列就用英文，
